@@ -48,6 +48,10 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 - **Auto-fetch lyrics** → auto-saved as `song.lrc` to the song's directory
 - Metadata editing (title, artist, album, year, genre, cover)
 - GIF/static cover toggle
+- **Download songs with auto-embedded cover art**
+
+![Download with Cover](showimage/下载歌曲带封面.png)
+
 - Local MV matching and playback
 
 ![Local MV](showimage/本地MV展示.png)
