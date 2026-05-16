@@ -206,9 +206,9 @@ music/
 
 ## 📦 Download / 下载
 
-Go to the [Releases](https://github.com/xiaomingky/music-player/releases) page to download the latest installer.
+Go to the [Releases](https://github.com/xiaomingky/XiaoMingKY163_Player/releases) page to download the latest installer.
 
-前往 [Releases](https://github.com/xiaomingky/music-player/releases) 页面下载最新安装包。
+前往 [Releases](https://github.com/xiaomingky/XiaoMingKY163_Player/releases) 页面下载最新安装包。
 
 ---
 
@@ -221,4 +221,4 @@ MIT
 ## 👤 Contact / 联系
 
 - Website / 网站：[xiaomingky.cn](https://xiaomingky.cn)
-- GitHub Issues: [Report a bug / 报告问题](https://github.com/xiaomingky/music-player/issues)
+- GitHub Issues: [Report a bug / 报告问题](https://github.com/xiaomingky/XiaoMingKY163_Player/issues)
