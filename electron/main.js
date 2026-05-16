@@ -693,15 +693,6 @@ function checkForUpdates() {
 }
 
 app.whenReady().then(() => {
-    // Grant media permissions for audio device enumeration
-    session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-        if (permission === 'media') {
-            callback(true)
-        } else {
-            callback(false)
-        }
-    })
-
     // --- Electron 22 兼容性协议注册 (Win7 支持) ---
 
     // 1. local-file 协议 (支持 Range 请求)

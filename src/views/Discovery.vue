@@ -12,7 +12,7 @@ import {
 } from '../api'
 import { usePlayerStore } from '../store/player'
 import { useUserStore } from '../store/user'
-import { ChevronRight, Play, User, RefreshCw } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Play, User, RefreshCw } from 'lucide-vue-next'
 
 const router = useRouter()
 const playerStore = usePlayerStore()

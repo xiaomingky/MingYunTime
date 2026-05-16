@@ -36,7 +36,6 @@ import {
   Shuffle,
   Copy,
   Keyboard,
-  MonitorSpeaker,
   Check,
   Github,
   HeartHandshake,
@@ -57,7 +56,6 @@ const showCreatePlaylist = ref(false)
 const newPlaylistName = ref('')
 const showSpeedMenu = ref(false)
 const showQualityMenu = ref(false)
-const showDeviceMenu = ref(false)
 const showDonate = ref(false)
 
 // 自动更新检测
@@ -71,22 +69,6 @@ const getFooterCoverUrl = () => {
         return picUrl + '?static=1'
     }
     return picUrl
-}
-
-const fetchDevices = async () => {
-    await playerStore.fetchAudioDevices()
-    showDeviceMenu.value = true
-}
-
-const selectDevice = (deviceId) => {
-    playerStore.setAudioDevice(deviceId)
-    showDeviceMenu.value = false
-}
-
-const getDeviceLabel = (device) => {
-    if (device.label) return device.label
-    if (device.deviceId === 'default') return '系统默认'
-    return `输出设备 (${device.deviceId.slice(0, 8)}...)`
 }
 
 const qualityLabels = {
@@ -697,25 +679,6 @@ const openGithub = () => {
           </div>
         </div>
 
-        <div class="device-selector-container">
-            <MonitorSpeaker :size="16" class="clickable hover-red" @click="fetchDevices" title="播放设备" />
-            <div v-if="showDeviceMenu" class="device-menu no-drag">
-                <div 
-                    v-for="device in playerStore.audioDevices" 
-                    :key="device.deviceId" 
-                    class="device-option"
-                    :class="{ active: playerStore.currentDeviceId === device.deviceId || (!playerStore.currentDeviceId && device.deviceId === 'default') }"
-                    @click="selectDevice(device.deviceId)"
-                >
-                    <span class="device-label">{{ getDeviceLabel(device) }}</span>
-                    <Check v-if="playerStore.currentDeviceId === device.deviceId || (!playerStore.currentDeviceId && device.deviceId === 'default')" :size="12" />
-                </div>
-                <div v-if="playerStore.audioDevices.length === 0" class="device-option disabled">
-                    未检测到设备
-                </div>
-            </div>
-            <div v-if="showDeviceMenu" class="device-menu-backdrop" @click="showDeviceMenu = false"></div>
-        </div>
         <EqPanel />
         
         <div class="speed-selector-container">
@@ -1440,73 +1403,5 @@ const openGithub = () => {
 .quality-option.active {
     color: var(--primary-color);
     font-weight: bold;
-}
-
-/* Device Selector Styles */
-.device-selector-container {
-    position: relative;
-    display: flex;
-    align-items: center;
-}
-
-.device-menu {
-    position: absolute;
-    bottom: calc(100% + 15px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: white;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
-    border-radius: 8px;
-    min-width: 160px;
-    padding: 6px 0;
-    z-index: 10002;
-}
-
-.device-menu::after {
-    content: '';
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    border: 6px solid transparent;
-    border-top-color: white;
-}
-
-.device-option {
-    padding: 10px 16px;
-    font-size: 12px;
-    color: #333;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    cursor: pointer;
-    white-space: nowrap;
-    gap: 10px;
-}
-
-.device-option:hover {
-    background: #f5f5f5;
-}
-
-.device-option.active {
-    color: var(--primary-color);
-    font-weight: 600;
-}
-
-.device-option.disabled {
-    color: #bbb;
-    cursor: default;
-}
-
-.device-label {
-    max-width: 150px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.device-menu-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 10001;
 }
 </style>
