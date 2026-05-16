@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import request, { getPlaylistDetail, getCommentPlaylist, playlistTracks } from '../api'
+import request, { getCommentPlaylist, playlistTracks } from '../api'
 import { usePlayerStore } from '../store/player'
 import { useUserStore } from '../store/user'
 import { useMessageStore } from '../store/message'
@@ -18,24 +18,23 @@ const tracks = ref([])
 const loading = ref(false)
 
 const fetchDetail = async () => {
-    if (!route.params.id) return
+    const id = route.params.id
+    if (!id) return
     loading.value = true
     playlist.value = null
     tracks.value = []
-    
+
     try {
-        const res = await getPlaylistDetail(route.params.id)
+        // 加 timestamp 破缓存，确保每次都拿到最新数据
+        const res = await request.get('/playlist/detail', { params: { id, timestamp: Date.now() } })
         if (res && res.playlist) {
             playlist.value = res.playlist
-            
-            // 如果详情里有歌曲则直接使用
+
             if (res.playlist.tracks && res.playlist.tracks.length > 0) {
                 tracks.value = res.playlist.tracks
             } else {
-                // 如果没有歌曲（可能是大歌单，详情只返回 id），则尝试获取所有歌曲
-                console.log('--- [Detail] Playlist tracks empty, fetching all...')
                 const trackRes = await request.get('/playlist/track/all', {
-                    params: { id: route.params.id, limit: 1000, timestamp: Date.now() }
+                    params: { id, limit: 1000, timestamp: Date.now() }
                 })
                 if (trackRes && trackRes.songs) {
                     tracks.value = trackRes.songs
@@ -54,11 +53,6 @@ const fetchDetail = async () => {
 watch(() => route.params.id, (newId) => {
   if (newId) fetchDetail()
 }, { immediate: true })
-
-// 每次导航到歌单页面都强制刷新
-watch(() => route.fullPath, () => {
-  if (route.params.id) fetchDetail()
-})
 
 const formatTime = (ms) => {
   const seconds = ms / 1000
