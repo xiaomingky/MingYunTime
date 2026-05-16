@@ -214,7 +214,7 @@ const handleCoverChange = async (e) => {
 <template>
   <div class="playlist-detail">
     <div v-if="loading && !playlist" class="loading">加载中...</div>
-    <div v-show="playlist">
+    <template v-if="playlist">
         <div v-if="loading" class="refresh-bar">刷新中...</div>
         <div class="detail-header">
             <div class="cover-wrapper" :class="{ owner: isOwner }" @click="isOwner && triggerCoverUpload()">
@@ -339,7 +339,7 @@ const handleCoverChange = async (e) => {
                 </div>
             </div>
         </div>
-    </div>
+    </template>
     <div v-else class="empty-state">
         <div class="empty-content">
             <Heart :size="64" color="#eee" />
