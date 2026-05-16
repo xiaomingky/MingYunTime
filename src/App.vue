@@ -379,7 +379,7 @@ const openAuthorLink = () => {
 }
 const openGithub = () => {
     const b = getBridge()
-    if (b) b.send('open-external', 'https://github.com/xiaomingky/XiaoMingKY163_Player')
+    if (b) b.send('open-external', 'https://github.com/xiaomingky/MingYunTime')
 }
 
 </script>

@@ -659,7 +659,7 @@ function checkForUpdates() {
     win?.webContents.send('update-checking')
     const opts = {
         hostname: 'api.github.com',
-        path: '/repos/xiaomingky/XiaoMingKY163_Player/releases/latest',
+        path: '/repos/xiaomingky/MingYunTime/releases/latest',
         headers: { 'User-Agent': 'MingYunTime', 'Accept': 'application/vnd.github+json' }
     }
     https.get(opts, (res) => {
