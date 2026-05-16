@@ -630,7 +630,7 @@ const openGithub = () => {
       </aside>
 
       <div class="main-content-wrapper">
-         <router-view />
+         <router-view :key="$route.fullPath" />
       </div>
     </div>
 
