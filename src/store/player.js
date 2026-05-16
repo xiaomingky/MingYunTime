@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import request, { getSongUrl, getLyric } from '../api'
+import { useMessageStore } from './message'
 
 export const usePlayerStore = defineStore('player', {
     state: () => ({
@@ -229,7 +230,7 @@ export const usePlayerStore = defineStore('player', {
                 }
 
                 if (!url && !isLocal) {
-                    alert(`无法播放 [${song.name}]：由于版权或VIP限制，资源不可用。`)
+                    useMessageStore().warning(`无法播放 [${song.name}]：由于版权或VIP限制，资源不可用。`)
                     this.next()
                     return
                 }
@@ -278,7 +279,7 @@ export const usePlayerStore = defineStore('player', {
                 }).catch(error => {
                     console.error('Playback fail:', error)
                     if (isLocal) {
-                        alert('本地文件加载失败，请确定文件路径正确且协议已注册。')
+                        useMessageStore().error('本地文件加载失败，请确定文件路径正确且协议已注册。')
                     }
                 })
 
@@ -449,7 +450,7 @@ export const usePlayerStore = defineStore('player', {
             if (!this.currentSong.id) return
             const { useUserStore } = await import('./user')
             const user = useUserStore()
-            if (!user.isLoggedIn) return alert('请先登录后再进行收藏')
+            if (!user.isLoggedIn) { useMessageStore().warning('请先登录后再进行收藏'); return }
 
             const newStatus = !this.isLiked
             try {
@@ -659,11 +660,11 @@ export const usePlayerStore = defineStore('player', {
                     this.currentMvId = id
                     this.showMvPlayer = true
                 } else {
-                    alert('未获取到视频地址，由于版权或区域限制，该内容暂无法播放。')
+                    useMessageStore().warning('未获取到视频地址，由于版权或区域限制，该内容暂无法播放。')
                 }
             } catch (err) {
                 console.error('Play MV error:', err)
-                alert('播放视频失败')
+                useMessageStore().error('播放视频失败')
             }
         },
         async playLocalMv() {
@@ -720,7 +721,7 @@ export const usePlayerStore = defineStore('player', {
                 }
             }
 
-            alert('未找到匹配的MV视频文件。\n\n提示：\n1. 将视频文件放在歌曲同目录下\n2. 或在歌曲目录下创建 mv 文件夹\n3. 视频文件名需与歌曲名一致')
+            useMessageStore().info('未找到匹配的MV视频文件。提示：将视频文件放在歌曲同目录下，或在歌曲目录下创建 mv 文件夹，视频文件名需与歌曲名一致')
         },
         addToRecent(song) {
             const index = this.recentSongs.findIndex(s => s.id === song.id)

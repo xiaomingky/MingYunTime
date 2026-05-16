@@ -1,8 +1,10 @@
 <script setup>
 import { usePlayerStore } from '../store/player'
+import { useMessageStore } from '../store/message'
 import { Play, Trash2 } from 'lucide-vue-next'
 
 const playerStore = usePlayerStore()
+const messageStore = useMessageStore()
 
 const formatTime = (seconds) => {
   if (!seconds) return '00:00'
@@ -11,8 +13,8 @@ const formatTime = (seconds) => {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
-const clearRecent = () => {
-    if (confirm('确定要清空最近播放记录吗？')) {
+const clearRecent = async () => {
+    if (await messageStore.confirm('确定要清空最近播放记录吗？', '清空记录')) {
         playerStore.recentSongs = []
         localStorage.setItem('recent_songs', '[]')
     }

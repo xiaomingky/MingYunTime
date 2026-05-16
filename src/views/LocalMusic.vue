@@ -133,8 +133,8 @@ const playLocal = (song) => {
     playerStore.playSong(song, playerStore.localSongs)
 }
 
-const removeSong = (song) => {
-    if (confirm(`确定要从列表中移除 "${song.name}" 吗？`)) {
+const removeSong = async (song) => {
+    if (await messageStore.confirm(`确定要从列表中移除 "${song.name}" 吗？`, '移除歌曲')) {
         playerStore.removeLocalSong(song.path)
     }
 }
@@ -161,9 +161,9 @@ const toggleSelect = (song) => {
     }
 }
 
-const batchRemove = () => {
+const batchRemove = async () => {
     if (selectedPaths.value.length === 0) return
-    if (confirm(`确定要移除选中的 ${selectedPaths.value.length} 首歌曲吗？`)) {
+    if (await messageStore.confirm(`确定要移除选中的 ${selectedPaths.value.length} 首歌曲吗？`, '批量移除')) {
         playerStore.removeLocalSongs(selectedPaths.value)
         selectedPaths.value = []
     }

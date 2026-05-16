@@ -63,8 +63,8 @@ const playVideo = (video) => {
     }
 }
 
-const removeVideo = (video) => {
-    if (confirm(`确定要移除 "${video.name}" 吗？`)) {
+const removeVideo = async (video) => {
+    if (await messageStore.confirm(`确定要移除 "${video.name}" 吗？`, '移除视频')) {
         localVideos.value = localVideos.value.filter(v => v.path !== video.path)
         saveVideos()
     }

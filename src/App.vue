@@ -8,6 +8,7 @@ import SongDetail from './views/SongDetail.vue'
 import LoginModal from './components/LoginModal.vue'
 import MvPlayer from './components/MvPlayer.vue'
 import Toast from './components/Toast.vue'
+import ConfirmModal from './components/ConfirmModal.vue'
 import EqPanel from './components/EqPanel.vue'
 import { 
   Search, 
@@ -383,7 +384,8 @@ const openAuthorLink = () => {
 <template>
   <div class="app-container" :class="{ 'is-desktop-lyrics': route.path === '/desktop-lyrics' }">
     <Toast />
-    
+    <ConfirmModal />
+
     <div v-if="route.path !== '/desktop-lyrics'" class="normal-layout-wrapper">
       <!-- 更新提示条 -->
       <div v-if="updateInfo.available" class="update-bar">

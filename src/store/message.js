@@ -22,6 +22,18 @@ export const useMessageStore = defineStore('message', () => {
         messages.value = []
     }
 
+    // 确认弹窗
+    const confirmState = ref({ show: false, title: '', message: '', resolve: null })
+    const confirm = (message, title = '确认操作') => {
+        return new Promise((resolve) => {
+            confirmState.value = { show: true, title, message, resolve }
+        })
+    }
+    const closeConfirm = (result) => {
+        if (confirmState.value.resolve) confirmState.value.resolve(result)
+        confirmState.value = { show: false, title: '', message: '', resolve: null }
+    }
+
     return {
         messages,
         show,
@@ -29,6 +41,9 @@ export const useMessageStore = defineStore('message', () => {
         error,
         info,
         warning,
-        clearAll
+        clearAll,
+        confirmState,
+        confirm,
+        closeConfirm
     }
 })

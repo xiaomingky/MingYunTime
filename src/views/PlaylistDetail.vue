@@ -164,7 +164,7 @@ const handleUpdatePlaylist = async () => {
 }
 
 const handleDeletePlaylist = async () => {
-    if (!confirm('确定要删除这个歌单吗？')) return
+    if (!await messageStore.confirm('确定要删除这个歌单吗？', '删除歌单')) return
     const success = await userStore.deletePlaylist(playlist.value.id)
     if (success) {
         messageStore.success('歌单已删除')
