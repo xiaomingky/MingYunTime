@@ -8,61 +8,42 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 
 ---
 
-## 📸 Screenshots / 截图
-
-| | |
-|:---:|:---:|
-| ![主页](showimage/主页.png) | ![歌单](showimage/歌单.png) |
-| **主页 / Home** | **歌单 / Playlist** |
-| ![歌曲详情页](showimage/歌曲详情页.png) | ![本地歌曲](showimage/本地歌曲.png) |
-| **歌曲详情 / Song Detail** | **本地歌曲 / Local Music** |
-| ![搜索](showimage/搜索.png) | ![最近播放](showimage/最近播放.png) |
-| **搜索 / Search** | **最近播放 / Recent Play** |
-| ![登录](showimage/登录.png) | ![MV](showimage/MV.png) |
-| **登录 / Login** | **MV 播放 / MV Player** |
-
----
-
 ## ✨ Features / 功能
 
 ### 🏠 Discovery / 发现音乐
+
+![主页](showimage/主页.png)
+
 - Personalized recommendations, banners, playlists, new songs, rankings, and top artists
 - 个性推荐、轮播图、歌单、最新音乐、排行榜、热门歌手
 
 ### 🔍 Search / 搜索
+
+![搜索](showimage/搜索.png)
+
 - Search songs, artists, albums, videos, and playlists
 - 搜索歌曲、歌手、专辑、视频、歌单
 
+### 🎧 Song Detail / 歌曲详情
+
+![歌曲详情页](showimage/歌曲详情页.png)
+
+- Full-screen overlay with synchronized lyrics, cover art, and visualizer
+- Like, add to playlist, download, share, comment
+- 全屏歌词覆盖层，封面展示、频谱可视化、收藏/添加到歌单/下载/分享/评论
+
 ### 📋 Playlists / 歌单管理
+
+![歌单](showimage/歌单.png)
+
 - Create, delete, edit, and subscribe to playlists
 - Add/remove tracks, upload custom cover images
 - 创建、删除、编辑、收藏歌单，添加/移除歌曲，上传自定义封面
 
-### 🎧 Player / 播放器
-- Play, pause, prev/next, shuffle, repeat modes
-- Progress bar with drag, volume control with drag
-- Quality selection: Standard / Higher / Exhigh / Lossless
-- Audio device selection
-- 播放/暂停、上下曲、随机/循环模式、可拖拽进度条和音量、音质选择、音频设备切换
-
-### 🎚️ Equalizer / 均衡器
-- 8 built-in presets: Default, Pop, Classical, Rock, Electronic, Vocal, Jazz, Bass
-- 10-band graphic EQ with adjustable gain (-12dB ~ +12dB)
-- 8种预设：默认/流行/古典/摇滚/电子/人声/爵士/低音，10段可调
-
-### 🎤 Desktop Lyrics / 桌面歌词
-- Floating transparent lyrics window, always on top
-- **Lock mode**: click-through to apps underneath + independent unlock button
-- Customizable font, color, and size
-- 悬浮透明歌词窗口，可锁定（鼠标穿透+独立解锁按钮），字体/颜色/字号可调
-
-### 📝 English Lyrics Analysis / 英文歌词解析
-- AI-powered grammar analysis using DeepSeek API
-- Word-by-word parsing, tense, voice, sentence structure, vocabulary with word forms
-- Results cached locally for offline use
-- 基于 DeepSeek API 的 AI 语法解析，逐词成分标注、时态语态句型、词汇变形详解，支持本地缓存
-
 ### 💻 Local Music / 本地音乐
+
+![本地歌曲](showimage/本地歌曲.png)
+
 - Import individual files or entire folders (MP3, FLAC, WAV, OGG, M4A)
 - **Auto-fetch cover art** from online matching
 - **Auto-fetch lyrics** (.lrc) from online matching
@@ -70,21 +51,56 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 - GIF/static cover toggle
 - 导入文件/文件夹，自动匹配在线封面和歌词，元数据编辑，GIF/静态封面切换
 
+### 🔄 Recent Play / 最近播放
+
+![最近播放](showimage/最近播放.png)
+
+- Track listening history with quick play support
+- 播放历史记录，支持快速播放
+
+### 🎤 Desktop Lyrics / 桌面歌词
+
+- Floating transparent lyrics window, always on top
+- **Lock mode**: click-through to apps underneath + independent unlock button
+- Customizable font, color, and size
+- 悬浮透明歌词窗口，可锁定（鼠标穿透+独立解锁按钮），字体/颜色/字号可调
+
+### 🎚️ Equalizer / 均衡器
+
+- 8 built-in presets: Default, Pop, Classical, Rock, Electronic, Vocal, Jazz, Bass
+- 10-band graphic EQ with adjustable gain (-12dB ~ +12dB)
+- 8种预设：默认/流行/古典/摇滚/电子/人声/爵士/低音，10段可调
+
+### 📝 English Lyrics Analysis / 英文歌词解析
+
+- AI-powered grammar analysis using DeepSeek API
+- Word-by-word parsing, tense, voice, sentence structure, vocabulary with word forms
+- Results cached locally for offline use
+- 基于 DeepSeek API 的 AI 语法解析，逐词成分标注、时态语态句型、词汇变形详解，支持本地缓存
+
 ### 🎬 Video & MV / 视频
+
+![MV](showimage/MV.png)
+
 - Online video browsing, local video management
 - MV player with local MV matching
 - 在线视频浏览、本地视频管理、MV 播放
 
 ### 🔐 Login / 登录
+
+![登录](showimage/登录.png)
+
 - Phone, email, and QR code login
 - User profile, playlists sync
 - 手机号、邮箱、二维码登录
 
 ### 🖥️ System Tray / 系统托盘
+
 - Minimize to tray, tray controls (prev/play/next), quick exit
 - 托盘最小化、托盘控制（上下曲/播放暂停）、快速退出
 
 ### 🎨 UI / 界面
+
 - Clean modern design, responsive sidebar, smooth transitions
 - Custom scrollbar, glassmorphism effects
 - 简洁现代设计、响应式侧边栏、流畅动画、毛玻璃效果
