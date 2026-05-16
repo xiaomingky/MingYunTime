@@ -21,24 +21,18 @@ const fetchDetail = async () => {
     const id = route.params.id
     if (!id) return
     loading.value = true
-    playlist.value = null
-    tracks.value = []
 
     try {
-        // 加 timestamp 破缓存，确保每次都拿到最新数据
         const res = await request.get('/playlist/detail', { params: { id, timestamp: Date.now() } })
         if (res && res.playlist) {
             playlist.value = res.playlist
-
             if (res.playlist.tracks && res.playlist.tracks.length > 0) {
                 tracks.value = res.playlist.tracks
             } else {
                 const trackRes = await request.get('/playlist/track/all', {
                     params: { id, limit: 1000, timestamp: Date.now() }
                 })
-                if (trackRes && trackRes.songs) {
-                    tracks.value = trackRes.songs
-                }
+                if (trackRes && trackRes.songs) tracks.value = trackRes.songs
             }
         } else {
             console.error('--- [Detail] API returned no playlist object:', res)
@@ -219,8 +213,9 @@ const handleCoverChange = async (e) => {
 
 <template>
   <div class="playlist-detail">
-    <div v-if="loading" class="loading">加载中...</div>
-    <div v-else-if="playlist">
+    <div v-if="loading && !playlist" class="loading">加载中...</div>
+    <div v-show="playlist">
+        <div v-if="loading" class="refresh-bar">刷新中...</div>
         <div class="detail-header">
             <div class="cover-wrapper" :class="{ owner: isOwner }" @click="isOwner && triggerCoverUpload()">
                 <img :src="playlist.coverImgUrl" class="cover-img" />
@@ -393,6 +388,14 @@ const handleCoverChange = async (e) => {
     text-align: center;
     padding: 100px;
     color: #999;
+}
+.refresh-bar {
+    text-align: center;
+    padding: 6px;
+    background: rgba(236,65,65,0.08);
+    color: var(--primary-color);
+    font-size: 12px;
+    font-weight: 500;
 }
 
 .detail-header {
