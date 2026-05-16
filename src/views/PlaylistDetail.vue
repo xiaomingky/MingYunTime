@@ -86,22 +86,29 @@ const toggleLike = async (track) => {
     }
 }
 
-const removingTrack = ref(null)
-const removeTrack = async (track) => {
-    if (!playlist.value || !isOwner.value) return
-    if (removingTrack.value === track.id) return
-    removingTrack.value = track.id
-    try {
-        const res = await playlistTracks('del', playlist.value.id, track.id)
-        if (res.code === 200) {
-            tracks.value = tracks.value.filter(t => t.id !== track.id)
-            playlist.value.trackCount--
-            messageStore.success('已从歌单移除')
-        } else {
-            messageStore.error('移除失败')
-        }
-    } catch (e) { messageStore.error('移除出错') }
-    finally { removingTrack.value = null }
+const selectMode = ref(false)
+const selectedIds = ref([])
+const toggleSelect = (track) => {
+    const idx = selectedIds.value.indexOf(track.id)
+    if (idx === -1) selectedIds.value.push(track.id)
+    else selectedIds.value.splice(idx, 1)
+}
+const batchRemoveTracks = async () => {
+    if (!selectedIds.value.length || !playlist.value) return
+    if (!await messageStore.confirm(`确定要移除选中的 ${selectedIds.value.length} 首歌曲吗？`, '移除歌曲')) return
+    const pid = playlist.value.id
+    let done = 0
+    for (const tid of selectedIds.value) {
+        try {
+            const res = await playlistTracks('del', pid, tid)
+            if (res.code === 200) done++
+        } catch (e) {}
+    }
+    tracks.value = tracks.value.filter(t => !selectedIds.value.includes(t.id))
+    if (playlist.value) playlist.value.trackCount = tracks.value.length
+    messageStore.success(`已移除 ${done} 首`)
+    selectedIds.value = []
+    selectMode.value = false
 }
 
 const activeTab = ref('tracks')
@@ -248,11 +255,16 @@ const handleCoverChange = async (e) => {
                     <Heart :size="16" :fill="isSubscribed ? '#EC4141' : 'none'" :color="isSubscribed ? '#EC4141' : 'currentColor'" /> 
                     {{ isSubscribed ? '已收藏' : '收藏' }}({{ (playlist.subscribedCount / 10000).toFixed(1) }}万)
                 </button>
+                <button class="action-btn" v-if="isOwner" @click="selectMode = !selectMode">
+                    <Trash2 :size="16" /> {{ selectMode ? '取消' : '移除歌曲' }}
+                </button>
+                <button v-if="selectMode && selectedIds.length > 0" class="play-all" style="background:#ff4d4f;" @click="batchRemoveTracks">
+                    <Trash2 :size="16" fill="white" /> 删除选中 ({{ selectedIds.length }})
+                </button>
                 <button class="action-btn" @click="handleDeletePlaylist" v-if="isOwner">
                     <Trash2 :size="16" /> 删除歌单
                 </button>
                 <button class="action-btn"><Share2 :size="16" /> 分享({{ playlist.shareCount }})</button>
-                <button class="action-btn"><Download :size="16" /> 下载全部</button>
                 </div>
                 <div class="tags" v-if="playlist.tags && playlist.tags.length">
                 标签：<span v-for="tag in playlist.tags" :key="tag" class="tag-item">{{ tag }}</span>
@@ -291,16 +303,15 @@ const handleCoverChange = async (e) => {
                 <tr v-for="(track, index) in tracks" :key="track.id" @dblclick="playerStore.playSong(track, tracks)" class="track-row">
                     <td class="index-cell">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</td>
                     <td class="operation-cell">
-                        <Heart 
-                          :size="14" 
-                          class="icon clickable" 
+                        <input v-if="selectMode" type="checkbox" :checked="selectedIds.includes(track.id)" @click.stop="toggleSelect(track)" class="track-checkbox" />
+                        <Heart
+                          :size="14"
+                          class="icon clickable"
                           :class="{ 'text-red': playerStore.isLiked && playerStore.currentSong.id === track.id || userStore.isSongLiked(track.id) }"
                           :fill="(playerStore.isLiked && playerStore.currentSong.id === track.id || userStore.isSongLiked(track.id)) ? '#EC4141' : 'none'"
                           :color="(playerStore.isLiked && playerStore.currentSong.id === track.id || userStore.isSongLiked(track.id)) ? '#EC4141' : 'currentColor'"
                           @click.stop="toggleLike(track)"
-                        /> 
-                        <Download :size="14" class="icon" />
-                        <Trash2 v-if="isOwner" :size="14" class="icon clickable remove-icon" @click.stop="removeTrack(track)" title="从歌单移除" />
+                        />
                     </td>
                     <td class="title-cell" :title="track.name">
                         <div class="title-container">
@@ -590,6 +601,7 @@ const handleCoverChange = async (e) => {
     gap: 6px;
 }
 
+.track-checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary-color); }
 .vip-tag-mini {
     font-size: 10px;
     color: var(--primary-color);

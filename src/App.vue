@@ -267,7 +267,8 @@ const submitCreatePlaylist = async () => {
 }
 
 const goToPlaylist = (id) => {
-    navigateTo(`/playlist/${id}`)
+    // 强制刷新：即使同一歌单也重新加载
+    router.push({ path: `/playlist/${id}`, query: { _t: Date.now() } })
 }
 
 let drawerListRef = ref(null)
