@@ -43,6 +43,7 @@ export const usePlayerStore = defineStore('player', {
         localSongs: JSON.parse(localStorage.getItem('local_songs') || '[]'),
         quality: localStorage.getItem('music_quality') || 'standard',
         playbackRate: parseFloat(localStorage.getItem('playback_rate') || '1'),
+        autoFetchLyric: localStorage.getItem('auto_fetch_lyric') !== 'false',
         eqEnabled: false,
         eqPreset: 'default',
         eqBands: [
@@ -293,7 +294,7 @@ export const usePlayerStore = defineStore('player', {
                 })
 
                 // 获取歌词逻辑：本地检查 → 有则直接用 → 无则在线搜索
-                if (isLocal && song.path) {
+                if (isLocal && song.path && this.autoFetchLyric) {
                     const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
                     let hasLocalLyric = false
                     let hasLocalYrc = false
@@ -966,6 +967,10 @@ export const usePlayerStore = defineStore('player', {
             this.playbackRate = rate
             localStorage.setItem('playback_rate', rate)
             if (this.audio) this.audio.playbackRate = rate
+        },
+        toggleAutoFetchLyric() {
+            this.autoFetchLyric = !this.autoFetchLyric
+            localStorage.setItem('auto_fetch_lyric', this.autoFetchLyric)
         },
         toggleBgMode() {
             this.bgMode = this.bgMode === 'cover' ? 'classic' : 'cover'

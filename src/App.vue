@@ -724,6 +724,9 @@ const openGithub = () => {
             </div>
         </div>
         
+        <div class="quality-badge clickable" style="font-size:10px;padding:2px 8px;" :style="{ borderColor: playerStore.autoFetchLyric ? 'var(--primary-color)' : '#999', color: playerStore.autoFetchLyric ? 'var(--primary-color)' : '#999' }" @click="playerStore.toggleAutoFetchLyric()" title="自动获取歌词">
+            自动歌词
+        </div>
         <ListMusic :size="18" class="clickable hover-red" @click="playerStore.showPlaylist = !playerStore.showPlaylist" />
       </div>
     </footer>
