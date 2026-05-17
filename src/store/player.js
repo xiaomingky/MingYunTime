@@ -294,7 +294,7 @@ export const usePlayerStore = defineStore('player', {
                 })
 
                 // 获取歌词逻辑：本地检查 → 有则直接用 → 无则在线搜索
-                if (isLocal && song.path && this.autoFetchLyric) {
+                if (isLocal && song.path) {
                     const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
                     let hasLocalLyric = false
                     let hasLocalYrc = false
@@ -327,8 +327,8 @@ export const usePlayerStore = defineStore('player', {
                         }
                     }
 
-                    // 2. 本地有普通歌词但没有YRC → 在线搜索YRC
-                    if (hasLocalLyric && !hasLocalYrc) {
+                    // 2. 本地有普通歌词但没有YRC → 在线搜索YRC（需开启自动获取）
+                    if (hasLocalLyric && !hasLocalYrc && this.autoFetchLyric) {
                         try {
                             const cleanArtist = String(normalized.artist).replace(/本地音乐|未知歌手|Unknown Artist/g, '').trim()
                             const searchQuery = cleanArtist ? `${normalized.name} ${cleanArtist}` : normalized.name
@@ -364,8 +364,8 @@ export const usePlayerStore = defineStore('player', {
                         } catch (e) { /* 获取YRC失败不影响播放 */ }
                     }
 
-                    // 3. 本地完全没有歌词 → 在线搜索
-                    if (!hasLocalLyric) {
+                    // 3. 本地完全没有歌词 → 在线搜索（需开启自动获取）
+                    if (!hasLocalLyric && this.autoFetchLyric) {
                         try {
                             const cleanArtist = String(normalized.artist).replace(/本地音乐|未知歌手|Unknown Artist/g, '').trim()
                             const searchQuery = cleanArtist ? `${normalized.name} ${cleanArtist}` : normalized.name
