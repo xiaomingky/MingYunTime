@@ -992,44 +992,28 @@ export const usePlayerStore = defineStore('player', {
             const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
             if (!bridge || !bridge.send) return
 
-            const isYrcSong = !!(this.yrcLyrics && this.yrcLyrics.length > 0)
-            if (isYrcSong) {
-                bridge.send('update-lyric-state', {
-                    lyric: '当前为逐词歌曲',
-                    tlyric: '桌面歌词暂不支持逐词展示',
-                    prevLyric: '', nextLyric: '', nextTlyric: '',
-                    isPlaying: this.isPlaying,
-                    songName: this.currentSong.name || '',
-                    artist: this.currentSong.artist || '',
-                    picUrl: this.currentSong.al?.picUrl || '',
-                    font: this.desktopLyricFont,
-                    color: this.desktopLyricColor,
-                    words: null,
-                    currentMs: this.currentTime * 1000
-                })
-                return
-            }
-            const useLyrics = this.lyrics
+            const useLyrics = this.yrcLyrics || this.lyrics
             if (!useLyrics || useLyrics.length === 0) {
-                bridge.send('update-lyric-state', {
-                    lyric: '茗韵时光',
-                    tlyric: '',
-                    prevLyric: '',
-                    nextLyric: '',
-                    nextTlyric: '',
-                    isPlaying: this.isPlaying,
-                    songName: this.currentSong.name || '',
-                    artist: this.currentSong.artist || '',
-                    picUrl: this.currentSong.al?.picUrl || '',
-                    font: this.desktopLyricFont,
-                    color: this.desktopLyricColor,
-                    words: null,
-                    currentMs: this.currentTime * 1000
-                })
+                try {
+                    bridge.send('update-lyric-state', JSON.parse(JSON.stringify({
+                        lyric: '茗韵时光',
+                        tlyric: '',
+                        prevLyric: '',
+                        nextLyric: '',
+                        nextTlyric: '',
+                        isPlaying: this.isPlaying,
+                        songName: this.currentSong.name || '',
+                        artist: this.currentSong.artist || '',
+                        picUrl: this.currentSong.al?.picUrl || '',
+                        font: this.desktopLyricFont,
+                        color: this.desktopLyricColor,
+                        words: null,
+                        currentMs: this.currentTime * 1000
+                    })))
+                } catch (e) { console.error('[DL] IPC error:', e) }
                 return
             }
 
-            // 完美对齐 SongDetail 相同的歌词定位算法
             let idx = -1
             const time = this.currentTime + 0.2
             for (let i = 0; i < useLyrics.length; i++) {
@@ -1042,27 +1026,27 @@ export const usePlayerStore = defineStore('player', {
                 idx = useLyrics.length - 1
             }
 
-            // 如果处于前奏间奏（idx 为 -1），当前歌词显示为空（或前奏提示），下一句展示第一句歌词
             const currentLine = idx >= 0 ? useLyrics[idx] : null
             const nextLine = idx >= 0 ? (useLyrics[idx + 1] || null) : (useLyrics[0] || null)
             const prevLine = idx > 0 ? useLyrics[idx - 1] : null
 
-            bridge.send('update-lyric-state', {
-                lyric: currentLine ? currentLine.text : '',
-                tlyric: currentLine ? currentLine.ttext || '' : '',
-                prevLyric: prevLine ? prevLine.text : '',
-                nextLyric: nextLine ? nextLine.text : '',
-                nextTlyric: nextLine ? nextLine.ttext || '' : '',
-                isPlaying: this.isPlaying,
-                songName: this.currentSong.name || '',
-                artist: this.currentSong.artist || '',
-                picUrl: this.currentSong.al?.picUrl || '',
-                font: this.desktopLyricFont,
-                color: this.desktopLyricColor,
-                // 逐词精准字段与毫秒基准
-                words: currentLine?.words || null,
-                currentMs: this.currentTime * 1000
-            })
+            try {
+                bridge.send('update-lyric-state', JSON.parse(JSON.stringify({
+                    lyric: currentLine ? currentLine.text : '',
+                    tlyric: currentLine ? currentLine.ttext || '' : '',
+                    prevLyric: prevLine ? prevLine.text : '',
+                    nextLyric: nextLine ? nextLine.text : '',
+                    nextTlyric: nextLine ? nextLine.ttext || '' : '',
+                    isPlaying: this.isPlaying,
+                    songName: this.currentSong.name || '',
+                    artist: this.currentSong.artist || '',
+                    picUrl: this.currentSong.al?.picUrl || '',
+                    font: this.desktopLyricFont,
+                    color: this.desktopLyricColor,
+                    words: currentLine?.words || null,
+                    currentMs: this.currentTime * 1000
+                })))
+            } catch (e) { console.error('[DL] IPC error:', e) }
         },
         setFont(font) {
             this.desktopLyricFont = font

@@ -17,9 +17,19 @@ const isLocked = ref(false)
 
 // 逐词歌词高频动画插值所用的状态
 const currentWords = ref(null)
-const localCurrentMs = ref(0)
+const currentMs = ref(0)
 let lastFrameTime = performance.now()
 let animFrameId = null
+
+// Marquee 滚动状态（JS驱动）
+let marqueeState = { active: false, amount: 0, duration: 0, startTime: 0 }
+let lastLyricKey = ''
+let marqueeCheckTimer = null
+let needMarqueeCheck = false
+
+// 歌词切换动画状态
+const lyricTransition = ref(false)
+const lyricKeyCounter = ref(0)
 
 const getBridge = () => {
   return window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer || window.electron
@@ -50,99 +60,149 @@ const registerFonts = async () => {
     }
 }
 
-// 60fps 逐字插值高亮动画循环（完美对齐 SongDetail 核心逻辑）
+// 60fps 主循环：逐字高亮 + marquee滚动
 const updateYrcProgress = () => {
+    const now = performance.now()
+    const delta = now - lastFrameTime
+    lastFrameTime = now
+    
     if (isPlaying.value && currentWords.value && currentWords.value.length > 0) {
-        const now = performance.now()
-        const delta = now - lastFrameTime
-        lastFrameTime = now
+        currentMs.value += delta
         
-        // 增量推进本地高精时间
-        localCurrentMs.value += delta
-        
-        // 渲染 DOM 渐变高亮
         const wordSpans = document.querySelectorAll('.yrc-word')
         wordSpans.forEach(el => {
             const ws = parseFloat(el.dataset.ws)
             const wd = parseFloat(el.dataset.wd)
             if (!isNaN(ws) && !isNaN(wd)) {
                 let progress = 0
-                if (localCurrentMs.value >= ws + wd) {
+                if (currentMs.value >= ws + wd) {
                     progress = 1
-                } else if (localCurrentMs.value > ws && wd > 0) {
-                    progress = (localCurrentMs.value - ws) / wd
+                } else if (currentMs.value > ws && wd > 0) {
+                    progress = (currentMs.value - ws) / wd
                 }
                 el.style.setProperty('--wp', progress)
             }
         })
     } else {
-        lastFrameTime = performance.now()
+        lastFrameTime = now
     }
+    
+    // JS驱动的marquee滚动（与逐词进度同步）
+    if (marqueeState.active && marqueeWrapRef.value) {
+        const wrap = marqueeWrapRef.value
+        const elapsed = (now - marqueeState.startTime) % (marqueeState.duration * 1000)
+        const phase = elapsed / (marqueeState.duration * 1000)
+        
+        let t = 0
+        if (phase > 0.12 && phase < 0.88) {
+            t = (phase - 0.12) / 0.76
+            t = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
+        } else if (phase >= 0.88) {
+            t = 1
+        }
+        
+        wrap.style.transform = `translateX(${t * marqueeState.amount}px)`
+    }
+    
     animFrameId = requestAnimationFrame(updateYrcProgress)
 }
 
 const handleStateChange = (_, data) => {
+    if (!data) return
+    
+    const lyricChanged = data.lyric !== currentLyric.value || 
+        (data.words && JSON.stringify(data.words) !== JSON.stringify(currentWords.value))
+    
     prevLyric.value = data.prevLyric || ''
-    if (data.songName) {
-        currentLyric.value = (data.lyric !== undefined && data.lyric !== null) ? data.lyric : ''
-    } else {
-        currentLyric.value = data.lyric || '茗韵时光'
-    }
+    currentLyric.value = data.lyric !== undefined && data.lyric !== null ? data.lyric : (data.songName ? '' : '茗韵时光')
     currentTlyric.value = data.tlyric || ''
     nextLyric.value = data.nextLyric || ''
     nextTlyric.value = data.nextTlyric || ''
-    isPlaying.value = data.isPlaying
+    isPlaying.value = !!data.isPlaying
     songName.value = data.songName || ''
     artist.value = data.artist || ''
     picUrl.value = data.picUrl || ''
     currentFont.value = data.font || ''
-    
-    // 如果没有自定义配色，使用网易云标志红作为缺省高亮色
     currentColor.value = data.color && data.color !== '#00E5FF' ? data.color : '#ec4141'
     
-    // 识别并同步逐词歌词数据与基准时间戳
-    if (data.words && data.words.length > 0) {
+    if (data.words && Array.isArray(data.words) && data.words.length > 0) {
         currentWords.value = data.words
-        localCurrentMs.value = data.currentMs || 0
+        currentMs.value = data.currentMs || 0
         lastFrameTime = performance.now()
     } else {
         currentWords.value = null
     }
+    
+    // 歌词变化时触发切换动画 + 标记需要重新检测滚动
+    if (lyricChanged) {
+        lyricKeyCounter.value++
+        needMarqueeCheck = true
+        lastLyricKey = ''
+        setTimeout(() => {
+            lyricTransition.value = true
+        }, 20)
+    }
 }
 
 const currentLyricRef = ref(null)
+const marqueeWrapRef = ref(null)
 
 const checkMarquee = () => {
-    const el = currentLyricRef.value
-    if (!el) return
+    if (marqueeCheckTimer) clearTimeout(marqueeCheckTimer)
     
-    // 清除已有的滚动样式
-    el.style.removeProperty('--scroll-amount')
-    el.style.removeProperty('--scroll-duration')
-    el.classList.remove('marquee-active')
-    
-    nextTick(() => {
-        const container = el.parentElement
-        if (!container) return
+    marqueeCheckTimer = setTimeout(() => {
+        needMarqueeCheck = false
+        const wrap = marqueeWrapRef.value
+        if (!wrap) return
         
-        const containerWidth = container.clientWidth
-        const contentWidth = el.scrollWidth
+        const lyricKey = currentWords.value 
+            ? currentWords.value.map(w => w.text).join('') 
+            : currentLyric.value
         
-        if (contentWidth > containerWidth) {
-            const scrollAmount = containerWidth - contentWidth - 30
-            el.style.setProperty('--scroll-amount', `${scrollAmount}px`)
+        if (lyricKey === lastLyricKey) return
+        lastLyricKey = lyricKey
+        
+        const contentWidth = wrap.scrollWidth
+        const containerWidth = wrap.parentElement ? wrap.parentElement.clientWidth : 700
+        
+        if (contentWidth > containerWidth + 5 && contentWidth > 50) {
+            const scrollAmount = -(contentWidth - containerWidth + 16)
+            const duration = Math.max(5, Math.min(14, Math.abs(scrollAmount) / 22))
             
-            // 匀速滚动时间计算（约每秒移动35像素）
-            const duration = Math.max(6, Math.min(25, Math.abs(scrollAmount) / 35))
-            el.style.setProperty('--scroll-duration', `${duration}s`)
-            el.classList.add('marquee-active')
+            marqueeState.active = true
+            marqueeState.amount = scrollAmount
+            marqueeState.duration = duration
+            marqueeState.startTime = performance.now()
+        } else {
+            marqueeState.active = false
+            wrap.style.transform = ''
         }
-    })
+    }, 200)
 }
 
 watch([currentLyric, currentWords], () => {
-    setTimeout(checkMarquee, 150)
+    if (needMarqueeCheck) {
+        checkMarquee()
+    }
 }, { deep: true, flush: 'post' })
+
+// 鼠标追踪：精确检测是否在可交互区域上 → 控制穿透
+let ignoreMouseTimer = null
+const onMouseMove = (e) => {
+    if (ignoreMouseTimer) return
+    ignoreMouseTimer = requestAnimationFrame(() => {
+        ignoreMouseTimer = null
+        const el = document.elementFromPoint(e.clientX, e.clientY)
+        let interactive = false
+        if (isLocked.value) {
+            interactive = !!el?.closest('.floating-actions')
+        } else {
+            interactive = !!el?.closest('.widget-card, .floating-actions')
+        }
+        const b = getBridge()
+        if (b?.send) b.send('lyric-card-hover', interactive)
+    })
+}
 
 onMounted(() => {
     registerFonts()
@@ -153,18 +213,27 @@ onMounted(() => {
             isLocked.value = locked
         })
     }
-    // 主动向主进程拉取最新播放歌词状态，避免热重载或冷启动时的任何空白与未同步残留
     if (b && b.send) {
         b.send('request-lyric-state')
     }
+    // 全局 mousemove 追踪穿透状态
+    document.addEventListener('mousemove', onMouseMove)
     // 开启高亮插值轮询
     lastFrameTime = performance.now()
     animFrameId = requestAnimationFrame(updateYrcProgress)
+    
+    // 首次加载触发淡入动画 + 滚动检测
+    setTimeout(() => {
+        lyricTransition.value = true
+        needMarqueeCheck = true
+        checkMarquee()
+    }, 400)
 })
 
 onUnmounted(() => {
     if (removeListener) removeListener()
     if (animFrameId) cancelAnimationFrame(animFrameId)
+    document.removeEventListener('mousemove', onMouseMove)
 })
 
 const sendCommand = (cmd) => {
@@ -193,7 +262,7 @@ const close = () => {
 <template>
   <div class="desktop-lyric-container" :class="{ locked: isLocked }">
     <div class="widget-card" :class="{ 'card-locked': isLocked }">
-      <!-- 拖拽底层限缩在卡片物理内部，当未锁定时，卡片内空白处可拖动，框外不响应拖拽 -->
+      <!-- 拖拽层：未锁定时可拖动整个卡片区域 -->
       <div class="drag-overlay" :class="{ 'no-drag': isLocked }"></div>
       
       <!-- 左侧：封面与控制器 -->
@@ -205,7 +274,6 @@ const close = () => {
           </div>
         </div>
         
-        <!-- 封面下方的播放控制器 -->
         <div class="compact-controls">
           <button class="icon-btn" @click="sendCommand('prev')" title="上一首">
             <SkipBack :size="14" fill="currentColor" />
@@ -222,65 +290,58 @@ const close = () => {
 
       <!-- 右侧：歌曲信息与歌词 -->
       <div class="right-panel">
-        <!-- 顶部歌曲元数据 -->
         <div class="song-header">
           <span class="song-title" :title="songName">{{ songName || '茗韵时光' }}</span>
           <span class="song-artist" :title="artist">{{ artist || '享受音乐' }}</span>
         </div>
 
-        <!-- 歌词展示区域 -->
         <div class="lyric-content-area" :style="{ fontFamily: currentFont ? `'${currentFont}', sans-serif` : '' }">
-          <!-- 当前句 -->
-          <div class="lyric-line-current">
-            <!-- 逐词歌词模式 -->
-            <div 
-              v-if="currentWords && currentWords.length > 0" 
-              ref="currentLyricRef"
-              class="lyric-text-current yrc-text" 
-              :style="{ color: currentColor }"
-            >
+          <div class="lyric-line-current" :class="{ 'lyric-fade-in': lyricTransition }" :key="lyricKeyCounter">
+            <div class="marquee-scroll-wrap" ref="marqueeWrapRef">
+              <div 
+                v-if="currentWords && currentWords.length > 0" 
+                ref="currentLyricRef"
+                class="lyric-text-current yrc-text" 
+                :style="{ color: currentColor }"
+              >
+                <span 
+                    v-for="(word, wi) in currentWords" 
+                    :key="wi"
+                    class="yrc-word"
+                    :data-ws="word.startTime"
+                    :data-wd="word.duration"
+                    style="--wp: 0"
+                >{{ word.text }}</span>
+              </div>
               <span 
-                  v-for="(word, wi) in currentWords" 
-                  :key="wi"
-                  class="yrc-word"
-                  :data-ws="word.startTime"
-                  :data-wd="word.duration"
-                  style="--wp: 0"
-              >{{ word.text }}</span>
+                v-else 
+                ref="currentLyricRef"
+                class="lyric-text-current" 
+                :style="{ color: currentColor }"
+              >{{ currentLyric }}</span>
             </div>
-            <!-- 普通歌词模式 -->
-            <span 
-              v-else 
-              ref="currentLyricRef"
-              class="lyric-text-current" 
-              :style="{ color: currentColor }"
-            >{{ currentLyric }}</span>
             
             <span v-if="currentTlyric" class="lyric-trans-current" :style="{ color: currentColor }">{{ currentTlyric }}</span>
           </div>
-          <!-- 下一句 -->
           <div class="lyric-line-next" v-if="nextLyric">
             <span class="lyric-text-next">{{ nextLyric }}</span>
           </div>
         </div>
       </div>
 
-      <!-- 右上角悬浮控制按钮（仅在未锁定时且鼠标悬停时显示） -->
-      <div class="floating-actions no-drag" v-if="!isLocked">
-        <button class="action-btn-mini lock-btn" @click="toggleLock" title="锁定桌面歌词（锁定后鼠标可穿透）">
-          <Lock :size="13" />
+      <!-- 右上角控制按钮：始终可见，锁定/解锁在同一位置 -->
+      <div class="floating-actions no-drag always-clickable">
+        <template v-if="!isLocked">
+          <button class="action-btn-mini lock-btn" @click="toggleLock" title="锁定桌面歌词">
+            <Lock :size="13" />
+          </button>
+          <button class="action-btn-mini close-btn" @click="close" title="关闭">
+            <X :size="13" />
+          </button>
+        </template>
+        <button v-else class="action-btn-mini unlock-btn-inline" @click="toggleLock" title="点击解锁">
+          <Unlock :size="13" />
         </button>
-        <button class="action-btn-mini close-btn" @click="close" title="关闭">
-          <X :size="13" />
-        </button>
-      </div>
-    </div>
-
-    <!-- 锁定时的底部半透明悬浮解锁按钮 -->
-    <div class="unlock-area" v-if="isLocked">
-      <div class="unlock-btn no-drag" @click.stop="toggleLock" title="点击解锁">
-        <Unlock :size="12" />
-        <span>解锁</span>
       </div>
     </div>
   </div>
@@ -303,12 +364,7 @@ const close = () => {
   justify-content: center;
 }
 
-/* 锁定状态下，整体容器不可交互，允许鼠标穿透 */
-.desktop-lyric-container.locked {
-  pointer-events: none;
-}
-
-/* 拖拽底层覆盖整个窗口 */
+/* 拖拽底层 - 仅未锁定时生效 */
 .drag-overlay {
   position: absolute;
   top: 0;
@@ -328,7 +384,6 @@ const close = () => {
   -webkit-app-region: no-drag;
 }
 
-/* 网易云经典红白配色长方形小卡片 */
 .widget-card {
   position: relative;
   z-index: 10;
@@ -336,7 +391,7 @@ const close = () => {
   height: 176px;
   display: flex;
   align-items: center;
-  background: #ffffff; /* 未锁定状态下纯白背景 */
+  background: #ffffff;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 24px;
   padding: 18px 24px;
@@ -348,16 +403,17 @@ const close = () => {
   overflow: hidden;
 }
 
-/* 锁定状态：毛玻璃半透明风格，优雅融入桌面壁纸，增加阴影立体感与文字描边 */
 .widget-card.card-locked {
-  background: rgba(255, 255, 255, 0.22) !important;
-  backdrop-filter: blur(14px) saturate(140%) !important;
-  -webkit-backdrop-filter: blur(14px) saturate(140%) !important;
-  border-color: rgba(255, 255, 255, 0.15) !important;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15) !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+  backdrop-filter: blur(24px) saturate(200%) brightness(1.02) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(200%) brightness(1.02) !important;
+  border-color: rgba(236, 65, 65, 0.12) !important;
+  box-shadow: 
+    0 8px 32px rgba(0, 0, 0, 0.12),
+    0 2px 8px rgba(236, 65, 65, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
 }
 
-/* 左侧：封面与控制器 */
 .left-panel {
   width: 110px;
   display: flex;
@@ -369,7 +425,6 @@ const close = () => {
   z-index: 2;
 }
 
-/* 封面封套 */
 .cover-wrapper {
   position: relative;
   width: 90px;
@@ -404,7 +459,7 @@ const close = () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #ec4141; /* 网易红 fallback */
+  color: #ec4141;
   background: linear-gradient(135deg, #fff 0%, #f5f5f5 100%);
 }
 
@@ -417,7 +472,6 @@ const close = () => {
   50% { transform: scale(1.08); opacity: 0.8; }
 }
 
-/* 紧凑控制器布局（网易云经典红配色） */
 .compact-controls {
   display: flex;
   align-items: center;
@@ -428,7 +482,7 @@ const close = () => {
 .icon-btn {
   background: transparent;
   border: none;
-  color: #555555; /* 深灰 */
+  color: #555555;
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -439,14 +493,14 @@ const close = () => {
 }
 
 .icon-btn:hover {
-  color: #ec4141; /* 网易红 */
+  color: #ec4141;
   transform: scale(1.15);
 }
 
 .play-btn-circle {
   width: 26px;
   height: 26px;
-  background: #ec4141; /* 经典网易红 */
+  background: #ec4141;
   border: none;
   border-radius: 50%;
   color: #ffffff;
@@ -464,7 +518,6 @@ const close = () => {
   box-shadow: 0 4px 12px rgba(236, 65, 65, 0.4);
 }
 
-/* 右侧：歌曲信息与歌词 */
 .right-panel {
   flex: 1;
   display: flex;
@@ -476,7 +529,6 @@ const close = () => {
   padding: 4px 0;
 }
 
-/* 顶部歌曲元数据 */
 .song-header {
   display: flex;
   align-items: baseline;
@@ -487,7 +539,7 @@ const close = () => {
 }
 
 .card-locked .song-header {
-  border-bottom-color: rgba(255, 255, 255, 0.15);
+  border-bottom-color: rgba(236, 65, 65, 0.08);
 }
 
 .song-title {
@@ -502,8 +554,8 @@ const close = () => {
 }
 
 .card-locked .song-title {
-  color: #ffffff;
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  color: #1a1a1a;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .song-artist {
@@ -516,11 +568,10 @@ const close = () => {
 }
 
 .card-locked .song-artist {
-  color: rgba(255, 255, 255, 0.7);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  color: #777777;
+  text-shadow: none;
 }
 
-/* 歌词展示区域 */
 .lyric-content-area {
   flex: 1;
   display: flex;
@@ -531,7 +582,6 @@ const close = () => {
   margin-top: 6px;
 }
 
-/* 当前句样式 */
 .lyric-line-current {
   display: flex;
   flex-direction: column;
@@ -541,6 +591,29 @@ const close = () => {
   overflow: hidden;
 }
 
+/* 歌词切换动画：淡入 + 微上滑 */
+.lyric-line-current.lyric-fade-in {
+  animation: lyric-slide-in 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+@keyframes lyric-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 独立滚动容器：与歌词内容分离，避免transform冲突 */
+.marquee-scroll-wrap {
+  display: inline-block;
+  max-width: 100%;
+  overflow: visible;
+}
+
 .lyric-text-current {
   font-size: 26px;
   font-weight: 800;
@@ -548,29 +621,15 @@ const close = () => {
   white-space: nowrap;
   display: inline-block;
   width: max-content;
-  max-width: 100%;
+  max-width: none;
   transition: color 0.3s ease;
   color: #111111;
   text-shadow: 0 1px 2px rgba(0,0,0,0.05);
 }
 
 .card-locked .lyric-text-current {
-  color: #ffffff;
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
-}
-
-.marquee-active {
-  max-width: none !important;
-  animation: marquee-scroll var(--scroll-duration, 10s) linear infinite alternate;
-}
-
-@keyframes marquee-scroll {
-  0%, 15% {
-    transform: translateX(0);
-  }
-  85%, 100% {
-    transform: translateX(var(--scroll-amount));
-  }
+  color: #ec4141;
+  text-shadow: 0 1px 3px rgba(236, 65, 65, 0.15);
 }
 
 .lyric-trans-current {
@@ -586,11 +645,10 @@ const close = () => {
 }
 
 .card-locked .lyric-trans-current {
-  color: rgba(255, 255, 255, 0.9);
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  color: #999999;
+  text-shadow: none;
 }
 
-/* 逐词歌词渐变渲染系统 */
 .yrc-text {
   display: inline-block !important;
   white-space: nowrap !important;
@@ -599,25 +657,20 @@ const close = () => {
 .yrc-word {
   display: inline-block;
   white-space: pre;
-  /* 未唱到时的底色：偏灰黑 */
   background: linear-gradient(to right, currentColor calc(var(--wp, 0) * 100%), rgba(0, 0, 0, 0.32) calc(var(--wp, 0) * 100%));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  will-change: background;
   transition: background 0.05s linear;
 }
 
-/* 锁定状态下的逐词歌词底色 */
 .card-locked .yrc-word {
-  /* 未唱到时的底色：淡白色 */
-  background: linear-gradient(to right, currentColor calc(var(--wp, 0) * 100%), rgba(255, 255, 255, 0.36) calc(var(--wp, 0) * 100%));
+  background: linear-gradient(to right, #ec4141 calc(var(--wp, 0) * 100%), #cccccc calc(var(--wp, 0) * 100%));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
-/* 下一句样式 */
 .lyric-line-next {
   min-width: 0;
   margin-top: 2px;
@@ -635,11 +688,11 @@ const close = () => {
 }
 
 .card-locked .lyric-text-next {
-  color: rgba(255, 255, 255, 0.5);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  color: #aaaaaa;
+  text-shadow: none;
 }
 
-/* 右上角悬浮控制 */
+/* 右上角控制按钮 - 始终可见 */
 .floating-actions {
   position: absolute;
   top: 14px;
@@ -647,15 +700,12 @@ const close = () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  opacity: 0;
-  transform: translateY(-5px);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   z-index: 100;
 }
 
-.widget-card:hover .floating-actions {
-  opacity: 1;
-  transform: translateY(0);
+/* 关键：锁定状态下此区域仍可点击 */
+.always-clickable {
+  pointer-events: auto !important;
 }
 
 .action-btn-mini {
@@ -673,9 +723,9 @@ const close = () => {
 }
 
 .card-locked .action-btn-mini {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.05);
-  color: rgba(255, 255, 255, 0.7);
+  background: rgba(236, 65, 65, 0.08);
+  border-color: rgba(236, 65, 65, 0.12);
+  color: #ec4141;
 }
 
 .action-btn-mini:hover {
@@ -685,8 +735,8 @@ const close = () => {
 }
 
 .card-locked .action-btn-mini:hover {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: rgba(236, 65, 65, 0.18);
+  color: #d32f2f;
 }
 
 .lock-btn:hover {
@@ -701,39 +751,9 @@ const close = () => {
   border-color: rgba(255, 77, 77, 0.15) !important;
 }
 
-/* 解锁悬浮按钮 */
-.unlock-area {
-  position: absolute;
-  bottom: 12px;
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  pointer-events: none;
-  z-index: 200;
-}
-
-.unlock-btn {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  padding: 5px 15px;
-  border-radius: 16px;
-  color: #333333;
-  font-size: 11px;
-  cursor: pointer;
-  pointer-events: auto;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-  transition: all 0.2s ease;
-}
-
-.unlock-btn:hover {
-  background: #ec4141;
-  color: #fff;
-  border-color: #ec4141;
-  transform: translateY(-1px);
+.unlock-btn-inline:hover {
+  color: #ec4141 !important;
+  background: rgba(236, 65, 65, 0.15) !important;
+  border-color: rgba(236, 65, 65, 0.2) !important;
 }
 </style>
