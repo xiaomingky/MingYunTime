@@ -279,6 +279,12 @@ const saveMetadata = async () => {
       <div class="header-left">
         <h1 class="title">本地音乐</h1>
         <span class="count">共 {{ playerStore.localSongs.length }} 首</span>
+        <div class="auto-lyric-toggle" @click="playerStore.toggleAutoFetchLyric()" :title="playerStore.autoFetchLyric ? '自动获取歌词已开启' : '自动获取歌词已关闭'">
+          <span class="toggle-label">自动获取</span>
+          <div class="toggle-switch" :class="{ active: playerStore.autoFetchLyric }">
+            <div class="toggle-knob"></div>
+          </div>
+        </div>
       </div>
       <div class="actions">
         <button class="play-all-btn" @click="playerStore.playSong(playerStore.localSongs[0], playerStore.localSongs)">
@@ -448,6 +454,43 @@ const saveMetadata = async () => {
 .count {
     color: #999;
     font-size: 14px;
+}
+.auto-lyric-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 20px;
+    cursor: pointer;
+    user-select: none;
+}
+.toggle-label {
+    font-size: 12px;
+    color: #999;
+}
+.toggle-switch {
+    width: 40px;
+    height: 22px;
+    border-radius: 11px;
+    background: #ccc;
+    transition: background 0.25s;
+    position: relative;
+}
+.toggle-switch.active {
+    background: var(--primary-color);
+}
+.toggle-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    transition: left 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.toggle-switch.active .toggle-knob {
+    left: 20px;
 }
 
 .actions {
