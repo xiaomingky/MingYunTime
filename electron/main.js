@@ -1,4 +1,4 @@
-﻿import { app, BrowserWindow, shell, ipcMain, dialog, protocol, Tray, Menu, nativeImage, session } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, protocol, Tray, Menu, nativeImage, session } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
@@ -268,6 +268,10 @@ ipcMain.handle('scan-fonts', async () => {
 
 ipcMain.on('update-lyric-state', (_, data) => {
     lyricWin?.webContents.send('lyric-state-change', data)
+})
+
+ipcMain.on('request-lyric-state', () => {
+    win?.webContents.send('request-lyric-sync')
 })
 
 ipcMain.on('lyric-window-command', (_, cmd) => {

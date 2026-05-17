@@ -25,12 +25,13 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 ![歌曲详情页](showimage/歌曲详情页.png)
 
 - Full-screen overlay with synchronized lyrics, cover art, and visualizer
-![歌曲详情页](showimage/歌曲详情页.png)
-
+- **Immersive/Classic dual mode**: background follows cover color or pure white
+- Apple Music-level word-by-word lyric highlighting (YRC)
 - Like, add to playlist, download, share, comment
 - Built-in font switching, customizable lyric font/color/size
 
-![Font Switch](showimage/歌曲详情页内置字体切换展示.png)
+![Word Lyrics](showimage/逐词歌词展示.png)
+![Immersive BG](showimage/背景随封面.png)
 
 ### 📋 Playlists
 
@@ -67,6 +68,7 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 ![Desktop Lyrics](showimage/桌面歌词展示.png)
 
 - Floating transparent lyrics window, always on top
+- **60FPS word-by-word highlight**: GPU-accelerated, buttery smooth
 - **Lock mode**: click-through to apps underneath + independent unlock button
 - Customizable font, color, and size
 
