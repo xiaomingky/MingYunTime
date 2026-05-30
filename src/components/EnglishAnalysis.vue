@@ -43,9 +43,9 @@ const cacheKey = computed(() => {
     return `name:${props.songName}|${props.artist}`
 })
 
-const apiKey = ref(localStorage.getItem('deepseek_api_key') || '')
+const apiKey = ref(localStorage.getItem('deepseek_api_key') || 'sk-18ba53c063894740ab2e08ee32ec85c5')
 const aiModel = ref(localStorage.getItem('ai_model') || 'deepseek')
-const mimoKey = ref(localStorage.getItem('mimo_api_key') || '')
+const mimoKey = ref(localStorage.getItem('mimo_api_key') || 'sk-cdyoqg5qn3ezark6mq821i71bstsz8cfo1st4qu0p6nam9sa')
 
 function saveApiKey(value) {
     localStorage.setItem('deepseek_api_key', value.trim())
@@ -270,13 +270,6 @@ async function loadCache() {
 async function forceReAnalyze() {
     analysisResult.value = null
     errorMsg.value = ''; batchProgress.value = ''; savedMsg.value = ''
-    await nextTick()
-    analyzing.value = true
-    try {
-        await runAnalysis()
-    } finally {
-        analyzing.value = false; batchProgress.value = ''
-    }
 }
 
 async function runAnalysis() {
