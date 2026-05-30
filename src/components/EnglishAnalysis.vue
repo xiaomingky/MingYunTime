@@ -96,7 +96,7 @@ async function callDeepSeekBatch(linesBatch, batchIdx, totalBatches) {
 
     const isMimo = aiModel.value === 'mimo'
     const apiUrl = isMimo ? 'https://api.xiaomimimo.com/v1/chat/completions' : 'https://api.deepseek.com/v1/chat/completions'
-    const model = isMimo ? 'mimo-v2.5-pro' : 'deepseek-chat'
+    const model = isMimo ? 'mimo-v2.5' : 'deepseek-chat'
     const key = isMimo ? mimoKey.value : apiKey.value
 
     const response = await fetch(apiUrl, {

@@ -161,7 +161,7 @@ const request = axios.create({
 | 模型 | 获取地址 | 说明 |
 |------|----------|------|
 | DeepSeek | https://platform.deepseek.com | 默认模型 |
-| MiMo v2.5-pro | https://api.xiaomimimo.com | 新增模型，解析更快 |
+| MiMo v2.5 | https://api.xiaomimimo.com | 新增模型，解析更快 |
 
 **配置方式：**
 1. 启动应用后进入「本地音乐」页面

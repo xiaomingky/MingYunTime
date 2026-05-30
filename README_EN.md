@@ -162,7 +162,7 @@ The English lyrics analysis supports two AI models:
 | Model | Get Key | Note |
 |-------|---------|------|
 | DeepSeek | https://platform.deepseek.com | Default |
-| MiMo v2.5-pro | https://api.xiaomimimo.com | New, faster |
+| MiMo v2.5 | https://api.xiaomimimo.com | New, faster |
 
 **How to configure:**
 1. Launch the app and go to "Local Music"
