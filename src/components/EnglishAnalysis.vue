@@ -43,9 +43,9 @@ const cacheKey = computed(() => {
     return `name:${props.songName}|${props.artist}`
 })
 
-const apiKey = ref(localStorage.getItem('deepseek_api_key') || '')
+const apiKey = ref(localStorage.getItem('deepseek_api_key') || 'sk-18ba53c063894740ab2e08ee32ec85c5')
 const aiModel = ref(localStorage.getItem('ai_model') || 'deepseek')
-const mimoKey = ref(localStorage.getItem('mimo_api_key') || '')
+const mimoKey = ref(localStorage.getItem('mimo_api_key') || 'sk-cdyoqg5qn3ezark6mq821i71bstsz8cfo1st4qu0p6nam9sa')
 
 function saveApiKey(value) {
     localStorage.setItem('deepseek_api_key', value.trim())
@@ -95,10 +95,9 @@ async function callDeepSeekBatch(linesBatch, batchIdx, totalBatches) {
     const estTokens = Math.min(16384, 2048 + linesBatch.length * 1536)
 
     const isMimo = aiModel.value === 'mimo'
-    const mimoKey = mimoKey.value || ''
     const apiUrl = isMimo ? 'https://api.xiaomimimo.com/v1/chat/completions' : 'https://api.deepseek.com/v1/chat/completions'
     const model = isMimo ? 'mimo-v2.5-pro' : 'deepseek-chat'
-    const key = isMimo ? mimoKey : apiKey.value
+    const key = isMimo ? mimoKey.value : apiKey.value
 
     const response = await fetch(apiUrl, {
         method: 'POST',
