@@ -43,9 +43,9 @@ const cacheKey = computed(() => {
     return `name:${props.songName}|${props.artist}`
 })
 
-const apiKey = ref(localStorage.getItem('deepseek_api_key') || 'sk-18ba53c063894740ab2e08ee32ec85c5')
+const apiKey = ref(localStorage.getItem('deepseek_api_key') || '')
 const aiModel = ref(localStorage.getItem('ai_model') || 'deepseek')
-const mimoKey = ref(localStorage.getItem('mimo_api_key') || 'sk-cdyoqg5qn3ezark6mq821i71bstsz8cfo1st4qu0p6nam9sa')
+const mimoKey = ref(localStorage.getItem('mimo_api_key') || '')
 
 function saveApiKey(value) {
     localStorage.setItem('deepseek_api_key', value.trim())
