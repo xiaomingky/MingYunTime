@@ -43,11 +43,16 @@ const cacheKey = computed(() => {
     return `name:${props.songName}|${props.artist}`
 })
 
-const apiKey = ref(localStorage.getItem('deepseek_api_key') || 'sk-5cc291497dd7462da6861c759fc121fd')
+const apiKey = ref(localStorage.getItem('deepseek_api_key') || '')
+const aiModel = ref(localStorage.getItem('ai_model') || 'deepseek')
 
 function saveApiKey(value) {
     localStorage.setItem('deepseek_api_key', value.trim())
     apiKey.value = value.trim()
+}
+function saveModel(value) {
+    localStorage.setItem('ai_model', value)
+    aiModel.value = value
 }
 
 function extractJson(text) {
@@ -84,16 +89,22 @@ async function callDeepSeekBatch(linesBatch, batchIdx, totalBatches) {
     const userPrompt = `请解析这些英文歌词句子：\n\n${promptLines}`
     const estTokens = Math.min(16384, 2048 + linesBatch.length * 1536)
 
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    const isMimo = aiModel.value === 'mimo'
+    const mimoKey = 'sk-cdyoqg5qn3ezark6mq821i71bstsz8cfo1st4qu0p6nam9sa'
+    const apiUrl = isMimo ? 'https://api.xiaomimimo.com/v1/chat/completions' : 'https://api.deepseek.com/v1/chat/completions'
+    const model = isMimo ? 'mimo-v2.5-pro' : 'deepseek-chat'
+    const key = isMimo ? mimoKey : apiKey.value
+
+    const response = await fetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey.value}` },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
         body: JSON.stringify({
-            model: 'deepseek-chat',
+            model,
             messages: [
-                { role: 'system', content: systemPrompt },
+                { role: 'system', content: isMimo ? systemPrompt + '\nToday is 2026.' : systemPrompt },
                 { role: 'user', content: userPrompt }
             ],
-            temperature: 0.3,
+            temperature: isMimo ? 1.0 : 0.3,
             max_tokens: estTokens
         })
     })
@@ -252,6 +263,52 @@ async function loadCache() {
     return null
 }
 
+async function forceReAnalyze() {
+    analysisResult.value = null
+    errorMsg.value = ''; batchProgress.value = ''; savedMsg.value = ''
+    await nextTick()
+    analyzing.value = true
+    try {
+        await runAnalysis()
+    } finally {
+        analyzing.value = false; batchProgress.value = ''
+    }
+}
+
+async function runAnalysis() {
+    const lines = englishLines.value
+    const BATCH_SIZE = 6
+    const totalBatches = Math.ceil(lines.length / BATCH_SIZE)
+    let completed = 0
+    batchProgress.value = `0/${totalBatches} 批`
+    const tasks = []
+    for (let i = 0; i < lines.length; i += BATCH_SIZE) {
+        const batch = lines.slice(i, Math.min(i + BATCH_SIZE, lines.length))
+        const startIdx = i
+        tasks.push((async () => {
+            for (let retry = 0; retry < 2; retry++) {
+                try {
+                    const r = await callDeepSeekBatch(batch, Math.floor(i / BATCH_SIZE), totalBatches)
+                    r.forEach(x => { x._engIdx = startIdx + (x.index ?? 0) })
+                    completed++
+                    batchProgress.value = `${completed}/${totalBatches} 批`
+                    return r
+                } catch (err) {
+                    if (retry >= 1) throw err
+                    await new Promise(r => setTimeout(r, 1500))
+                }
+            }
+        })())
+    }
+    const batchArrays = await Promise.all(tasks)
+    const allResults = batchArrays.flat()
+    if (allResults.length === 0) throw new Error('解析结果为空')
+    analysisResult.value = allResults
+    expandedLine.value = props.currentLyricIndex
+    await saveCache(allResults)
+    isCached.value = true
+}
+
 async function startAnalysis() {
     if (!hasEnglish.value) { errorMsg.value = '未检测到英文歌词'; return }
 
@@ -270,62 +327,7 @@ async function startAnalysis() {
     analyzing.value = true
 
     try {
-        const lines = englishLines.value
-        const BATCH_SIZE = 6
-        const totalBatches = Math.ceil(lines.length / BATCH_SIZE)
-        let completed = 0
-        batchProgress.value = `0/${totalBatches} 批`
-        console.log('[EnglishAnalysis] Starting analysis, total batches:', totalBatches, 'total lines:', lines.length)
-
-        // 使用Promise.all并行处理所有批次，大幅提高速度
-        const tasks = []
-        for (let i = 0; i < lines.length; i += BATCH_SIZE) {
-            const batch = lines.slice(i, Math.min(i + BATCH_SIZE, lines.length))
-            const batchIdx = Math.floor(i / BATCH_SIZE)
-            const startIdx = i
-            
-            tasks.push((async () => {
-                for (let retry = 0; retry < 2; retry++) {
-                    try {
-                        console.log(`[EnglishAnalysis] Processing batch ${batchIdx + 1}/${totalBatches}`)
-                        const r = await callDeepSeekBatch(batch, batchIdx, totalBatches)
-                        r.forEach(x => { x._engIdx = startIdx + (x.index ?? 0) })
-                        completed++
-                        batchProgress.value = `${completed}/${totalBatches} 批`
-                        console.log(`[EnglishAnalysis] Progress: ${completed}/${totalBatches}`)
-                        return r
-                    } catch (err) {
-                        console.error(`[EnglishAnalysis] Batch ${batchIdx + 1} failed (retry ${retry}):`, err.message)
-                        if (retry >= 1) throw err
-                        await new Promise(r => setTimeout(r, 1500))
-                    }
-                }
-            })())
-        }
-
-        const batchArrays = await Promise.all(tasks)
-        const allResults = batchArrays.flat()
-        
-        if (allResults.length === 0) {
-            throw new Error('解析结果为空')
-        }
-        
-        analysisResult.value = allResults
-        batchProgress.value = ''
-        expandedLine.value = props.currentLyricIndex
-        console.log('[EnglishAnalysis] Analysis complete, total results:', allResults.length)
-
-        // 确保保存到本地
-        console.log('[EnglishAnalysis] Starting saveCache...')
-        try {
-            await saveCache(allResults)
-            isCached.value = true
-            console.log('[EnglishAnalysis] saveCache completed')
-        } catch (saveErr) {
-            console.error('[EnglishAnalysis] saveCache failed:', saveErr)
-            // 即使保存失败，解析结果仍然可用
-            isCached.value = false
-        }
+        await runAnalysis()
     } catch (err) {
         console.error('Analysis error:', err)
         errorMsg.value = `解析失败: ${err.message}`
@@ -449,8 +451,14 @@ function getTenseColor(t) {
         <div v-if="!analysisResult && !analyzing && !errorMsg" class="state-ctr">
             <Sparkles :size="40" class="ic-indigo" />
             <p>AI 英文歌词解析</p>
-            <span>DeepSeek 深度解析语法·时态·生词·变形</span>
-            <div class="api-key-box">
+            <span>选择模型深度解析语法·时态·生词·变形</span>
+            <div class="model-select-box">
+                <select v-model="aiModel" @change="saveModel($event.target.value)" class="model-select">
+                    <option value="deepseek">DeepSeek</option>
+                    <option value="mimo">MiMo v2.5-pro</option>
+                </select>
+            </div>
+            <div v-if="aiModel === 'deepseek'" class="api-key-box">
                 <input
                     type="password"
                     :value="apiKey"
@@ -458,6 +466,9 @@ function getTenseColor(t) {
                     @input="saveApiKey($event.target.value)"
                     class="api-key-input"
                 />
+            </div>
+            <div v-else class="api-key-box">
+                <span class="mimo-hint">MiMo v2.5-pro 服务端内置 Key，无需输入</span>
             </div>
             <button class="btn-start" @click="startAnalysis"><Sparkles :size="16" /> 开始解析</button>
         </div>
@@ -485,7 +496,7 @@ function getTenseColor(t) {
                 <span v-if="cacheFilePath" class="cache-path" @click.stop="openCacheFolder" title="点击打开文件位置">
                     {{ cacheFilePath.split('/').pop() || cacheFilePath.split('\\').pop() }}
                 </span>
-                <button class="btn-re-analyze" @click="analysisResult = null; startAnalysis()">重新解析</button>
+                <button class="btn-re-analyze" @click="forceReAnalyze()">重新解析</button>
                 <span class="name">{{ props.songName }}</span>
             </div>
 
@@ -617,6 +628,34 @@ function getTenseColor(t) {
 .ic-indigo { color:#6366f1; opacity:.5; }
 .prog { color:#6366f1 !important; font-weight:500; }
 .err { color:#dc2626 !important; }
+
+.model-select-box {
+    margin-top: 12px;
+    width: 100%;
+    max-width: 320px;
+}
+.model-select {
+    width: 100%;
+    padding: 8px 14px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 13px;
+    outline: none;
+    text-align: center;
+    background: #fafafa;
+    cursor: pointer;
+}
+.model-select:focus { border-color: #6366f1; background: #fff; }
+
+.mimo-hint {
+    font-size: 12px;
+    color: #059669;
+    background: #ecfdf5;
+    padding: 8px 14px;
+    border-radius: 8px;
+    display: block;
+    text-align: center;
+}
 
 .api-key-box {
     margin-top: 12px;

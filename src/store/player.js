@@ -89,11 +89,17 @@ export const usePlayerStore = defineStore('player', {
             this.audio.crossOrigin = "anonymous";
             this.audio.ontimeupdate = () => {
                 this.currentTime = this.audio.currentTime
+                // 无缝播放：在歌曲结束前1秒预加载下一首
+                if (this.audio.duration && this.audio.currentTime > 0 && this.audio.duration - this.audio.currentTime < 1 && !this._nextPreloaded) {
+                    this._nextPreloaded = true
+                    this._preloadNextSong()
+                }
                 if (this.showDesktopLyrics) {
                     this.updateDesktopLyricsState()
                 }
             }
             this.audio.onended = () => {
+                this._nextPreloaded = false
                 this.next()
             }
             this.audio.onerror = (e) => {
@@ -161,11 +167,16 @@ export const usePlayerStore = defineStore('player', {
             this.audio.crossOrigin = "anonymous";
             this.audio.ontimeupdate = () => {
                 this.currentTime = this.audio.currentTime
+                // 无缝播放：提前1秒预加载
+                if (this.audio.duration && this.audio.currentTime > 0 && this.audio.duration - this.audio.currentTime < 1 && !this._nextPreloaded) {
+                    this._nextPreloaded = true
+                    this._preloadNextSong()
+                }
                 if (this.showDesktopLyrics) {
                     this.updateDesktopLyricsState()
                 }
             }
-            this.audio.onended = () => { this.next() }
+            this.audio.onended = () => { this._nextPreloaded = false; this.next() }
             this.audio.onerror = (e) => {
                 console.error('Audio error:', e)
                 this.isPlaying = false
@@ -616,6 +627,24 @@ export const usePlayerStore = defineStore('player', {
             this.volume = vol
             if (this.audio) this.audio.volume = vol / 100
         },
+        _preloadNextSong() {
+            if (this.playlist.length === 0) return
+            let nextIndex = (this.currentIndex + 1) % this.playlist.length
+            if (this.playMode === 2) nextIndex = Math.floor(Math.random() * this.playlist.length)
+            if (this.playMode === 1) return // 单曲循环不需要预加载
+            const nextSong = this.playlist[nextIndex]
+            if (nextSong && nextSong.id && !String(nextSong.id).startsWith('local-')) {
+                const preload = new Audio()
+                preload.crossOrigin = 'anonymous'
+                preload.preload = 'auto'
+                import('../api').then(({ getSongUrl }) => {
+                    getSongUrl(nextSong.id, this.quality).then(res => {
+                        const url = res.data?.[0]?.url
+                        if (url) { preload.src = url; preload.load() }
+                    })
+                })
+            }
+        },
         next() {
             if (this.playlist.length === 0) return
 
@@ -993,6 +1022,8 @@ export const usePlayerStore = defineStore('player', {
             if (!bridge || !bridge.send) return
 
             const useLyrics = this.yrcLyrics || this.lyrics
+            console.log('[DL-Debug] currentTime:', this.currentTime, 'yrcLen:', this.yrcLyrics?.length, 'lrcLen:', this.lyrics?.length, 'useLen:', useLyrics?.length)
+            
             if (!useLyrics || useLyrics.length === 0) {
                 try {
                     bridge.send('update-lyric-state', JSON.parse(JSON.stringify({
@@ -1010,7 +1041,9 @@ export const usePlayerStore = defineStore('player', {
                         words: null,
                         currentMs: this.currentTime * 1000
                     })))
-                } catch (e) { console.error('[DL] IPC error:', e) }
+                } catch (e) {
+                    console.error('[DL-Debug] IPC send error (empty):', e)
+                }
                 return
             }
 
@@ -1030,23 +1063,28 @@ export const usePlayerStore = defineStore('player', {
             const nextLine = idx >= 0 ? (useLyrics[idx + 1] || null) : (useLyrics[0] || null)
             const prevLine = idx > 0 ? useLyrics[idx - 1] : null
 
+            console.log('[DL-Debug] idx:', idx, 'current:', currentLine?.text, 'next:', nextLine?.text, 'wordsLen:', currentLine?.words?.length)
+
+            const payload = {
+                lyric: currentLine ? currentLine.text : '',
+                tlyric: currentLine ? currentLine.ttext || '' : '',
+                prevLyric: prevLine ? prevLine.text : '',
+                nextLyric: nextLine ? nextLine.text : '',
+                nextTlyric: nextLine ? nextLine.ttext || '' : '',
+                isPlaying: this.isPlaying,
+                songName: this.currentSong.name || '',
+                artist: this.currentSong.artist || '',
+                picUrl: this.currentSong.al?.picUrl || '',
+                font: this.desktopLyricFont,
+                color: this.desktopLyricColor,
+                words: currentLine?.words || null,
+                currentMs: this.currentTime * 1000
+            }
             try {
-                bridge.send('update-lyric-state', JSON.parse(JSON.stringify({
-                    lyric: currentLine ? currentLine.text : '',
-                    tlyric: currentLine ? currentLine.ttext || '' : '',
-                    prevLyric: prevLine ? prevLine.text : '',
-                    nextLyric: nextLine ? nextLine.text : '',
-                    nextTlyric: nextLine ? nextLine.ttext || '' : '',
-                    isPlaying: this.isPlaying,
-                    songName: this.currentSong.name || '',
-                    artist: this.currentSong.artist || '',
-                    picUrl: this.currentSong.al?.picUrl || '',
-                    font: this.desktopLyricFont,
-                    color: this.desktopLyricColor,
-                    words: currentLine?.words || null,
-                    currentMs: this.currentTime * 1000
-                })))
-            } catch (e) { console.error('[DL] IPC error:', e) }
+                bridge.send('update-lyric-state', JSON.parse(JSON.stringify(payload)))
+            } catch (e) {
+                console.error('[DL-Debug] IPC send error:', e)
+            }
         },
         setFont(font) {
             this.desktopLyricFont = font
