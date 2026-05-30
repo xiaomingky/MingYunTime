@@ -159,6 +159,7 @@ export const useUserStore = defineStore('user', {
                     localStorage.setItem('user_profile', JSON.stringify(profile))
                     await this.fetchUserDetail(profile.userId)
                     await this.fetchUserPlaylists(profile.userId)
+                    this.fetchVipInfo()
                     return true
                 }
 
@@ -168,6 +169,7 @@ export const useUserStore = defineStore('user', {
                     this.isLoggedIn = true
                     await this.fetchUserDetail(accountRes.profile.userId)
                     await this.fetchUserPlaylists(accountRes.profile.userId)
+                    this.fetchVipInfo()
                     return true
                 }
                 return false
@@ -238,6 +240,14 @@ export const useUserStore = defineStore('user', {
             } else {
                 this.likedSongIds.delete(numId)
             }
+        },
+        async fetchVipInfo() {
+            try {
+                const res = await request.get('/vip/info', { params: { timestamp: Date.now() } })
+                if (res && res.code === 200) {
+                    this.vipInfo = res.data || res
+                }
+            } catch (e) {}
         },
         logout() {
             this.isLoggedIn = false

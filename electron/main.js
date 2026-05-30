@@ -120,7 +120,43 @@ function createWindow() {
 
 }
 let lyricWin = null
+let unlockWin = null
 let isLocked = false
+
+function createUnlockWindow() {
+    if (unlockWin) return
+    unlockWin = new BrowserWindow({
+        width: 90, height: 32,
+        frame: false, transparent: true, alwaysOnTop: true,
+        skipTaskbar: true, resizable: false, focusable: true,
+        backgroundColor: '#00000000',
+        webPreferences: { nodeIntegration: true, contextIsolation: false, sandbox: false },
+    })
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+        *{margin:0;padding:0;box-sizing:border-box;}
+        body{background:transparent;overflow:hidden;display:flex;align-items:center;justify-content:center;height:100vh;}
+        .btn{display:flex;align-items:center;gap:4px;padding:5px 12px;background:rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.2);border-radius:14px;color:#fff;font-size:12px;cursor:pointer;font-family:-apple-system,sans-serif;backdrop-filter:blur(6px);transition:all 0.2s;}
+        .btn:hover{background:rgba(0,0,0,0.7);border-color:rgba(255,255,255,0.4);}
+    </style></head><body>
+        <button class="btn" onclick="unlock()">🔓解锁</button>
+        <script>const {ipcRenderer}=require('electron');function unlock(){ipcRenderer.send('unlock-lyric-window')}</script>
+    </body></html>`
+
+    unlockWin.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+    unlockWin.on('closed', () => { unlockWin = null })
+}
+
+function placeUnlockWindow() {
+    if (!unlockWin || !lyricWin) return
+    const b = lyricWin.getBounds()
+    unlockWin.setBounds({
+        x: Math.round(b.x + (b.width - 90) / 2),
+        y: Math.round(b.y + b.height - 42),
+        width: 90, height: 32
+    })
+    unlockWin.setAlwaysOnTop(true, 'screen-saver')
+}
 
 function createLyricWindow() {
     if (lyricWin) return;
@@ -155,7 +191,11 @@ function createLyricWindow() {
 
     lyricWin.on('closed', () => {
         lyricWin = null
+        if (unlockWin) { unlockWin.close(); unlockWin = null }
     })
+
+    lyricWin.on('move', () => placeUnlockWindow())
+    lyricWin.on('resize', () => placeUnlockWindow())
 
     // 确保窗口准备好后立即同步一次状态
     lyricWin.webContents.on('did-finish-load', () => {
@@ -192,6 +232,7 @@ ipcMain.on('toggle-desktop-lyrics', (_, show) => {
         }
     } else {
         lyricWin?.hide()
+        if (unlockWin) unlockWin.hide()
     }
 })
 
@@ -242,22 +283,27 @@ ipcMain.on('lyric-window-lock', (_, { locked }) => {
     if (!lyricWin) return
     isLocked = locked
     if (locked) {
-        lyricWin.setMovable(false)
         lyricWin.setIgnoreMouseEvents(true, { forward: true })
+        lyricWin.setMovable(false)
     } else {
-        lyricWin.setMovable(true)
         lyricWin.setIgnoreMouseEvents(false)
+        lyricWin.setMovable(true)
     }
 })
 
-// 鼠标悬停检测：动态控制窗口穿透（锁定/未锁定都生效）
-ipcMain.on('lyric-card-hover', (_, hovering) => {
-    if (!lyricWin) return
-    if (isLocked) {
-        lyricWin.setIgnoreMouseEvents(!hovering, { forward: true })
-    } else {
-        lyricWin.setIgnoreMouseEvents(!hovering, { forward: true })
+ipcMain.on('unlock-lyric-window', () => {
+    if (lyricWin) {
+        lyricWin.setIgnoreMouseEvents(false)
+        lyricWin.setMovable(true)
     }
+    isLocked = false
+    lyricWin?.webContents.send('lyric-lock-state-changed', false)
+})
+
+// 未锁定时：卡片内鼠标进入/离开 → 控制框外穿透
+ipcMain.on('lyric-card-hover', (_, hovering) => {
+    if (!lyricWin || isLocked) return
+    lyricWin.setIgnoreMouseEvents(!hovering, { forward: true })
 })
 
 // 核心递归扫描函数

@@ -43,7 +43,7 @@ const cacheKey = computed(() => {
     return `name:${props.songName}|${props.artist}`
 })
 
-const apiKey = ref(localStorage.getItem('deepseek_api_key') || '')  // 请填入你的 DeepSeek API Key
+const apiKey = ref(localStorage.getItem('deepseek_api_key') || 'sk-5cc291497dd7462da6861c759fc121fd')
 
 function saveApiKey(value) {
     localStorage.setItem('deepseek_api_key', value.trim())
@@ -180,6 +180,7 @@ async function saveCache(result) {
 
     // 2. 同时保存到 localStorage 作为备用
     try {
+        cacheData.cachePath = cacheFilePath.value || ''
         localStorage.setItem(`en_analysis_${cacheKey.value}`, JSON.stringify(cacheData))
         console.log('[EnglishAnalysis] Saved to localStorage')
     } catch (e) {
@@ -188,11 +189,11 @@ async function saveCache(result) {
 
     if (fileSaved) {
         console.log('[EnglishAnalysis] File saved successfully')
-        setTimeout(() => { savedMsg.value = '' }, 4000)
+        // savedMsg stays visible permanently
     } else {
         console.error('[EnglishAnalysis] File save failed:', saveError)
         savedMsg.value = saveError ? `保存失败: ${saveError}` : '解析已缓存到内存'
-        setTimeout(() => { savedMsg.value = '' }, 4000)
+        // savedMsg stays visible permanently
     }
 }
 
@@ -217,6 +218,7 @@ async function loadCache() {
             const data = JSON.parse(cached)
             if (data.lines?.length > 0) {
                 console.log('[EnglishAnalysis] Loaded from localStorage')
+                cacheFilePath.value = data.cachePath || ''
                 return data.lines
             }
         }
@@ -253,22 +255,14 @@ async function loadCache() {
 async function startAnalysis() {
     if (!hasEnglish.value) { errorMsg.value = '未检测到英文歌词'; return }
 
-    // 如果已经有解析结果，不需要重新解析
-    if (analysisResult.value?.length > 0) {
-        savedMsg.value = '解析已完成'
-        setTimeout(() => { savedMsg.value = '' }, 2000)
-        return
-    }
-
     errorMsg.value = ''; batchProgress.value = ''; savedMsg.value = ''
 
-    // ★ 先检查缓存，再决定是否需要 loading 状态
+    // 先检查缓存
     const cached = await loadCache()
     if (cached?.length > 0) {
         analysisResult.value = cached
         isCached.value = true
         expandedLine.value = props.currentLyricIndex
-        // 缓存命中时不显示 analyzing，直接展示结果
         return
     }
 
@@ -400,7 +394,7 @@ watch(() => props.currentLyricIndex, (idx) => {
 // 歌曲切换时重置状态并尝试加载缓存
 watch(() => props.songName, async () => {
     analysisResult.value = null; errorMsg.value = ''; isCached.value = false
-    savedMsg.value = ''; expandedLine.value = -1; cacheFilePath.value = ''
+    savedMsg.value = ''; expandedLine.value = -1
     analyzing.value = false; batchProgress.value = ''
     await nextTick()
     const cached = await loadCache()
@@ -491,6 +485,7 @@ function getTenseColor(t) {
                 <span v-if="cacheFilePath" class="cache-path" @click.stop="openCacheFolder" title="点击打开文件位置">
                     {{ cacheFilePath.split('/').pop() || cacheFilePath.split('\\').pop() }}
                 </span>
+                <button class="btn-re-analyze" @click="analysisResult = null; startAnalysis()">重新解析</button>
                 <span class="name">{{ props.songName }}</span>
             </div>
 
@@ -652,6 +647,25 @@ function getTenseColor(t) {
     font-size:15px; cursor:pointer; font-weight:600; transition:all .2s;
 }
 .btn-start:hover { background:#4f46e5; transform:translateY(-1px); box-shadow:0 4px 20px rgba(99,102,241,.3); }
+.btn-re-analyze {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+    background: #f8f8f8;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+    font-weight: 500;
+}
+.btn-re-analyze:hover {
+    border-color: #6366f1;
+    color: #6366f1;
+    background: #eef2ff;
+}
+
 .btn-retry {
     margin-top:8px; padding:6px 20px; background:#fef2f2; color:#dc2626;
     border:1px solid #fecaca; border-radius:16px; cursor:pointer; font-size:13px; font-weight:500;
