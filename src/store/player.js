@@ -330,10 +330,20 @@ export const usePlayerStore = defineStore('player', {
                                 if (lrcPart) this.parseLyrics(lrcPart)
                                 hasLocalLyric = true
                             } else {
-                                // 普通歌词，直接用
-                                this.parseLyrics(content)
-                                hasLocalLyric = true
-                                useMessageStore().info(`使用本地歌词:《${normalized.name}》`)
+                                // 检测是否为本地逐字 LRC 格式
+                                const wordByWord = this.parseWordByWordLyrics(content)
+                                if (wordByWord) {
+                                    this.yrcLyrics = wordByWord.yrc
+                                    this.lyrics = wordByWord.lrc
+                                    hasLocalLyric = true
+                                    hasLocalYrc = true
+                                    useMessageStore().info(`使用本地逐字歌词:《${normalized.name}》`)
+                                } else {
+                                    // 普通歌词，直接用
+                                    this.parseLyrics(content)
+                                    hasLocalLyric = true
+                                    useMessageStore().info(`使用本地歌词:《${normalized.name}》`)
+                                }
                             }
                         }
                     }
@@ -862,6 +872,111 @@ export const usePlayerStore = defineStore('player', {
             })
 
             this.yrcLyrics = result.length > 0 ? result : null
+        },
+        /**
+         * 解析本地逐字 LRC 格式
+         * 格式: [mm:ss.xxx]字[mm:ss.xxx]字...
+         * 返回 { yrc, lrc } 或 null（如果不是逐字格式）
+         */
+        parseWordByWordLyrics(rawText) {
+            if (!rawText) return null
+
+            const lines = rawText.split('\n')
+            const yrcResult = []
+            const lrcResult = []
+            let wordLineCount = 0
+            let validLineCount = 0
+
+            const timePattern = /\[(\d{2,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g
+
+            lines.forEach(line => {
+                const matches = [...line.matchAll(timePattern)]
+                if (matches.length === 0) return
+
+                const fullText = line.replace(timePattern, '').trim()
+                if (!fullText) return
+
+                validLineCount++
+
+                const parseTimeMs = (m) => {
+                    const min = parseInt(m[1])
+                    const sec = parseInt(m[2])
+                    const msPart = m[3] || '0'
+                    let ms = 0
+                    if (msPart.length === 3) ms = parseInt(msPart) / 1000
+                    else if (msPart.length === 2) ms = parseInt(msPart) / 100
+                    else ms = parseInt(msPart) / 10
+                    return Math.round((min * 60 + sec + ms) * 1000)
+                }
+
+                if (matches.length >= 2) {
+                    wordLineCount++
+                    const words = []
+
+                    for (let i = 0; i < matches.length; i++) {
+                        const m = matches[i]
+                        const startTimeMs = parseTimeMs(m)
+                        const startIndex = m.index + m[0].length
+                        const endIndex = i < matches.length - 1 ? matches[i + 1].index : line.length
+                        const text = line.slice(startIndex, endIndex).trim()
+
+                        if (text) {
+                            words.push({
+                                startTime: startTimeMs,
+                                duration: 0,
+                                text
+                            })
+                        }
+                    }
+
+                    // 计算每个字的持续时长
+                    for (let i = 0; i < words.length; i++) {
+                        if (i < words.length - 1) {
+                            words[i].duration = words[i + 1].startTime - words[i].startTime
+                        } else {
+                            // 最后一个字默认持续 500ms
+                            words[i].duration = 500
+                        }
+                    }
+
+                    if (words.length > 0) {
+                        const lineStartMs = words[0].startTime
+                        const lastWord = words[words.length - 1]
+                        const lineDurationMs = lastWord.startTime + lastWord.duration - lineStartMs
+
+                        yrcResult.push({
+                            time: lineStartMs / 1000,
+                            startTime: lineStartMs,
+                            duration: lineDurationMs,
+                            words,
+                            text: fullText,
+                            ttext: ''
+                        })
+
+                        lrcResult.push({
+                            time: lineStartMs / 1000,
+                            text: fullText,
+                            ttext: ''
+                        })
+                    }
+                } else {
+                    const time = parseTimeMs(matches[0]) / 1000
+                    lrcResult.push({
+                        time,
+                        text: fullText,
+                        ttext: ''
+                    })
+                }
+            })
+
+            // 判定：逐字行数 >=3 且占比超过 30%
+            if (wordLineCount >= 3 && wordLineCount / validLineCount > 0.3) {
+                yrcResult.sort((a, b) => a.time - b.time)
+                lrcResult.sort((a, b) => a.time - b.time)
+                return { yrc: yrcResult, lrc: lrcResult }
+            }
+
+            return null
         },
         async playMv(id) {
             if (!id) return
