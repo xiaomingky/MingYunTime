@@ -71,10 +71,11 @@
         }
       ]
     },
+    "artifactName": "${productName} Setup ${version}.${ext}",
     "publish": {
       "provider": "github",
       "owner": "xiaomingky",
-      "repo": "XiaoMingKY163_Player"
+      "repo": "MingYunTime"
     },
     "nsis": {
       "oneClick": false,
