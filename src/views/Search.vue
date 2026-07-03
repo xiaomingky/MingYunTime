@@ -1,5 +1,5 @@
 <script setup>
-import { ref, watch, onMounted, computed } from 'vue'
+import { ref, watch, onMounted, computed, inject } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { cloudSearch } from '../api'
 import { usePlayerStore } from '../store/player'
@@ -13,6 +13,7 @@ const messageStore = useMessageStore()
 const route = useRoute()
 const router = useRouter()
 const playerStore = usePlayerStore()
+const requireLockForPlaylist = inject('requireLockForPlaylist')
 const songs = ref([])
 const artists = ref([])
 const albums = ref([])
@@ -89,7 +90,11 @@ const toggleLike = async (song) => {
 }
 
 const goToPlaylist = (id) => {
-    router.push(`/playlist/${id}`)
+    if (requireLockForPlaylist) {
+        requireLockForPlaylist(id)
+    } else {
+        router.push(`/playlist/${id}`)
+    }
 }
 
 const goToAlbum = (id) => {

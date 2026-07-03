@@ -1,11 +1,13 @@
 <script setup>
-import { ref, onMounted, computed, onUnmounted, watch } from 'vue'
+import { ref, onMounted, computed, onUnmounted, watch, provide } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { getPendingLockTarget } from './router'
 import { usePlayerStore } from './store/player'
 import { useUserStore } from './store/user'
 import { useMessageStore } from './store/message'
 import SongDetail from './views/SongDetail.vue'
 import LoginModal from './components/LoginModal.vue'
+import LockModal from './components/LockModal.vue'
 import MvPlayer from './components/MvPlayer.vue'
 import Toast from './components/Toast.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
@@ -25,6 +27,8 @@ import {
   Heart,
   Download,
   Clock,
+  Cloud,
+  Lock,
   Play,
   Pause,
   SkipBack,
@@ -57,6 +61,8 @@ const newPlaylistName = ref('')
 const showSpeedMenu = ref(false)
 const showQualityMenu = ref(false)
 const showDonate = ref(false)
+const showLockModal = ref(false)
+const pendingProtectedPath = ref('')
 
 // 自动更新检测
 const updateInfo = ref({ available: false, version: '', notes: '', downloadUrl: '' })
@@ -134,7 +140,12 @@ onMounted(() => {
       localStorage.setItem('play_mode', state.playMode)
   })
 
-  userStore.fetchStatus()
+  userStore.fetchStatus().then(async () => {
+      if (userStore.isLoggedIn && userStore.profile?.userId) {
+          await userStore.syncCloudAccount()
+          await userStore.checkLockStatus()
+      }
+  })
 
   const b = getBridge()
   if (b && b.on) {
@@ -264,6 +275,58 @@ const goToPlaylist = (id) => {
     router.push({ path: `/playlist/${id}`, query: { _t: Date.now() } })
 }
 
+const isOwnPlaylist = (id) => {
+    if (!userStore.isLoggedIn) return false
+    if (String(id) === String(userStore.likedPlaylistId)) return true
+    return userStore.playlists.some(p => String(p.id) === String(id))
+}
+
+const requireLockForPlaylist = async (id) => {
+    if (!userStore.isLoggedIn || !isOwnPlaylist(id)) {
+        goToPlaylist(id)
+        return
+    }
+
+    // 已确认上锁且未解锁，点击立即弹窗，不等待页面加载
+    if (userStore.lockStatus.checked && userStore.lockStatus.locked && !userStore.lockStatus.unlocked) {
+        pendingProtectedPath.value = `/playlist/${id}`
+        showLockModal.value = true
+        return
+    }
+
+    // 若还没有后端 token，先同步账号（桌面程序登录后必须拿到 token 才能判断锁状态）
+    if (!userStore.lockStatus.token) {
+        try {
+            await userStore.syncCloudAccount()
+        } catch (e) {
+            console.error('syncCloudAccount error:', e)
+        }
+    }
+
+    // 强制重新检查一次最新锁状态
+    try {
+        await userStore.checkLockStatus()
+    } catch (e) {
+        console.error('checkLockStatus error:', e)
+    }
+
+    if (!userStore.lockStatus.locked || userStore.lockStatus.unlocked) {
+        goToPlaylist(id)
+        return
+    }
+    pendingProtectedPath.value = `/playlist/${id}`
+    showLockModal.value = true
+}
+
+provide('requireLockForPlaylist', requireLockForPlaylist)
+
+const onLockVerified = () => {
+    if (pendingProtectedPath.value) {
+        router.push({ path: pendingProtectedPath.value, query: { _t: Date.now() } })
+        pendingProtectedPath.value = ''
+    }
+}
+
 let drawerListRef = ref(null)
 
 watch(() => playerStore.currentIndex, () => {
@@ -344,6 +407,30 @@ const stopDragVolume = () => {
     window.removeEventListener('mouseup', stopDragVolume)
 }
 
+// 处理被路由守护拦截的受保护歌单
+watch(() => route.fullPath, () => {
+    const target = getPendingLockTarget()
+    if (target) {
+        pendingProtectedPath.value = target
+        showLockModal.value = true
+    }
+})
+
+// 直接访问/刷新受保护歌单页面时的兜底拦截
+watch(
+    [() => route.params.id, () => userStore.lockStatus.locked, () => userStore.lockStatus.unlocked, () => userStore.playlists.length],
+    () => {
+        const id = route.params.id
+        if (!id || !userStore.isLoggedIn || !userStore.lockStatus.locked || userStore.lockStatus.unlocked) return
+        const isOwn = String(id) === String(userStore.likedPlaylistId) ||
+            userStore.playlists.some(p => String(p.id) === String(id))
+        if (isOwn && !showLockModal.value) {
+            pendingProtectedPath.value = route.fullPath
+            showLockModal.value = true
+        }
+    }
+)
+
 // 动态切换根节点类名，彻底解决全透明问题
 watch(() => route.path, (newPath) => {
     if (newPath === '/desktop-lyrics') {
@@ -354,6 +441,14 @@ watch(() => route.path, (newPath) => {
         document.body.style.backgroundColor = ''
     }
 }, { immediate: true })
+
+// 登录后先同步账号再检查锁状态
+watch(() => userStore.isLoggedIn, async (val) => {
+    if (val && userStore.profile?.userId) {
+        await userStore.syncCloudAccount()
+        await userStore.checkLockStatus()
+    }
+})
 
 // 监听歌单变化，立即刷新侧边栏
 watch(() => userStore.playlistChanged, async () => {
@@ -404,6 +499,7 @@ const openGithub = () => {
     <div v-if="route.path !== '/desktop-lyrics'" class="normal-layout-wrapper">
       <SongDetail />
       <LoginModal :show="showLogin" @close="showLogin = false" />
+      <LockModal :show="showLockModal" @close="showLockModal = false" @verified="onLockVerified" />
       <MvPlayer />
       
       <!-- Custom Create Playlist Modal -->
@@ -431,9 +527,9 @@ const openGithub = () => {
                 >创建</button>
             </div>
         </div>
-    </div>
-    
-    <header class="header" v-show="!playerStore.showSongDetail && !playerStore.showMvPlayer">
+</div>
+
+<header class="header" v-show="!playerStore.showSongDetail && !playerStore.showMvPlayer">
         <div class="header-left no-drag">
           <div class="logo clickable" @click="navigateTo('/')">
             <div class="logo-icon">
@@ -582,6 +678,7 @@ const openGithub = () => {
                   { id: '/local', label: '本地音乐', icon: Download },
                   { id: '/local-video', label: '本地视频', icon: Film },
                   { id: '/recent', label: '最近播放', icon: Clock },
+                  { id: '/cloud', label: '我的云音乐', icon: Cloud },
                 ]" 
                 :key="item.id" 
                 class="menu-item"
@@ -602,9 +699,10 @@ const openGithub = () => {
               <div v-if="userStore.likedPlaylistId" 
                    class="menu-item" 
                    :class="{ active: route.path === `/playlist/${userStore.likedPlaylistId}` }"
-                   @click="goToPlaylist(userStore.likedPlaylistId)">
+                   @click="requireLockForPlaylist(userStore.likedPlaylistId)">
                 <Heart :size="18" />
                 <span class="menu-label">我喜欢的音乐</span>
+                <Lock v-if="userStore.lockStatus.locked" :size="12" class="lock-icon" />
               </div>
 
               <div 
@@ -612,10 +710,11 @@ const openGithub = () => {
                 :key="p.id" 
                 class="menu-item playlist-item"
                 :class="{ active: route.path === `/playlist/${p.id}` }"
-                @click="goToPlaylist(p.id)"
+                @click="requireLockForPlaylist(p.id)"
               >
                 <ListMusic :size="16" />
                 <span class="menu-label truncate">{{ p.name }}</span>
+                <Lock v-if="userStore.lockStatus.locked" :size="12" class="lock-icon" />
               </div>
             </div>
         </div>
@@ -1166,6 +1265,11 @@ const openGithub = () => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.lock-icon {
+    color: #999;
+    flex-shrink: 0;
 }
 
 /* Playlist Drawer Styles */

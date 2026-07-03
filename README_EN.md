@@ -25,13 +25,12 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 ![歌曲详情页](showimage/歌曲详情页.png)
 
 - Full-screen overlay with synchronized lyrics, cover art, and visualizer
-- **Immersive/Classic dual mode**: background follows cover color or pure white
-- Apple Music-level word-by-word lyric highlighting (YRC)
+![歌曲详情页](showimage/歌曲详情页.png)
+
 - Like, add to playlist, download, share, comment
 - Built-in font switching, customizable lyric font/color/size
 
-![Word Lyrics](showimage/逐词歌词展示.png)
-![Immersive BG](showimage/背景随封面.png)
+![Font Switch](showimage/歌曲详情页内置字体切换展示.png)
 
 ### 📋 Playlists
 
@@ -68,7 +67,6 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 ![Desktop Lyrics](showimage/桌面歌词展示.png)
 
 - Floating transparent lyrics window, always on top
-- **60FPS word-by-word highlight**: GPU-accelerated, buttery smooth
 - **Lock mode**: click-through to apps underneath + independent unlock button
 - Customizable font, color, and size
 
@@ -155,20 +153,15 @@ const request = axios.create({
 })
 ```
 
-### 2. AI Model API Key (English Lyrics Analysis)
+### 2. DeepSeek API Key
 
-The English lyrics analysis supports two AI models:
+The English lyrics analysis feature requires a **DeepSeek API Key**.
 
-| Model | Get Key | Note |
-|-------|---------|------|
-| DeepSeek | https://platform.deepseek.com | Default |
-| MiMo v2.5 | https://api.xiaomimimo.com | New, faster |
+Get one at: https://platform.deepseek.com
 
-**How to configure:**
-1. Launch the app and go to "Local Music"
-2. In the English analysis panel, select a model
-3. Enter the corresponding API Key (saved automatically)
-
+Two options:
+- Enter it in the app UI (saved automatically to localStorage)
+- Or set a default in `src/components/EnglishAnalysis.vue`
 
 ---
 

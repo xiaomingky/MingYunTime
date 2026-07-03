@@ -59,6 +59,8 @@ export const usePlayerStore = defineStore('player', {
             { freq: 16000, gain: 0 }
         ],
         eqFilters: [],
+        eqDryGain: null,
+        eqWetGain: null,
         eqPresets: {
             'default': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             'pop': [3, 2, 1, 0, -1, -1, 0, 1, 2, 3],
@@ -83,6 +85,8 @@ export const usePlayerStore = defineStore('player', {
                 this.analyser = null
                 this.source = null
                 this.eqFilters = []
+                this.eqDryGain = null
+                this.eqWetGain = null
             }
 
             this.audio = new Audio()
@@ -117,6 +121,8 @@ export const usePlayerStore = defineStore('player', {
             if (this.source) { try { this.source.disconnect() } catch (e) {}; this.source = null }
             this.eqFilters.forEach(f => { try { f.disconnect() } catch (e) {} })
             this.eqFilters = []
+            if (this.eqDryGain) { try { this.eqDryGain.disconnect() } catch (e) {}; this.eqDryGain = null }
+            if (this.eqWetGain) { try { this.eqWetGain.disconnect() } catch (e) {}; this.eqWetGain = null }
             if (this.analyser) { try { this.analyser.disconnect() } catch (e) {}; this.analyser = null }
             if (this.ctx) { try { this.ctx.close() } catch (e) {}; this.ctx = null }
 
@@ -130,16 +136,32 @@ export const usePlayerStore = defineStore('player', {
 
                 this.source = this.ctx.createMediaElementSource(this.audio)
 
-                if (this.eqEnabled) {
-                    this.createEqFilters()
+                // 创建 EQ 滤波器链（始终创建，通过干湿声 Gain 切换开关）
+                this.createEqFilters()
+
+                // 并联结构：
+                // source -> dryGain -> analyser （直通，EQ 关闭时使用）
+                // source -> eqFilters -> wetGain -> analyser （EQ 开启时使用）
+                this.eqDryGain = this.ctx.createGain()
+                this.eqWetGain = this.ctx.createGain()
+
+                this.source.connect(this.eqDryGain)
+                this.eqDryGain.connect(this.analyser)
+
+                if (this.eqFilters.length) {
                     this.source.connect(this.eqFilters[0])
                     for (let i = 0; i < this.eqFilters.length - 1; i++) {
                         this.eqFilters[i].connect(this.eqFilters[i + 1])
                     }
-                    this.eqFilters[this.eqFilters.length - 1].connect(this.analyser)
-                } else {
-                    this.source.connect(this.analyser)
+                    this.eqFilters[this.eqFilters.length - 1].connect(this.eqWetGain)
+                    this.eqWetGain.connect(this.analyser)
                 }
+
+                // 根据 eqEnabled 切换干湿声比例，避免反复 disconnect/connect 导致节点失效
+                const now = this.ctx.currentTime
+                this.eqDryGain.gain.setValueAtTime(this.eqEnabled ? 0 : 1, now)
+                this.eqWetGain.gain.setValueAtTime(this.eqEnabled ? 1 : 0, now)
+
                 this.analyser.connect(this.ctx.destination)
             } catch (e) {
                 console.error('rebuildAudioGraph error:', e)
@@ -161,6 +183,8 @@ export const usePlayerStore = defineStore('player', {
                 this.analyser = null
                 this.source = null
                 this.eqFilters = []
+                this.eqDryGain = null
+                this.eqWetGain = null
             }
 
             this.audio = new Audio()
@@ -303,6 +327,39 @@ export const usePlayerStore = defineStore('player', {
                         useMessageStore().error('本地文件加载失败，请确定文件路径正确且协议已注册。')
                     }
                 })
+
+                // 云音乐歌词：如果有 lyricUrl 直接拉取
+                if (song.lyricUrl) {
+                    try {
+                        const lyricRes = await fetch(song.lyricUrl)
+                        const lyricText = await lyricRes.text()
+                        if (lyricText) {
+                            if (lyricText.includes('---yrc---')) {
+                                const parts = lyricText.split('---yrc---')
+                                const lrcPart = parts[0].trim()
+                                let yrcPart = parts[1] || ''
+                                let ytlrcPart = ''
+                                if (yrcPart.includes('---ytlrc---')) {
+                                    const yrcParts = yrcPart.split('---ytlrc---')
+                                    yrcPart = yrcParts[0].trim()
+                                    ytlrcPart = yrcParts[1] ? yrcParts[1].trim() : ''
+                                } else { yrcPart = yrcPart.trim() }
+                                if (yrcPart) this.parseYrcLyrics(yrcPart, ytlrcPart)
+                                if (lrcPart) this.parseLyrics(lrcPart)
+                            } else {
+                                const wordByWord = this.parseWordByWordLyrics(lyricText)
+                                if (wordByWord) {
+                                    this.yrcLyrics = wordByWord.yrc
+                                    this.lyrics = wordByWord.lrc
+                                } else {
+                                    this.parseLyrics(lyricText)
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Cloud lyric load failed:', e)
+                    }
+                }
 
                 // 获取歌词逻辑：本地检查 → 有则直接用 → 无则在线搜索
                 if (isLocal && song.path) {
@@ -1259,6 +1316,7 @@ export const usePlayerStore = defineStore('player', {
         },
         createEqFilters() {
             if (!this.ctx) return
+            this.eqFilters.forEach(f => { try { f.disconnect() } catch (e) {} })
             this.eqFilters = this.eqBands.map(band => {
                 const filter = this.ctx.createBiquadFilter()
                 filter.type = 'peaking'
@@ -1269,7 +1327,6 @@ export const usePlayerStore = defineStore('player', {
             })
         },
         applyEq() {
-            if (!this.eqEnabled) return
             if (!this.eqFilters.length) {
                 this.createEqFilters()
             }
@@ -1281,25 +1338,17 @@ export const usePlayerStore = defineStore('player', {
         },
         toggleEq() {
             this.eqEnabled = !this.eqEnabled
-            if (!this.audio || !this.audio.src || !this.source || !this.ctx || !this.analyser) return
+            if (!this.ctx || !this.eqDryGain || !this.eqWetGain) return
 
-            // 断开 source → 下游
-            try { this.source.disconnect() } catch (e) {}
-            // 拆掉旧 EQ 链
-            this.eqFilters.forEach(f => { try { f.disconnect() } catch (e) {} })
-            this.eqFilters = []
-
+            // 通过并联的干湿声 Gain 节点切换 EQ，避免反复 disconnect/connect 导致链路失效
+            const now = this.ctx.currentTime
             if (this.eqEnabled) {
-                this.createEqFilters()
-                this.source.connect(this.eqFilters[0])
-                for (let i = 0; i < this.eqFilters.length - 1; i++) {
-                    this.eqFilters[i].connect(this.eqFilters[i + 1])
-                }
-                this.eqFilters[this.eqFilters.length - 1].connect(this.analyser)
+                this.eqDryGain.gain.setValueAtTime(0, now)
+                this.eqWetGain.gain.setValueAtTime(1, now)
             } else {
-                this.source.connect(this.analyser)
+                this.eqDryGain.gain.setValueAtTime(1, now)
+                this.eqWetGain.gain.setValueAtTime(0, now)
             }
-            // analyser → destination 不动
         },
         setEqPreset(preset) {
             this.eqPreset = preset
@@ -1318,10 +1367,8 @@ export const usePlayerStore = defineStore('player', {
             if (index >= 0 && index < this.eqBands.length) {
                 this.eqBands[index].gain = gain
                 this.eqPreset = 'default'
-                if (this.eqEnabled) {
-                    if (this.eqFilters[index]) {
-                        this.eqFilters[index].gain.value = gain
-                    }
+                if (this.eqFilters[index]) {
+                    this.eqFilters[index].gain.value = gain
                 }
             }
         }

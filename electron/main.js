@@ -632,9 +632,15 @@ function checkForUpdates() {
                 const latestVersion = tag.replace('v', '')
                 const currentVersion = app.getVersion()
                 const notes = release.body || ''
-                // 构建直链下载地址（可靠，不依赖 API 返回 assets）
-                const directDownload = `https://github.com/xiaomingky/XiaoMingKY163_Player/releases/download/${tag}/XiaoMingKY163_Player_Setup_${latestVersion}.exe`
-                const downloadUrl = release.assets?.[0]?.browser_download_url || directDownload
+                // 从 release assets 中筛选真正的 Windows 安装包，避免下载 latest.yml / blockmap
+                const asset = release.assets?.find(a => {
+                    const name = a.name?.toLowerCase() || ''
+                    return name.endsWith('.exe')
+                })
+                // 兜底直链使用当前仓库与构建产物名称
+                const encodedFileName = encodeURIComponent(`茗韵时光 Setup ${latestVersion}.exe`)
+                const directDownload = `https://github.com/xiaomingky/MingYunTime/releases/download/${tag}/${encodedFileName}`
+                const downloadUrl = asset?.browser_download_url || directDownload
                 console.log('[Update] latest:', tag, 'current:', currentVersion)
                 if (latestVersion && latestVersion !== currentVersion) {
                     win?.webContents.send('update-available', tag, notes, downloadUrl)

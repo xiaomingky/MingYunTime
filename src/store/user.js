@@ -12,7 +12,10 @@ import request, {
     verifyCaptcha,
     playlistDelete,
     playlistUpdate,
-    playlistCoverUpdate
+    playlistCoverUpdate,
+    checkLockStatus,
+    verifyLockPassword,
+    syncDesktopAccount
 } from '../api'
 
 export const useUserStore = defineStore('user', {
@@ -24,7 +27,13 @@ export const useUserStore = defineStore('user', {
         likedPlaylistId: null,
         likedSongIds: new Set(),
         vipInfo: null,
-        playlistChanged: false
+        playlistChanged: false,
+        lockStatus: {
+            checked: false,
+            locked: false,
+            unlocked: false,
+            token: localStorage.getItem('music_cloud_token') || ''
+        }
     }),
     actions: {
         async loginWithCookie(cookieString) {
@@ -160,6 +169,7 @@ export const useUserStore = defineStore('user', {
                     await this.fetchUserDetail(profile.userId)
                     await this.fetchUserPlaylists(profile.userId)
                     this.fetchVipInfo()
+                    await this.syncCloudAccount()
                     return true
                 }
 
@@ -170,6 +180,7 @@ export const useUserStore = defineStore('user', {
                     await this.fetchUserDetail(accountRes.profile.userId)
                     await this.fetchUserPlaylists(accountRes.profile.userId)
                     this.fetchVipInfo()
+                    await this.syncCloudAccount()
                     return true
                 }
                 return false
@@ -249,6 +260,75 @@ export const useUserStore = defineStore('user', {
                 }
             } catch (e) {}
         },
+
+        // ---------- 自建后端账号同步 ----------
+        // 只拿到用于请求后端的令牌，不代表已经通过密码锁验证
+        async syncCloudAccount() {
+            if (!this.profile?.userId || !this.cookie) return
+            try {
+                const res = await syncDesktopAccount(this.profile.userId, this.cookie)
+                if (res.success && res.token) {
+                    this.lockStatus.token = res.token
+                    this.lockStatus.unlocked = false
+                    localStorage.setItem('music_cloud_token', res.token)
+                } else {
+                    this.clearLockSession()
+                }
+            } catch (e) {
+                console.error('Sync cloud account error:', e)
+                this.clearLockSession()
+            }
+        },
+
+        // ---------- 账号密码锁 ----------
+        async checkLockStatus() {
+            if (!this.profile?.userId) {
+                this.lockStatus = { checked: true, locked: false, unlocked: false, token: '' }
+                return { locked: false }
+            }
+            if (!this.lockStatus.token) {
+                this.lockStatus.checked = true
+                return { locked: false }
+            }
+            try {
+                const res = await checkLockStatus()
+                const locked = !!res.locked
+                this.lockStatus.checked = true
+                this.lockStatus.locked = locked
+                // 保留 token：未上锁时直接获得访问权限；上锁时用于后续验证密码
+                this.lockStatus.unlocked = !locked
+                return { locked }
+            } catch (e) {
+                console.error('Check lock status error:', e)
+                this.lockStatus.checked = true
+                if (e.response?.status === 401) {
+                    this.clearLockSession()
+                }
+                return { locked: false }
+            }
+        },
+        async verifyLockPassword(password) {
+            if (!this.lockStatus.token) return { success: false, message: '账号未同步，请重新登录' }
+            try {
+                const res = await verifyLockPassword(password)
+                if (res.success && res.token) {
+                    this.lockStatus.unlocked = true
+                    this.lockStatus.token = res.token
+                    localStorage.setItem('music_cloud_token', res.token)
+                    return { success: true }
+                }
+                return { success: false, message: res.message || '密码错误' }
+            } catch (e) {
+                console.error('Verify lock password error:', e)
+                return { success: false, message: '网络错误' }
+            }
+        },
+        clearLockSession() {
+            this.lockStatus.unlocked = false
+            this.lockStatus.token = ''
+            localStorage.removeItem('music_cloud_token')
+        },
+
         logout() {
             this.isLoggedIn = false
             this.profile = null
@@ -257,8 +337,10 @@ export const useUserStore = defineStore('user', {
             this.likedPlaylistId = null
             this.likedSongIds = new Set()
             this.vipInfo = null
+            this.lockStatus = { checked: false, locked: false, unlocked: false, token: '' }
             localStorage.removeItem('music_cookie')
             localStorage.removeItem('user_profile')
+            localStorage.removeItem('music_cloud_token')
         },
         async createPlaylist(name) {
             if (!this.isLoggedIn) return false

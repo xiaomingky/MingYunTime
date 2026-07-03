@@ -1,10 +1,35 @@
 import axios from 'axios'
 
 const request = axios.create({
-    baseURL: 'https://your-netease-api-server.com',
+    baseURL: 'https://api.xiaomingky.cn',
     timeout: 30000,
     withCredentials: true
 })
+
+// 用户自建后端（账号锁 + 云音乐）地址
+export const CLOUD_BASE_URL = 'https://music-admin.xiaomingky.cn'
+
+const cloudRequest = axios.create({
+    baseURL: CLOUD_BASE_URL,
+    timeout: 60000
+})
+
+cloudRequest.interceptors.request.use(config => {
+    const token = localStorage.getItem('music_cloud_token')
+    if (token) {
+        config.headers = config.headers || {}
+        config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+})
+
+cloudRequest.interceptors.response.use(
+    response => response.data,
+    error => {
+        if (error.response?.data) return error.response.data
+        return Promise.reject(error)
+    }
+)
 
 // Request interceptor to add cookie
 request.interceptors.request.use(
@@ -89,5 +114,13 @@ export const createQrCode = (key) => request.get(`/login/qr/create?key=${key}&qr
 export const checkQrStatus = (key) => request.get(`/login/qr/check?key=${key}&timestamp=${Date.now()}`)
 export const sentCaptcha = (phone) => request.get(`/captcha/sent?phone=${phone}`)
 export const verifyCaptcha = (phone, captcha) => request.get(`/captcha/verify?phone=${phone}&captcha=${captcha}`)
+
+// ---------- 自建后端：账号同步与锁（设置请去后端网站） ----------
+export const syncDesktopAccount = (userId, cookie) => cloudRequest.post('/api/auth/desktop-login', { userId, cookie })
+export const checkLockStatus = () => cloudRequest.get('/api/lock/status')
+export const verifyLockPassword = (password) => cloudRequest.post('/api/lock/verify', { password })
+
+// ---------- 自建后端：云音乐（仅列表/播放，上传请去后端网站） ----------
+export const getCloudSongs = () => cloudRequest.get('/api/cloud/list')
 
 export default request

@@ -1,4 +1,5 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
+import { useUserStore } from '../store/user'
 import Discovery from '../views/Discovery.vue'
 import PlaylistDetail from '../views/PlaylistDetail.vue'
 import Video from '../views/Video.vue'
@@ -7,6 +8,7 @@ import LocalMusic from '../views/LocalMusic.vue'
 import RecentPlay from '../views/RecentPlay.vue'
 import LocalVideo from '../views/LocalVideo.vue'
 import AlbumDetail from '../views/AlbumDetail.vue'
+import CloudMusic from '../views/CloudMusic.vue'
 
 const routes = [
     {
@@ -53,12 +55,47 @@ const routes = [
         path: '/desktop-lyrics',
         name: 'DesktopLyrics',
         component: () => import('../views/DesktopLyrics.vue')
+    },
+    {
+        path: '/cloud',
+        name: 'CloudMusic',
+        component: CloudMusic
     }
 ]
 
 const router = createRouter({
     history: createWebHashHistory(),
     routes
+})
+
+// 账号密码锁路由守护：访问“我喜欢的音乐”或自己创建的歌单时拦截
+let pendingLockTarget = null
+
+export function setPendingLockTarget(path) {
+    pendingLockTarget = path
+}
+
+export function getPendingLockTarget() {
+    const t = pendingLockTarget
+    pendingLockTarget = null
+    return t
+}
+
+router.beforeEach((to, from, next) => {
+    const userStore = useUserStore()
+    if (!userStore.isLoggedIn || !userStore.lockStatus.locked || userStore.lockStatus.unlocked) {
+        return next()
+    }
+    const id = to.params.id
+    if (!id) return next()
+
+    const isOwn = String(id) === String(userStore.likedPlaylistId) ||
+        userStore.playlists.some(p => String(p.id) === String(id))
+    if (isOwn) {
+        setPendingLockTarget(to.fullPath)
+        return next(false)
+    }
+    next()
 })
 
 export default router

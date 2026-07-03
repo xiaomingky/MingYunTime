@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, onUnmounted, watch, inject } from 'vue'
 import { useRouter } from 'vue-router'
 import { 
   getBanner, 
@@ -17,6 +17,7 @@ import { ChevronLeft, ChevronRight, Play, User, RefreshCw } from 'lucide-vue-nex
 const router = useRouter()
 const playerStore = usePlayerStore()
 const userStore = useUserStore()
+const requireLockForPlaylist = inject('requireLockForPlaylist')
 
 const banners = ref([])
 const currentBanner = ref(0)
@@ -91,7 +92,11 @@ const refreshData = async () => {
 defineExpose({ refreshData })
 
 const goToPlaylist = (id) => {
-  router.push(`/playlist/${id}`)
+  if (requireLockForPlaylist) {
+    requireLockForPlaylist(id)
+  } else {
+    router.push(`/playlist/${id}`)
+  }
 }
 
 const goToArtist = (id) => {
