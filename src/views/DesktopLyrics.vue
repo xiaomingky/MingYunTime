@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import { SkipBack, SkipForward, Play, Pause, X, Music, Lock, Unlock } from 'lucide-vue-next'
 
 const currentLyric = ref('茗韵时光')
@@ -30,6 +30,10 @@ let needMarqueeCheck = false
 // 歌词切换动画状态
 const lyricTransition = ref(false)
 const lyricKeyCounter = ref(0)
+
+const lyricFontFamily = computed(() => {
+    return currentFont.value ? `"${currentFont.value}", "Noto Serif SC", "Songti SC", serif` : '"Noto Serif SC", "Songti SC", serif'
+})
 
 const getBridge = () => {
   return window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer || window.electron
@@ -295,7 +299,7 @@ const close = () => {
           <span class="song-artist" :title="artist">{{ artist || '享受音乐' }}</span>
         </div>
 
-        <div class="lyric-content-area" :style="{ fontFamily: currentFont ? `'${currentFont}', sans-serif` : '' }">
+        <div class="lyric-content-area" :style="{ fontFamily: lyricFontFamily }">
           <div class="lyric-line-current" :class="{ 'lyric-fade-in': lyricTransition }" :key="lyricKeyCounter">
             <div class="marquee-scroll-wrap" ref="marqueeWrapRef">
               <div 

@@ -254,5 +254,4 @@ MIT
 
 ## 👤 联系
 
-- 网站：[xiaomingky.cn](https://xiaomingky.cn)
 - 问题反馈：[GitHub Issues](https://github.com/xiaomingky/MingYunTime/issues)

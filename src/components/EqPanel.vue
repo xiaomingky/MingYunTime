@@ -30,6 +30,16 @@ const presetColors = {
 const bandLabels = ['32', '64', '125', '250', '500', '1K', '2K', '4K', '8K', '16K']
 const dbRange = [-12, -9, -6, -3, 0, 3, 6, 9, 12]
 
+const showPanel = ref(false)
+
+const togglePanel = () => {
+    showPanel.value = !showPanel.value
+    // 首次打开面板时自动启用 EQ；关闭面板不再关闭 EQ，避免“关了就没效果”
+    if (showPanel.value && !playerStore.eqEnabled) {
+        playerStore.toggleEq()
+    }
+}
+
 const handlePresetClick = (key) => {
     playerStore.setEqPreset(key)
 }
@@ -105,22 +115,31 @@ const onSliderLeave = () => {
         <div
             class="eq-toggle-btn clickable"
             :class="{ active: playerStore.eqEnabled }"
-            @click="playerStore.toggleEq()"
+            @click="togglePanel"
             title="均衡器"
         >
             <SlidersHorizontal :size="16" />
         </div>
 
         <Transition name="eq-fade">
-            <div class="eq-panel" v-if="playerStore.eqEnabled">
+            <div class="eq-panel" v-if="showPanel">
                 <div class="eq-header">
                     <div class="eq-title-row">
                         <span class="eq-title">音频均衡器</span>
                         <span
                             class="eq-preset-dot"
                             :style="{ background: presetColors[playerStore.eqPreset] || '#999' }"
-                        ></span>
+                        >
+                        </span>
                         <span class="eq-preset-name">{{ presetLabels[playerStore.eqPreset] || '自定义' }}</span>
+                        <div
+                            class="eq-switch"
+                            :class="{ active: playerStore.eqEnabled }"
+                            @click="playerStore.toggleEq()"
+                            title="启用/关闭均衡器"
+                        >
+                            <div class="eq-switch-thumb"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -263,6 +282,39 @@ const onSliderLeave = () => {
     display: flex;
     align-items: center;
     gap: 10px;
+    width: 100%;
+}
+
+.eq-switch {
+    width: 36px;
+    height: 20px;
+    border-radius: 10px;
+    background: #e5e7eb;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.eq-switch.active {
+    background: var(--primary-color);
+}
+
+.eq-switch-thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+.eq-switch.active .eq-switch-thumb {
+    transform: translateX(16px);
 }
 
 .eq-title {

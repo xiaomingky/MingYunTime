@@ -10,8 +10,19 @@ const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
 const userStore = useUserStore()
 
-const songs = ref([])
+const allSongs = ref([])
+const currentCategory = ref('')
 const loading = ref(false)
+
+const categories = computed(() => {
+    const set = new Set(allSongs.value.map(s => s.category).filter(Boolean))
+    return Array.from(set).sort()
+})
+
+const songs = computed(() => {
+    if (!currentCategory.value) return allSongs.value
+    return allSongs.value.filter(s => s.category === currentCategory.value)
+})
 
 const canFetchCloud = () => {
     // 必须有同步令牌；若已上锁，则必须通过密码验证
@@ -30,7 +41,10 @@ const fetchSongs = async (skipLockCheck = false) => {
     try {
         const res = await getCloudSongs()
         if (res.songs) {
-            songs.value = res.songs
+            allSongs.value = res.songs
+            if (currentCategory.value && !categories.value.includes(currentCategory.value)) {
+                currentCategory.value = ''
+            }
         } else if (res.message) {
             messageStore.error(res.message)
         }
@@ -68,7 +82,7 @@ const getBridge = () => {
 
 const openAdmin = () => {
     const userId = userStore.profile?.userId || ''
-    const url = `https://music-admin.xiaomingky.cn?userId=${userId}`
+    const url = `${import.meta.env.VITE_CLOUD_BASE_URL}?userId=${userId}`
     const b = getBridge()
     if (b && b.send) {
         b.send('open-external', url)
@@ -124,22 +138,46 @@ defineExpose({ refreshData: fetchSongs })
     <div class="scroll-content">
       <div v-if="!userStore.isLoggedIn" class="empty-state">请先登录网易云账号</div>
       <div v-else-if="loading && songs.length === 0" class="empty-state">加载中...</div>
-      <div v-else-if="songs.length === 0" class="empty-state">
+      <div v-else-if="allSongs.length === 0" class="empty-state">
         暂无云音乐，请登录后端网站上传
       </div>
-      <div v-else class="song-list">
+      <div v-else>
+        <div v-if="categories.length > 0" class="category-tabs">
+          <button
+            class="category-tab"
+            :class="{ active: currentCategory === '' }"
+            @click="currentCategory = ''"
+          >
+            全部
+          </button>
+          <button
+            v-for="cat in categories"
+            :key="cat"
+            class="category-tab"
+            :class="{ active: currentCategory === cat }"
+            @click="currentCategory = cat"
+          >
+            {{ cat }}
+          </button>
+        </div>
+        <div v-if="songs.length === 0" class="empty-state">该分类下暂无歌曲</div>
+        <div v-else class="song-list">
         <div v-for="song in songs" :key="song.id" class="song-row" @dblclick="playSong(song)">
           <img v-if="song.coverUrl" :src="song.coverUrl" class="song-cover" />
           <div v-else class="song-cover placeholder">
             <Music :size="20" />
           </div>
           <div class="song-info">
-            <div class="song-name">{{ song.name }}</div>
+            <div class="song-name">
+              {{ song.name }}
+              <span v-if="song.category" class="category-tag">{{ song.category }}</span>
+            </div>
             <div class="song-meta">{{ song.artist }} · {{ formatDuration(song.duration) }}</div>
           </div>
           <button class="play-btn" @click="playSong(song)">
             <Play :size="18" />
           </button>
+        </div>
         </div>
       </div>
     </div>
@@ -183,6 +221,33 @@ defineExpose({ refreshData: fetchSongs })
   color: #fff;
   font-size: 13px;
   cursor: pointer;
+}
+.category-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 0 2px;
+}
+.category-tab {
+  padding: 6px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: rgba(255,255,255,0.7);
+  color: #555;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.category-tab:hover {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+.category-tab.active {
+  background: var(--primary-color);
+  color: #fff;
+  border-color: var(--primary-color);
+  box-shadow: 0 4px 10px rgba(236, 65, 65, 0.25);
 }
 .icon-btn {
   display: flex;
@@ -266,6 +331,18 @@ defineExpose({ refreshData: fetchSongs })
 .song-meta {
   font-size: 12px;
   color: #999;
+}
+.category-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(236, 65, 65, 0.1);
+  color: var(--primary-color);
+  font-size: 10px;
+  font-weight: 500;
+  margin-left: 6px;
+  vertical-align: middle;
 }
 .play-btn {
   width: 36px;

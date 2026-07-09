@@ -464,7 +464,7 @@ const openOsk = () => {
 
 const openAuthorLink = () => {
     const b = getBridge()
-    if (b) b.send('open-external', 'https://xiaomingky.cn')
+    if (b) b.send('open-external', import.meta.env.VITE_AUTHOR_URL || '')
 }
 const openGithub = () => {
     const b = getBridge()

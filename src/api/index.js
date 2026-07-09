@@ -1,13 +1,13 @@
 import axios from 'axios'
 
 const request = axios.create({
-    baseURL: 'https://api.xiaomingky.cn',
+    baseURL: import.meta.env.VITE_API_BASE_URL || '',
     timeout: 30000,
     withCredentials: true
 })
 
 // 用户自建后端（账号锁 + 云音乐）地址
-export const CLOUD_BASE_URL = 'https://music-admin.xiaomingky.cn'
+export const CLOUD_BASE_URL = import.meta.env.VITE_CLOUD_BASE_URL || ''
 
 const cloudRequest = axios.create({
     baseURL: CLOUD_BASE_URL,

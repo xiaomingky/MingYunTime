@@ -1,4 +1,4 @@
-﻿# 🎵 茗韵时光 (MingYun Time) — Music Player
+# 🎵 茗韵时光 (MingYun Time) — Music Player
 
 > **This project is entirely created by AI (Claude Code)** | [中文版](README.md)
 
@@ -239,5 +239,4 @@ MIT
 
 ## 👤 Contact
 
-- Website: [xiaomingky.cn](https://xiaomingky.cn)
 - Issues: [GitHub Issues](https://github.com/xiaomingky/MingYunTime/issues)

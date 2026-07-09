@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, BookOpen } from 'lucide-vue-next'
 import EnglishAnalysis from '../components/EnglishAnalysis.vue'
@@ -12,7 +12,7 @@ const playerStore = usePlayerStore()
 const userStore = useUserStore()
 const messageStore = useMessageStore()
 const router = useRouter()
-const lyricFontSize = ref(18)
+const lyricFontSize = ref(32)
 const showGifCover = ref(localStorage.getItem('song_detail_show_gif_cover') !== 'false')
 const showEnglishAnalysis = ref(false)
 
@@ -69,12 +69,19 @@ const getLineProgress = (index) => {
 
 let animationId = null
 let frameCount = 0
+const isPageVisible = ref(!document.hidden)
 
-// 逐词动画：直接操作 DOM 的 CSS 自定义属性，绕过 Vue 响应式，保持 60fps 丝滑
+const handleVisibilityChange = () => {
+    isPageVisible.value = !document.hidden
+}
+
+// 逐词动画：只刷新当前高亮行内的 word，避免全量 DOM 遍历
 const updateYrcWordProgress = () => {
     if (!hasYrcLyrics.value || !lyricContainer.value) return
     const nowMs = (playerStore.audio?.currentTime ?? playerStore.currentTime) * 1000
-    const wordSpans = lyricContainer.value.querySelectorAll('.yrc-word')
+    const activeLine = lyricContainer.value.querySelector('.lyric-line.active .yrc-text')
+    if (!activeLine) return
+    const wordSpans = activeLine.querySelectorAll('.yrc-word')
     for (let i = 0; i < wordSpans.length; i++) {
         const el = wordSpans[i]
         const ws = parseFloat(el.dataset.ws) // word startTime ms
@@ -92,18 +99,25 @@ const updateYrcWordProgress = () => {
 
 const updateVisualizer = () => {
   if (!playerStore.showSongDetail) {
+    if (animationId) cancelAnimationFrame(animationId)
+    animationId = null
+    return
+  }
+
+  // 页面不可见时空转，减少后台占用
+  if (document.hidden) {
     animationId = requestAnimationFrame(updateVisualizer)
     return
   }
   
-  // 逐词歌词动画更新（每帧）
+  // 逐词歌词动画更新（只刷新当前行）
   if (hasYrcLyrics.value && playerStore.isPlaying) {
       updateYrcWordProgress()
   }
   
   if (playerStore.isPlaying) {
     frameCount++
-    if (frameCount % 2 === 0) {
+    if (frameCount % 3 === 0) {
         const data = playerStore.updateFrequencyData()
         if (data) {
           const bars = rhythmBars.value
@@ -129,12 +143,30 @@ const updateVisualizer = () => {
   animationId = requestAnimationFrame(updateVisualizer)
 }
 
+const startVisualizer = () => {
+  if (!animationId) {
+    animationId = requestAnimationFrame(updateVisualizer)
+  }
+}
+
 onMounted(() => {
-  animationId = requestAnimationFrame(updateVisualizer)
+  if (playerStore.showSongDetail) startVisualizer()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onUnmounted(() => {
   if (animationId) cancelAnimationFrame(animationId)
+  animationId = null
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
+
+watch(() => playerStore.showSongDetail, (val) => {
+  if (val) {
+    startVisualizer()
+  } else if (animationId) {
+    cancelAnimationFrame(animationId)
+    animationId = null
+  }
 })
 
 const currentLyricIndex = computed(() => {
@@ -150,26 +182,86 @@ const currentLyricIndex = computed(() => {
 })
 
 const lyricContainer = ref(null)
+const lyricMode = ref('apple')
+const leavingIndexes = ref(new Set())
 
-const scrollToCenter = (index) => {
+const lyricFontFamily = computed(() => {
+    return playerStore.desktopLyricFont ? `"${playerStore.desktopLyricFont}", "Noto Serif SC", "Songti SC", serif` : '"Noto Serif SC", "Songti SC", serif'
+})
+
+// 伪随机：相同 seed 始终得到相同结果，避免渲染时 CSS 变量无限变化
+const pseudoRandom = (seed) => {
+    const x = Math.sin(seed) * 10000
+    return x - Math.floor(x)
+}
+
+const getParticleStyle = (lineIndex, charIndex) => {
+    const base = lineIndex * 1000 + charIndex
+    return {
+        '--tx': (pseudoRandom(base) * 70 - 35) + 'px',
+        '--ty': (pseudoRandom(base + 1) * 70 - 35) + 'px',
+        '--r': (pseudoRandom(base + 2) * 40 - 20) + 'deg',
+        '--d': (pseudoRandom(base + 3) * 0.25 + 0.45) + 's'
+    }
+}
+
+const getLineBlur = (index) => {
+    if (lyricMode.value !== 'apple') return 0
+    const distance = Math.abs(index - currentLyricIndex.value)
+    if (distance === 0) return 0
+    if (distance === 1) return 2
+    if (distance === 2) return 4
+    return Math.min(8, 5 + (distance - 3) * 1)
+}
+
+// 预计算每行模糊等级，避免模板中逐行调用函数
+const blurClassMap = computed(() => {
+    const map = {}
+    if (lyricMode.value !== 'apple') return map
+    const current = currentLyricIndex.value
+    displayLyrics.value.forEach((_, i) => {
+        const d = Math.abs(i - current)
+        if (d === 1) map[i] = 'blur-1'
+        else if (d === 2) map[i] = 'blur-2'
+        else if (d >= 3) map[i] = 'blur-far'
+    })
+    return map
+})
+
+const scrollToCenter = async (index) => {
+  await nextTick()
   if (!lyricContainer.value) return
   const lines = lyricContainer.value.querySelectorAll('.lyric-line')
   const activeLine = lines[index]
-  
-  if (activeLine) {
-    const containerHeight = lyricContainer.value.clientHeight
-    const lineTop = activeLine.offsetTop
-    const lineHeight = activeLine.clientHeight
-    const targetScroll = lineTop - (containerHeight / 2) + (lineHeight / 2)
-    
-    lyricContainer.value.scrollTo({
-      top: targetScroll,
-      behavior: 'smooth'
-    })
-  }
+  if (!activeLine) return
+
+  const containerRect = lyricContainer.value.getBoundingClientRect()
+  const activeRect = activeLine.getBoundingClientRect()
+  const containerCenter = containerRect.top + containerRect.height / 2
+  const activeCenter = activeRect.top + activeRect.height / 2
+  const currentScroll = lyricContainer.value.scrollTop
+  const offset = activeCenter - containerCenter
+
+  lyricContainer.value.scrollTo({
+    top: currentScroll + offset,
+    behavior: 'smooth'
+  })
 }
 
-watch(currentLyricIndex, (newIndex) => {
+const toggleLyricMode = () => {
+    lyricMode.value = lyricMode.value === 'apple' ? 'classic' : 'apple'
+    if (currentLyricIndex.value >= 0) {
+        scrollToCenter(currentLyricIndex.value)
+    }
+}
+
+watch(currentLyricIndex, (newIndex, oldIndex) => {
+  if (oldIndex != null && oldIndex >= 0 && oldIndex !== newIndex) {
+    leavingIndexes.value.add(oldIndex)
+    setTimeout(() => {
+      leavingIndexes.value.delete(oldIndex)
+    }, 700)
+  }
   if (newIndex >= 0) {
     scrollToCenter(newIndex)
   }
@@ -441,6 +533,9 @@ onMounted(() => {
                    <ImagePlay v-if="playerStore.bgMode === 'cover'" :size="18" />
                    <Image v-else :size="18" />
                 </div>
+                <div class="action-item lyric-mode-btn" :class="{ active: lyricMode === 'apple' }" :title="lyricMode === 'apple' ? '切换到经典歌词' : '切换到苹果风格歌词'" @click="toggleLyricMode">
+                   <span class="mode-label">{{ lyricMode === 'apple' ? 'A' : 'C' }}</span>
+                </div>
             </div>
             <div class="group">
                 <span class="label">桌面字体</span>
@@ -456,50 +551,63 @@ onMounted(() => {
             <div class="group">
                 <span class="label">字号</span>
                 <div class="size-btns">
-                   <Minus :size="14" class="clickable" @click="lyricFontSize = Math.max(12, lyricFontSize - 2)" />
+                   <Minus :size="14" class="clickable" @click="lyricFontSize = Math.max(32, lyricFontSize - 2)" />
                    <span class="curr-size">{{ lyricFontSize }}</span>
-                   <Plus :size="14" class="clickable" @click="lyricFontSize = Math.min(32, lyricFontSize + 2)" />
+                   <Plus :size="14" class="clickable" @click="lyricFontSize = lyricFontSize + 2" />
                 </div>
             </div>
         </div>
 
-        <!-- The ref must be on the container that has overflow-y: auto -->
-        <div class="lyric-wrapper" ref="lyricContainer">
-          <div 
-            v-for="(line, index) in displayLyrics" 
-            :key="index" 
-            class="lyric-line"
-            :class="{ active: index === currentLyricIndex, 'yrc-line': hasYrcLyrics }"
-            :style="{ 
-                fontSize: (index === currentLyricIndex ? lyricFontSize + 4 : lyricFontSize) + 'px',
-                fontFamily: playerStore.desktopLyricFont ? `'${playerStore.desktopLyricFont}', sans-serif` : 'inherit'
-            }"
-            @click="handleLyricClick(line.time)"
-          >
-            <!-- 逐词歌词模式 -->
-            <div v-if="hasYrcLyrics && line.words" class="main-text yrc-text">
-                <span 
-                    v-for="(word, wi) in line.words" 
-                    :key="wi"
-                    class="yrc-word"
-                    :data-ws="word.startTime"
-                    :data-wd="word.duration"
-                    style="--wp: 0"
-                >{{ word.text }}</span>
-            </div>
-            <!-- 普通歌词模式 -->
-            <div 
-                v-else
-                class="main-text" 
-                :style="{ '--progress': index === currentLyricIndex ? getLineProgress(index) + '%' : '0%' }"
-            >
-                {{ line.text }}
-            </div>
-            <div v-if="line.ttext" class="trans-text">{{ line.ttext }}</div>
+        <div class="lyric-wrapper" ref="lyricContainer" :class="['mode-' + lyricMode]">
+          <div class="lyric-track">
+              <div 
+                v-for="(line, index) in displayLyrics" 
+                :key="index" 
+                class="lyric-line"
+                :class="[ 
+                    index === currentLyricIndex ? 'active' : '',
+                    hasYrcLyrics ? 'yrc-line' : '',
+                    index < currentLyricIndex ? 'played' : '',
+                    leavingIndexes.has(index) ? 'leaving' : '',
+                    blurClassMap[index] || ''
+                ]"
+                :style="{ 
+                    fontSize: (index === currentLyricIndex ? lyricFontSize + 4 : lyricFontSize) + 'px',
+                    fontFamily: lyricFontFamily
+                }"
+                @click="handleLyricClick(line.time)"
+              >
+                <!-- 逐词歌词模式 -->
+                <div v-if="hasYrcLyrics && line.words" class="main-text yrc-text">
+                    <span 
+                        v-for="(word, wi) in line.words" 
+                        :key="wi"
+                        class="yrc-word"
+                        :data-ws="word.startTime"
+                        :data-wd="word.duration"
+                        style="--wp: 0"
+                    >{{ word.text }}</span>
+                </div>
+                <!-- 普通歌词模式 -->
+                <div 
+                    v-else
+                    class="main-text" 
+                    :style="{ '--progress': index === currentLyricIndex ? getLineProgress(index) + '%' : '0%' }"
+                >
+                    <template v-if="leavingIndexes.has(index) && line.text.length <= 30">
+                        <span 
+                            v-for="(char, ci) in line.text" 
+                            :key="ci"
+                            class="lyric-char"
+                            :style="getParticleStyle(index, ci)"
+                        >{{ char }}</span>
+                    </template>
+                    <template v-else>{{ line.text }}</template>
+                </div>
+                <div v-if="line.ttext" class="trans-text">{{ line.ttext }}</div>
+              </div>
+              <div v-if="!displayLyrics.length" class="no-lyric">纯音乐，请欣赏</div>
           </div>
-          <div v-if="!displayLyrics.length" class="no-lyric">纯音乐，请欣赏</div>
-          <!-- Spacer for bottom centering -->
-          <div class="lyric-spacer"></div>
         </div>
       </div>
 
@@ -911,7 +1019,7 @@ onMounted(() => {
 }
 
 .main-content.analysis-active .right-lyrics .lyric-wrapper {
-  padding: 25vh 0 25vh;
+  padding: 0;
 }
 
 .lyric-controls {
@@ -961,40 +1069,135 @@ onMounted(() => {
 
 .lyric-wrapper {
   flex: 1;
+  position: relative;
   overflow-y: auto;
   scroll-behavior: smooth;
-  mask-image: linear-gradient(to bottom, transparent 0%, black 5%, black 95%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 5%, black 95%, transparent 100%);
-  padding: 30vh 0;
+  mask-image: linear-gradient(to bottom, transparent 0%, black 8%, black 92%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 8%, black 92%, transparent 100%);
+}
+
+.lyric-track {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 50vh 0;
 }
 
 .lyric-line {
-  line-height: 1.6;
+  line-height: 1.7;
   overflow-wrap: break-word;
   word-break: break-word;
   white-space: normal;
-  padding: 15px 8px;
+  padding: 16px 24px;
   width: 100%;
-  transition: opacity 0.3s, transform 0.3s cubic-bezier(0.2, 0, 0.2, 1);
+  max-width: 90%;
   cursor: pointer;
   text-align: center;
-  color: rgba(0,0,0,0.4);
+  color: rgba(0,0,0,0.55);
   box-sizing: border-box;
   transform-origin: center center;
+  opacity: 0.55;
+  transition:
+    color 0.45s cubic-bezier(0.34, 1.56, 0.64, 1),
+    transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1),
+    filter 0.55s cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.lyric-line.active,
+.lyric-line.leaving {
+  will-change: transform, opacity;
 }
 
 .is-cover-mode .lyric-line {
-  color: rgba(0, 0, 0, 0.55);
+  color: rgba(0, 0, 0, 0.6);
 }
 
 .lyric-line:hover {
-    color: #000;
+    color: rgba(0,0,0,0.85);
+    opacity: 0.85;
+}
+
+.lyric-line.played {
+  opacity: 0.3;
+  color: rgba(0,0,0,0.45);
+  filter: none !important;
 }
 
 .lyric-line.active {
   color: #000 !important;
   font-weight: 700;
-  transform: scale(1.05); /* 稍微降低缩放防止边缘模糊 */
+  opacity: 1;
+  animation: lyric-enter 0.55s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes lyric-enter {
+  0% {
+    opacity: 0.2;
+    transform: translateY(24px) scale(0.94);
+    filter: blur(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+.lyric-line.leaving {
+  opacity: 0 !important;
+  transform: translateY(-28px);
+  pointer-events: none;
+  filter: none !important;
+}
+
+.lyric-line.leaving .lyric-char {
+  animation: particle-scatter var(--d, 0.55s) cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.lyric-line.leaving .yrc-word {
+  animation: particle-scatter-word 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.lyric-line.blur-1 {
+  filter: blur(2px);
+}
+
+.lyric-line.blur-2 {
+  filter: blur(4px);
+}
+
+.lyric-line.blur-far {
+  filter: blur(8px);
+}
+
+.mode-classic .lyric-line.blur-1,
+.mode-classic .lyric-line.blur-2,
+.mode-classic .lyric-line.blur-far {
+  filter: none !important;
+}
+
+@keyframes particle-scatter {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--tx), var(--ty)) rotate(var(--r));
+  }
+}
+
+@keyframes particle-scatter-word {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-18px);
+  }
 }
 
 .lyric-line.active .main-text {
@@ -1012,14 +1215,12 @@ onMounted(() => {
 }
 
 .no-lyric {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
     color: rgba(0,0,0,0.3);
     font-size: 18px;
     white-space: nowrap;
     pointer-events: none;
+    padding: 40vh 0;
+    text-align: center;
 }
 
 .main-text {
@@ -1035,28 +1236,32 @@ onMounted(() => {
   white-space: normal;
 }
 
+.lyric-char {
+  display: inline-block;
+  will-change: transform, opacity;
+}
+
 .trans-text {
-    font-size: 0.85em;
-    margin-top: 6px;
-    opacity: 0.8;
+    font-size: 0.82em;
+    margin-top: 8px;
+    opacity: 0.85;
     font-weight: 400;
-    line-height: 1.4;
-    color: rgba(0,0,0,0.6);
+    line-height: 1.45;
+    color: inherit;
 }
 
-/* === 逐词歌词 (YRC) Apple Music 风格 === */
+/* === 逐词歌词 (YRC) 风格 === */
 .yrc-line {
-    transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), 
-                transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.yrc-line:not(.active) {
-    opacity: 0.5;
+    transition:
+        color 0.45s cubic-bezier(0.34, 1.56, 0.64, 1),
+        transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
+        filter 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
+        opacity 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 .yrc-text {
     display: inline;
-    line-height: 1.7;
+    line-height: 1.8;
 }
 
 .yrc-word {
@@ -1091,7 +1296,45 @@ onMounted(() => {
 
 .lyric-line:not(.active) .yrc-word {
     background: none;
-    -webkit-text-fill-color: rgba(0,0,0,0.4);
+    -webkit-text-fill-color: rgba(0,0,0,0.55);
+}
+
+/* === 经典模式 === */
+.mode-classic .lyric-line {
+    filter: none !important;
+    transform: none !important;
+    opacity: 0.65;
+    color: rgba(0,0,0,0.55);
+}
+
+.mode-classic .lyric-line.active {
+    opacity: 1;
+    color: #000 !important;
+}
+
+.mode-classic .lyric-line.played {
+    opacity: 0.35;
+}
+
+.mode-classic .lyric-line.leaving {
+    opacity: 0.35 !important;
+    transform: none !important;
+}
+
+.mode-classic .lyric-line.leaving .lyric-char,
+.mode-classic .lyric-line.leaving .yrc-word {
+    animation: none;
+}
+
+.mode-classic .lyric-line:not(.active) .yrc-word {
+    -webkit-text-fill-color: rgba(0,0,0,0.55);
+}
+
+/* === 歌词模式切换按钮 === */
+.lyric-mode-btn .mode-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: inherit;
 }
 
 /* Comment Styles */

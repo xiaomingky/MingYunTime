@@ -44,7 +44,7 @@ export const usePlayerStore = defineStore('player', {
         quality: localStorage.getItem('music_quality') || 'standard',
         playbackRate: parseFloat(localStorage.getItem('playback_rate') || '1'),
         autoFetchLyric: localStorage.getItem('auto_fetch_lyric') !== 'false',
-        eqEnabled: false,
+        eqEnabled: localStorage.getItem('eq_enabled') === 'true',
         eqPreset: 'default',
         eqBands: [
             { freq: 32, gain: 0 },
@@ -1338,16 +1338,25 @@ export const usePlayerStore = defineStore('player', {
         },
         toggleEq() {
             this.eqEnabled = !this.eqEnabled
-            if (!this.ctx || !this.eqDryGain || !this.eqWetGain) return
+            try { localStorage.setItem('eq_enabled', this.eqEnabled) } catch (e) {}
+            if (!this.ctx || !this.eqDryGain || !this.eqWetGain) {
+                // 音频图尚未初始化，状态已记录，重建时会自动应用
+                return
+            }
 
             // 通过并联的干湿声 Gain 节点切换 EQ，避免反复 disconnect/connect 导致链路失效
             const now = this.ctx.currentTime
+            const ramp = 0.03
             if (this.eqEnabled) {
-                this.eqDryGain.gain.setValueAtTime(0, now)
-                this.eqWetGain.gain.setValueAtTime(1, now)
+                this.eqDryGain.gain.setValueAtTime(this.eqDryGain.gain.value, now)
+                this.eqDryGain.gain.linearRampToValueAtTime(0, now + ramp)
+                this.eqWetGain.gain.setValueAtTime(this.eqWetGain.gain.value, now)
+                this.eqWetGain.gain.linearRampToValueAtTime(1, now + ramp)
             } else {
-                this.eqDryGain.gain.setValueAtTime(1, now)
-                this.eqWetGain.gain.setValueAtTime(0, now)
+                this.eqDryGain.gain.setValueAtTime(this.eqDryGain.gain.value, now)
+                this.eqDryGain.gain.linearRampToValueAtTime(1, now + ramp)
+                this.eqWetGain.gain.setValueAtTime(this.eqWetGain.gain.value, now)
+                this.eqWetGain.gain.linearRampToValueAtTime(0, now + ramp)
             }
         },
         setEqPreset(preset) {
