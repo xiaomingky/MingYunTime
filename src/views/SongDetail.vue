@@ -1122,7 +1122,6 @@ onMounted(() => {
 .lyric-line.played {
   opacity: 0.3;
   color: rgba(0,0,0,0.45);
-  filter: none !important;
 }
 
 .lyric-line.active {
@@ -1146,18 +1145,14 @@ onMounted(() => {
 }
 
 .lyric-line.leaving {
-  opacity: 0 !important;
-  transform: translateY(-28px);
+  opacity: 0.35 !important;
+  transform: none !important;
   pointer-events: none;
-  filter: none !important;
 }
 
-.lyric-line.leaving .lyric-char {
-  animation: particle-scatter var(--d, 0.55s) cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-}
-
+.lyric-line.leaving .lyric-char,
 .lyric-line.leaving .yrc-word {
-  animation: particle-scatter-word 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  animation: none;
 }
 
 .lyric-line.blur-1 {
