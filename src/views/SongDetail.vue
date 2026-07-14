@@ -228,22 +228,65 @@ const blurClassMap = computed(() => {
     return map
 })
 
-// 歌词前/歌词间隙显示气泡等待动画
-const showBubbleWait = computed(() => {
+// 歌词前/歌词间隙显示气泡等待动画（气泡逐个被戳破消失）
+const bubbleWaitState = computed(() => {
     const lrc = displayLyrics.value
-    if (!lrc || !lrc.length) return false
+    if (!lrc || !lrc.length) return { show: false, bubbles: [] }
     const t = playerStore.currentTime
     const idx = currentLyricIndex.value
+
+    let waitStart, waitEnd
     if (idx === -1) {
-        return t < lrc[0].time - 0.5 && lrc[0].time > 1.5
+        waitStart = 0
+        waitEnd = lrc[0].time
+        // 第一段歌词开始前留白太短就不显示
+        if (waitEnd < 1.5) return { show: false, bubbles: [] }
+    } else {
+        const cur = lrc[idx]
+        const next = lrc[idx + 1]
+        if (!next) return { show: false, bubbles: [] }
+        const curEnd = cur.time + (cur.duration ? cur.duration / 1000 : 0)
+        waitStart = curEnd
+        waitEnd = next.time
+        // 歌词间隙太短就不显示
+        if (waitEnd - waitStart < 2.0) return { show: false, bubbles: [] }
     }
-    const cur = lrc[idx]
-    const next = lrc[idx + 1]
-    if (!next) return false
-    const curEnd = cur.time + (cur.duration ? cur.duration / 1000 : 0)
-    const gap = next.time - curEnd
-    if (gap < 2.5) return false
-    return t > curEnd + 0.3 && t < next.time - 0.3
+
+    // 在完整等待区间内显示
+    if (t < waitStart + 0.1 || t > waitEnd - 0.1) return { show: false, bubbles: [] }
+
+    const totalWait = waitEnd - waitStart
+
+    // 根据等待时长决定气泡数量，每约 0.6s 一个，最少 4 个最多 10 个
+    const count = Math.max(4, Math.min(10, Math.round(totalWait / 0.6)))
+
+    // 气泡按顺序被戳破：
+    // 第 i 个气泡在 waitStart + (i + 1) * (totalWait / (count + 1)) 时被戳破
+    const popInterval = totalWait / (count + 1)
+    const bubbles = []
+
+    for (let i = 0; i < count; i++) {
+        const popAt = waitStart + (i + 1) * popInterval
+        const popProgress = Math.min(1, Math.max(0, (t - (popAt - 0.12)) / 0.12))
+        const isPopped = t >= popAt
+        const isPopping = t >= popAt - 0.12 && t < popAt
+
+        // 未戳破时正常显示；戳破瞬间先放大再消失
+        let scale = 1
+        let opacity = 0.8
+        if (isPopped) {
+            scale = 0
+            opacity = 0
+        } else if (isPopping) {
+            // 0~1 进度：放大到 1.3 然后缩到 0
+            scale = popProgress < 0.5 ? 1 + popProgress * 0.6 : 1.3 - (popProgress - 0.5) * 2.6
+            opacity = 1 - popProgress
+        }
+
+        bubbles.push({ scale, opacity })
+    }
+
+    return { show: true, bubbles }
 })
 
 const scrollToCenter = async (index) => {
@@ -626,8 +669,13 @@ onMounted(() => {
               </div>
               <div v-if="!displayLyrics.length" class="no-lyric">纯音乐，请欣赏</div>
           </div>
-          <div v-if="showBubbleWait" class="lyric-bubble-wait">
-              <div class="bubble" v-for="i in 5" :key="i" :style="{ animationDelay: (i * 0.15) + 's' }"></div>
+          <div v-if="bubbleWaitState.show" class="lyric-bubble-wait">
+              <div
+                  class="bubble"
+                  v-for="(b, i) in bubbleWaitState.bubbles"
+                  :key="i"
+                  :style="{ opacity: b.opacity, transform: `scale(${b.scale})` }"
+              ></div>
           </div>
         </div>
       </div>
@@ -1238,29 +1286,24 @@ onMounted(() => {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 10px;
+    gap: 5px;
+    width: 100%;
+    max-width: 90%;
+    padding: 16px 24px;
+    line-height: 1.7;
+    box-sizing: border-box;
     pointer-events: none;
     z-index: 5;
 }
 
 .lyric-bubble-wait .bubble {
-    width: 10px;
-    height: 10px;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
     background: var(--primary-color);
-    opacity: 0.4;
-    animation: bubble-float 1.2s ease-in-out infinite;
-}
-
-@keyframes bubble-float {
-    0%, 100% {
-        transform: translateY(0) scale(1);
-        opacity: 0.35;
-    }
-    50% {
-        transform: translateY(-18px) scale(1.15);
-        opacity: 0.85;
-    }
+    flex-shrink: 0;
+    opacity: 0.8;
+    will-change: transform, opacity;
 }
 
 .no-lyric {

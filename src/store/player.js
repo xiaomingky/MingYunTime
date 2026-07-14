@@ -319,6 +319,9 @@ export const usePlayerStore = defineStore('player', {
                     await this.ctx.resume()
                 }
 
+                // 每次新播放/重新播放都强制回到歌曲开头
+                this.audio.currentTime = 0
+
                 this.audio.play().then(() => {
                     this.isPlaying = true
                 }).catch(error => {
