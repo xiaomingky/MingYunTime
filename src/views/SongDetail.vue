@@ -692,12 +692,21 @@ onMounted(() => {
               </div>
               <div v-if="!displayLyrics.length" class="no-lyric">纯音乐，请欣赏</div>
           </div>
-          <div v-if="bubbleWaitState.show" class="lyric-bubble-wait">
+          <div
+              v-if="bubbleWaitState.show"
+              class="lyric-bubble-wait"
+              :style="{ gap: Math.round(lyricFontSize / 3) + 'px' }"
+          >
               <div
                   class="bubble"
                   v-for="(b, i) in bubbleWaitState.bubbles"
                   :key="i"
-                  :style="{ opacity: b.opacity, transform: `scale(${b.scale})` }"
+                  :style="{
+                      opacity: b.opacity,
+                      transform: `scale(${b.scale})`,
+                      width: lyricFontSize + 'px',
+                      height: lyricFontSize + 'px'
+                  }"
               ></div>
           </div>
         </div>
@@ -1309,7 +1318,6 @@ onMounted(() => {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
     width: 100%;
     max-width: 90%;
     padding: 0 24px;
@@ -1319,8 +1327,8 @@ onMounted(() => {
 }
 
 .lyric-bubble-wait .bubble {
-    width: 10px;
-    height: 10px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     background: var(--primary-color);
     flex-shrink: 0;
