@@ -1154,6 +1154,16 @@ export const usePlayerStore = defineStore('player', {
             this.localSongs = this.localSongs.filter(s => !paths.includes(s.path))
             localStorage.setItem('local_songs', JSON.stringify(this.localSongs))
         },
+        reorderLocalSongs(fromIndex, toIndex) {
+            if (fromIndex === toIndex) return
+            if (fromIndex < 0 || fromIndex >= this.localSongs.length) return
+            if (toIndex < 0 || toIndex >= this.localSongs.length) return
+            const list = [...this.localSongs]
+            const [item] = list.splice(fromIndex, 1)
+            list.splice(toIndex, 0, item)
+            this.localSongs = list
+            localStorage.setItem('local_songs', JSON.stringify(this.localSongs))
+        },
         setQuality(q) {
             this.quality = q
             localStorage.setItem('music_quality', q)

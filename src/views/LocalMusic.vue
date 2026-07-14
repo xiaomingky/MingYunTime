@@ -1,6 +1,6 @@
 <script setup>
 import { usePlayerStore } from '../store/player'
-import { FolderOpen, Play, Search, Download, Trash2, FolderPlus, CheckSquare, Square, Image, ImagePlay, Edit3, X, Camera } from 'lucide-vue-next'
+import { FolderOpen, Play, Search, Download, Trash2, FolderPlus, CheckSquare, Square, Image, ImagePlay, Edit3, X, Camera, GripVertical } from 'lucide-vue-next'
 import { ref, computed } from 'vue'
 import { cloudSearch, getNewLyric } from '../api'
 import { useMessageStore } from '../store/message'
@@ -184,6 +184,42 @@ const toggleGifCover = () => {
     localStorage.setItem('local_show_gif_cover', showGifCover.value)
 }
 
+// 拖拽排序
+const dragFromIndex = ref(-1)
+const dragOverIndex = ref(-1)
+
+const resetDrag = () => {
+    dragFromIndex.value = -1
+    dragOverIndex.value = -1
+}
+
+const onDragStart = (index, e) => {
+    dragFromIndex.value = index
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+}
+
+const onDragOver = (index, e) => {
+    e.preventDefault()
+    dragOverIndex.value = index
+}
+
+const onDragLeave = (e) => {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+        dragOverIndex.value = -1
+    }
+}
+
+const onDrop = (index, e) => {
+    e.preventDefault()
+    if (dragFromIndex.value !== -1 && dragFromIndex.value !== index) {
+        playerStore.reorderLocalSongs(dragFromIndex.value, index)
+    }
+    resetDrag()
+}
+
+const onDragEnd = () => resetDrag()
+
 const getCoverUrl = (song) => {
     if (!song.al?.picUrl) return ''
     if (!showGifCover.value && song.al.picUrl.startsWith('song-cover:')) {
@@ -318,6 +354,7 @@ const saveMetadata = async () => {
 
     <div class="track-list">
       <div class="list-header">
+        <div class="col-drag"></div>
         <div class="col-check" @click="toggleSelectAll">
             <CheckSquare v-if="isAllSelected" :size="16" class="check-icon active" />
             <Square v-else :size="16" class="check-icon" />
@@ -328,14 +365,20 @@ const saveMetadata = async () => {
         <div class="col-album">大小</div>
         <div class="col-actions">操作</div>
       </div>
-      
-      <div 
-        v-for="(song, index) in playerStore.localSongs" 
-        :key="song.path" 
+
+      <div
+        v-for="(song, index) in playerStore.localSongs"
+        :key="song.path"
         class="track-item"
-        :class="{ active: playerStore.currentSong.path === song.path, selected: selectedPaths.includes(song.path) }"
+        :class="{ active: playerStore.currentSong.path === song.path, selected: selectedPaths.includes(song.path), dragging: dragFromIndex === index, 'drag-over': dragOverIndex === index && dragFromIndex !== index }"
         @dblclick="playLocal(song)"
+        @dragover.prevent="onDragOver(index, $event)"
+        @drop.prevent="onDrop(index, $event)"
+        @dragleave="onDragLeave"
       >
+        <div class="col-drag" draggable="true" @dragstart.stop="onDragStart(index, $event)" @dragend.stop="onDragEnd">
+            <GripVertical :size="16" />
+        </div>
         <div class="col-check" @click.stop="toggleSelect(song)">
             <CheckSquare v-if="selectedPaths.includes(song.path)" :size="16" class="check-icon active" />
             <Square v-else :size="16" class="check-icon" />
@@ -588,6 +631,28 @@ const saveMetadata = async () => {
 
 .track-item.selected {
     background-color: #f0f0f0;
+}
+
+.col-drag {
+    width: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ccc;
+    cursor: grab;
+    user-select: none;
+}
+
+.col-drag:active {
+    cursor: grabbing;
+}
+
+.track-item.dragging {
+    opacity: 0.45;
+}
+
+.track-item.drag-over {
+    border-top: 2px solid var(--primary-color);
 }
 
 .col-check {

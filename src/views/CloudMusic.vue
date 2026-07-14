@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, watch, computed } from 'vue'
-import { Play, Cloud, Music, ExternalLink, RefreshCw } from 'lucide-vue-next'
-import { getCloudSongs } from '../api'
+import { Play, Cloud, Music, ExternalLink, RefreshCw, GripVertical } from 'lucide-vue-next'
+import { getCloudSongs, reorderCloudSongs } from '../api'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
 import { useUserStore } from '../store/user'
@@ -98,6 +98,72 @@ const formatDuration = (seconds) => {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
+// 拖拽排序
+const dragFromIndex = ref(-1)
+const dragOverIndex = ref(-1)
+
+const resetDrag = () => {
+    dragFromIndex.value = -1
+    dragOverIndex.value = -1
+}
+
+const onDragStart = (index, e) => {
+    dragFromIndex.value = index
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+}
+
+const onDragOver = (index, e) => {
+    e.preventDefault()
+    dragOverIndex.value = index
+}
+
+const onDragLeave = (e) => {
+    if (!e.currentTarget.contains(e.relatedTarget)) {
+        dragOverIndex.value = -1
+    }
+}
+
+const onDrop = async (index, e) => {
+    e.preventDefault()
+    const from = dragFromIndex.value
+    if (from === -1 || from === index) {
+        resetDrag()
+        return
+    }
+
+    const visible = [...songs.value]
+    const [moved] = visible.splice(from, 1)
+    visible.splice(index, 0, moved)
+
+    let moves
+    if (!currentCategory.value) {
+        // 全部分类：直接按可见顺序赋值 sort_order
+        moves = visible.map((s, i) => ({ id: s.id, sortOrder: i }))
+    } else {
+        // 单个分类：用最大 sort_order 之后的区间，避免打乱其他分类
+        const maxSort = Math.max(0, ...allSongs.value.map(s => s.sortOrder || 0))
+        moves = visible.map((s, i) => ({ id: s.id, sortOrder: maxSort + 1 + i }))
+    }
+
+    try {
+        const res = await reorderCloudSongs(moves)
+        if (res.success) {
+            messageStore.success('排序已保存')
+            await fetchSongs(true)
+        } else {
+            messageStore.error(res.message || '排序保存失败')
+        }
+    } catch (err) {
+        console.error('Reorder cloud songs error:', err)
+        messageStore.error('排序保存失败，请检查后端服务')
+    } finally {
+        resetDrag()
+    }
+}
+
+const onDragEnd = () => resetDrag()
+
 onMounted(() => {
     if (userStore.isLoggedIn && canFetchCloud()) {
         fetchSongs()
@@ -162,7 +228,19 @@ defineExpose({ refreshData: fetchSongs })
         </div>
         <div v-if="songs.length === 0" class="empty-state">该分类下暂无歌曲</div>
         <div v-else class="song-list">
-        <div v-for="song in songs" :key="song.id" class="song-row" @dblclick="playSong(song)">
+        <div
+          v-for="(song, index) in songs"
+          :key="song.id"
+          class="song-row"
+          :class="{ dragging: dragFromIndex === index, 'drag-over': dragOverIndex === index && dragFromIndex !== index }"
+          @dblclick="playSong(song)"
+          @dragover.prevent="onDragOver(index, $event)"
+          @drop.prevent="onDrop(index, $event)"
+          @dragleave="onDragLeave"
+        >
+          <div class="drag-handle" draggable="true" @dragstart.stop="onDragStart(index, $event)" @dragend.stop="onDragEnd">
+            <GripVertical :size="16" />
+          </div>
           <img v-if="song.coverUrl" :src="song.coverUrl" class="song-cover" />
           <div v-else class="song-cover placeholder">
             <Music :size="20" />
@@ -304,6 +382,24 @@ defineExpose({ refreshData: fetchSongs })
 }
 .song-row:hover {
   background: #f9f9f9;
+}
+.song-row.dragging {
+  opacity: 0.45;
+}
+.song-row.drag-over {
+  border-top: 2px solid var(--primary-color);
+}
+.drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ccc;
+  cursor: grab;
+  user-select: none;
+  margin-left: -6px;
+}
+.drag-handle:active {
+  cursor: grabbing;
 }
 .song-cover {
   width: 48px;

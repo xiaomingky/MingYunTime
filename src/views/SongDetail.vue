@@ -228,6 +228,24 @@ const blurClassMap = computed(() => {
     return map
 })
 
+// 歌词前/歌词间隙显示气泡等待动画
+const showBubbleWait = computed(() => {
+    const lrc = displayLyrics.value
+    if (!lrc || !lrc.length) return false
+    const t = playerStore.currentTime
+    const idx = currentLyricIndex.value
+    if (idx === -1) {
+        return t < lrc[0].time - 0.5 && lrc[0].time > 1.5
+    }
+    const cur = lrc[idx]
+    const next = lrc[idx + 1]
+    if (!next) return false
+    const curEnd = cur.time + (cur.duration ? cur.duration / 1000 : 0)
+    const gap = next.time - curEnd
+    if (gap < 2.5) return false
+    return t > curEnd + 0.3 && t < next.time - 0.3
+})
+
 const scrollToCenter = async (index) => {
   await nextTick()
   if (!lyricContainer.value) return
@@ -607,6 +625,9 @@ onMounted(() => {
                 <div v-if="line.ttext" class="trans-text">{{ line.ttext }}</div>
               </div>
               <div v-if="!displayLyrics.length" class="no-lyric">纯音乐，请欣赏</div>
+          </div>
+          <div v-if="showBubbleWait" class="lyric-bubble-wait">
+              <div class="bubble" v-for="i in 5" :key="i" :style="{ animationDelay: (i * 0.15) + 's' }"></div>
           </div>
         </div>
       </div>
@@ -1207,6 +1228,39 @@ onMounted(() => {
      -webkit-background-clip: text;
      background-clip: text;
      -webkit-text-fill-color: transparent;
+}
+
+.lyric-bubble-wait {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    pointer-events: none;
+    z-index: 5;
+}
+
+.lyric-bubble-wait .bubble {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--primary-color);
+    opacity: 0.4;
+    animation: bubble-float 1.2s ease-in-out infinite;
+}
+
+@keyframes bubble-float {
+    0%, 100% {
+        transform: translateY(0) scale(1);
+        opacity: 0.35;
+    }
+    50% {
+        transform: translateY(-18px) scale(1.15);
+        opacity: 0.85;
+    }
 }
 
 .no-lyric {

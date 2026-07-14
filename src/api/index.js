@@ -122,5 +122,6 @@ export const verifyLockPassword = (password) => cloudRequest.post('/api/lock/ver
 
 // ---------- 自建后端：云音乐（仅列表/播放，上传请去后端网站） ----------
 export const getCloudSongs = () => cloudRequest.get('/api/cloud/list')
+export const reorderCloudSongs = (moves) => cloudRequest.post('/web/cloud/reorder', { moves })
 
 export default request
