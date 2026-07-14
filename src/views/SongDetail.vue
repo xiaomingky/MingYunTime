@@ -109,7 +109,10 @@ const updateVisualizer = () => {
     animationId = requestAnimationFrame(updateVisualizer)
     return
   }
-  
+
+  // 气泡等待动画（使用 requestAnimationFrame 更丝滑）
+  updateBubbleWait()
+
   // 逐词歌词动画更新（只刷新当前行）
   if (hasYrcLyrics.value && playerStore.isPlaying) {
       updateYrcWordProgress()
@@ -228,66 +231,86 @@ const blurClassMap = computed(() => {
     return map
 })
 
-// 歌词前/歌词间隙显示气泡等待动画（气泡逐个被戳破消失）
-const bubbleWaitState = computed(() => {
+// 歌词前/歌词间隙显示气泡等待动画（从右到左逐个戳破）
+const bubbleWaitState = ref({ show: false, bubbles: [] })
+
+const updateBubbleWait = () => {
     const lrc = displayLyrics.value
-    if (!lrc || !lrc.length) return { show: false, bubbles: [] }
-    const t = playerStore.currentTime
+    if (!lrc || !lrc.length) {
+        bubbleWaitState.value = { show: false, bubbles: [] }
+        return
+    }
+    // 使用音频高精度时间，动画更丝滑
+    const t = playerStore.audio?.currentTime ?? playerStore.currentTime
     const idx = currentLyricIndex.value
 
     let waitStart, waitEnd
     if (idx === -1) {
         waitStart = 0
         waitEnd = lrc[0].time
-        // 第一段歌词开始前留白太短就不显示
-        if (waitEnd < 1.5) return { show: false, bubbles: [] }
+        if (waitEnd < 1.5) {
+            bubbleWaitState.value = { show: false, bubbles: [] }
+            return
+        }
     } else {
         const cur = lrc[idx]
         const next = lrc[idx + 1]
-        if (!next) return { show: false, bubbles: [] }
+        if (!next) {
+            bubbleWaitState.value = { show: false, bubbles: [] }
+            return
+        }
         const curEnd = cur.time + (cur.duration ? cur.duration / 1000 : 0)
         waitStart = curEnd
         waitEnd = next.time
-        // 歌词间隙太短就不显示
-        if (waitEnd - waitStart < 2.0) return { show: false, bubbles: [] }
+        if (waitEnd - waitStart < 2.0) {
+            bubbleWaitState.value = { show: false, bubbles: [] }
+            return
+        }
     }
 
-    // 在完整等待区间内显示
-    if (t < waitStart + 0.1 || t > waitEnd - 0.1) return { show: false, bubbles: [] }
+    if (t < waitStart + 0.1 || t > waitEnd - 0.1) {
+        bubbleWaitState.value = { show: false, bubbles: [] }
+        return
+    }
 
     const totalWait = waitEnd - waitStart
-
-    // 根据等待时长决定气泡数量，每约 0.6s 一个，最少 4 个最多 10 个
     const count = Math.max(4, Math.min(10, Math.round(totalWait / 0.6)))
-
-    // 气泡按顺序被戳破：
-    // 第 i 个气泡在 waitStart + (i + 1) * (totalWait / (count + 1)) 时被戳破
     const popInterval = totalWait / (count + 1)
     const bubbles = []
 
     for (let i = 0; i < count; i++) {
-        const popAt = waitStart + (i + 1) * popInterval
-        const popProgress = Math.min(1, Math.max(0, (t - (popAt - 0.12)) / 0.12))
+        // i=0 是最左侧，i=count-1 是最右侧
+        // 从右到左戳破：最右侧（i=count-1）最先破
+        const popAt = waitStart + (count - i) * popInterval
+        const popProgress = Math.min(1, Math.max(0, (t - (popAt - 0.16)) / 0.16))
         const isPopped = t >= popAt
-        const isPopping = t >= popAt - 0.12 && t < popAt
+        const isPopping = t >= popAt - 0.16 && t < popAt
 
-        // 未戳破时正常显示；戳破瞬间先放大再消失
         let scale = 1
-        let opacity = 0.8
+        let opacity = 0.85
         if (isPopped) {
             scale = 0
             opacity = 0
         } else if (isPopping) {
-            // 0~1 进度：放大到 1.3 然后缩到 0
-            scale = popProgress < 0.5 ? 1 + popProgress * 0.6 : 1.3 - (popProgress - 0.5) * 2.6
-            opacity = 1 - popProgress
+            // 戳破动画：ease-out 膨胀 -> ease-out 消失，更丝滑
+            if (popProgress < 0.5) {
+                const p = popProgress / 0.5
+                const eased = 1 - Math.pow(1 - p, 2)
+                scale = 1 + eased * 0.35
+                opacity = 0.85 + eased * 0.15
+            } else {
+                const p = (popProgress - 0.5) / 0.5
+                const eased = 1 - Math.pow(p, 2)
+                scale = 1.35 * eased
+                opacity = eased
+            }
         }
 
         bubbles.push({ scale, opacity })
     }
 
-    return { show: true, bubbles }
-})
+    bubbleWaitState.value = { show: true, bubbles }
+}
 
 const scrollToCenter = async (index) => {
   await nextTick()
@@ -1286,23 +1309,22 @@ onMounted(() => {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 5px;
+    gap: 6px;
     width: 100%;
     max-width: 90%;
-    padding: 16px 24px;
-    line-height: 1.7;
+    padding: 0 24px;
     box-sizing: border-box;
     pointer-events: none;
     z-index: 5;
 }
 
 .lyric-bubble-wait .bubble {
-    width: 5px;
-    height: 5px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: var(--primary-color);
     flex-shrink: 0;
-    opacity: 0.8;
+    opacity: 0.85;
     will-change: transform, opacity;
 }
 
