@@ -130,8 +130,8 @@ function createLyricWindow() {
         : path.join(__dirname, 'preload.js')
 
     lyricWin = new BrowserWindow({
-        width: 1100,
-        height: 250,
+        width: 860,
+        height: 176,
         frame: false,
         transparent: true,
         alwaysOnTop: true,
