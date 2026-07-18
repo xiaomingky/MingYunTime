@@ -2,7 +2,7 @@
 
 > **This project is entirely created by AI (Claude Code)** | [中文版](README.md)
 
-A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron**, integrated with Netease Cloud Music API for online music playback, search, and playlist management.
+A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron**, integrated with Netease Cloud Music API for online music playback, search, and playlist management, with built-in **Anime** and **Movie/TV** streaming modules (HLS playback + Bangumi metadata aggregation).
 
 ---
 
@@ -92,6 +92,24 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 - Online video browsing, local video management
 - MV player with local MV matching
 
+### 🌸 Anime (Yhdm)
+
+- **Three-page architecture**: Home (carousel + category nav + latest/hot/ranking), Recommend (seasonal new / rating chart / genre filter / favorites), Detail
+- **Multi-source**: Defaults to Yhdm (Sakura Anime), HTML card parsing (`.module-poster-item`), prioritizes `data-original` for covers
+- **HLS Player**: Extracts m3u8 from the play page's `player_aaaa` JSON, loaded by hls.js with multi-bitrate resolution switching
+- **Bangumi Metadata Aggregation**: Title similarity matching (Levenshtein edit distance, auto-discards <0.5), overlays score/summary/tags/characters/staff/related recommendations
+- **Playback Experience**: 60s buffer cap, auto error recovery, multi-source fallback, next-episode preload, playback progress memory
+- **Favorites & History**: Local favorites, watched-episode memory, recent-watched list
+- **Paginated Search**: 24 items per page, centered page navigation, dedup with no-cover filtering
+
+### 🎞️ Movies & TV (Smdyu)
+
+- **Home**: Smdyu (smdyu.com, standard maccms structure), carousel + 8 categories (Action/Comedy/Romance/Sci-Fi/Mystery/Thriller/Horror/Drama)
+- **Playback**: Extracts m3u8 directly from the play page's `player_aaaa` JSON, played by hls.js
+- **Multi-route Parsing**: Auto-detects multiple play routes via `.play-list#playlist_1/2/3...`
+- **Search**: `/vod-search--------------.html?wd=keyword`, paginated with dedup
+- **TLS Compatibility**: Dropped appys.pro / czys.tv (machine-room TLS handshake failures), switched to the China-reachable Smdyu
+
 ### 🔐 Login
 
 ![登录](showimage/登录.png)
@@ -167,14 +185,15 @@ Two options:
 
 ## 🏗️ Tech Stack
 
-| Layer | Technology |
-|------|-----------|
+| Layer | Tech |
+|------|------|
 | Frontend | Vue 3 (Composition API), Pinia, Vue Router 5 |
 | Desktop | Electron 22 |
 | Build | Vite 5, vite-plugin-electron, electron-builder |
 | Icons | Lucide Vue Next |
-| Audio | Web Audio API (EQ), HTML5 Audio |
+| Audio | Web Audio API (Equalizer), HTML5 Audio |
 | Metadata | music-metadata, node-id3 |
+| Anime/Movie | cheerio (HTML parsing), hls.js (HLS streaming), Bangumi API (metadata aggregation) |
 
 ---
 
@@ -239,4 +258,5 @@ MIT
 
 ## 👤 Contact
 
+- Website: [xiaomingky.cn](https://xiaomingky.cn)
 - Issues: [GitHub Issues](https://github.com/xiaomingky/MingYunTime/issues)

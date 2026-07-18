@@ -124,4 +124,21 @@ export const verifyLockPassword = (password) => cloudRequest.post('/api/lock/ver
 export const getCloudSongs = () => cloudRequest.get('/api/cloud/list')
 export const reorderCloudSongs = (moves) => cloudRequest.post('/web/cloud/reorder', { moves })
 
+// ---------- 动漫模块（通过 Electron IPC 调用主进程） ----------
+const animeBridge = () => (window.bridge || window.__ELECTRON_BRIDGE__)
+export const animeSources = () => animeBridge().invoke('anime:sources')
+export const animeHome = (source) => animeBridge().invoke('anime:home', { source })
+export const animeSearch = (source, keyword) => animeBridge().invoke('anime:search', { source, keyword })
+export const animeDetail = (source, id) => animeBridge().invoke('anime:detail', { source, id })
+export const animeParsePlayUrl = (source, episodeUrl) => animeBridge().invoke('anime:parse-playurl', { source, episodeUrl })
+export const animeMetaSearch = (title) => animeBridge().invoke('anime:meta:search', { title })
+export const animeMetaRelated = (bgmId) => animeBridge().invoke('anime:meta:related', { bgmId })
+
+// ---------- 电影模块（通过 Electron IPC 调用主进程） ----------
+export const movieSources = () => animeBridge().invoke('movie:sources')
+export const movieHome = (source) => animeBridge().invoke('movie:home', { source })
+export const movieSearch = (source, keyword) => animeBridge().invoke('movie:search', { source, keyword })
+export const movieDetail = (source, id) => animeBridge().invoke('movie:detail', { source, id })
+export const movieParsePlayUrl = (source, episodeUrl) => animeBridge().invoke('movie:parse-playurl', { source, episodeUrl })
+
 export default request

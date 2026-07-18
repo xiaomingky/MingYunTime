@@ -1,0 +1,396 @@
+// electron/anime.js
+// 动漫模块 - 主进程 IPC 处理器
+// 数据源：樱花动漫（https://www.yinghuaone.com）maccms 结构
+// 播放器：iframe 嵌入式（解析播放页里的 iframe src 或构造 dplayer iframe）
+import { ipcMain } from 'electron'
+import axios from 'axios'
+import * as cheerio from 'cheerio'
+
+const SOURCES = {
+  yhdm: {
+    id: 'yhdm',
+    base: 'https://www.yinghuaone.com',
+    label: '樱花动漫',
+    type: 'iframe'
+  }
+}
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+async function fetchHtml(url, referer) {
+  const res = await axios.get(url, {
+    headers: {
+      'User-Agent': UA,
+      'Referer': referer || '',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9'
+    },
+    responseType: 'text',
+    timeout: 15000,
+    validateStatus: () => true,
+    maxRedirects: 5
+  })
+  return res.data
+}
+
+// 封面归一化
+function normalizeCover(url, base) {
+  if (!url) return ''
+  let u = url.replace(/&amp;/g, '&')
+  if (u.startsWith('//')) return 'https:' + u
+  if (u.startsWith('http')) return u
+  if (u.startsWith('/')) return base + u
+  return base + '/' + u
+}
+
+// ============================================================
+// 樱花动漫（maccms 结构）
+// ============================================================
+
+// 通用卡片解析（首页 .module-poster-item / 搜索 .module-card-item）
+// 注意：樱花首页的 .module-poster-item 卡片本身就是 <a> 标签，不是包含 <a> 的 div
+function parseYhdmCard($el, base) {
+  // 找详情页链接：$el 本身可能是 a，否则找子元素
+  let $titleLink
+  if ($el.is('a[href*="/v/"]') || $el.is('a[href*="/show/"]')) {
+    $titleLink = $el.first()  // 卡片根本身就是 a
+  } else {
+    $titleLink = $el.find('a[href*="/v/"]').first()
+    if (!$titleLink.length) $titleLink = $el.find('a[href*="/show/"]').first()
+    if (!$titleLink.length) $titleLink = $el.find('.module-card-item-title a').first()
+    if (!$titleLink.length) $titleLink = $el.find('.module-item-title a').first()
+  }
+
+  const href = $titleLink.attr('href') || ''
+  let idMatch = href.match(/\/v\/(\w+)\.html/) || href.match(/\/v\/(\w+)/)
+  if (!idMatch) idMatch = href.match(/\/show\/(\w+)\.html/) || href.match(/\/show\/(\w+)/)
+  if (!idMatch) return null
+
+  // 标题优先级：a 的 title 属性 > img alt > .module-poster-item-title 文本 > strong > a text
+  const $img = $el.find('img').first()
+  let title = ($titleLink.attr('title') || '').trim()
+    || ($img.attr('alt') || '').trim()
+    || $el.find('.module-poster-item-title, .module-card-item-title').first().text().trim()
+    || $titleLink.find('strong').text().trim()
+    || $el.attr('title')
+    || ''
+  if (!title) {
+    const txt = $titleLink.text().trim()
+    if (txt && !/^(播放|详情|全集|HD|高清|下载|第\d+集|资源详情)$/.test(txt)) title = txt
+  }
+  if (!title) return null
+
+  // 封面：data-original > data-src > src（懒加载优先用 data-*，src 通常是占位图）
+  const cover = normalizeCover(
+    $img.attr('data-original') || $img.attr('data-src') || $img.attr('src'),
+    base
+  )
+  const note = $el.find('.module-item-note, .module-item-new, .module-card-item-tag').first().text().trim()
+  return {
+    id: idMatch[1],
+    title: title.replace(/\s+/g, ' '),
+    cover,
+    desc: note,
+    source: 'yhdm'
+  }
+}
+
+async function getYhdmHome() {
+  try {
+    const base = SOURCES.yhdm.base
+    const html = await fetchHtml(base + '/', base)
+    const $ = cheerio.load(html)
+    const sections = { latest: [], hot: [], ranking: [] }
+    const seenIds = new Set()
+    const pushCard = (card) => {
+      if (card && !seenIds.has(card.id)) {
+        seenIds.add(card.id)
+        sections.latest.push(card)
+      }
+    }
+
+    // 1. 优先按 module 区块爬取（保留分类）
+    $('.module').each((_, mod) => {
+      const $mod = $(mod)
+      const sectionTitle = $mod.find('.module-heading .module-title, .module-title').first().text().trim()
+      const items = []
+      $mod.find('.module-poster-item, .module-card-item, .module-item, .stui-vodlist__item, .vodlist-item').each((_, el) => {
+        const card = parseYhdmCard($(el), base)
+        if (card) items.push(card)
+      })
+      if (items.length === 0) return
+      if (/更新|最新|今日|周|新番/.test(sectionTitle)) {
+        items.forEach(pushCard)
+      } else if (/排行|热门|推荐/.test(sectionTitle)) {
+        items.forEach(c => {
+          if (c && !sections.hot.find(x => x.id === c.id)) sections.hot.push(c)
+          if (c && !sections.ranking.find(x => x.id === c.id)) sections.ranking.push(c)
+        })
+      } else {
+        items.forEach(pushCard)
+      }
+    })
+
+    // 2. 兜底：直接遍历所有卡片选择器
+    if (sections.latest.length === 0 && sections.hot.length === 0) {
+      $('.module-poster-item, .module-card-item, .module-item, .stui-vodlist__item, .vodlist-item, li[class*=item]').each((_, el) => {
+        const card = parseYhdmCard($(el), base)
+        pushCard(card)
+      })
+    }
+
+    // 3. 最终兜底：所有 /v/ 链接
+    if (sections.latest.length === 0) {
+      $('a[href*="/v/"]').each((_, el) => {
+        const $el = $(el)
+        const href = $el.attr('href') || ''
+        const idMatch = href.match(/\/v\/(\w+)\.html/) || href.match(/\/v\/(\w+)/)
+        if (!idMatch) return
+        const id = idMatch[1]
+        if (seenIds.has(id)) return
+        seenIds.add(id)
+        const $parent = $el.closest('div, li, .module-item, .module-card-item, .module-poster-item')
+        const $img = $parent.length ? $parent.find('img').first() : $el.find('img').first()
+        const title = ($img.attr('alt') || '').trim() || $el.attr('title') || $el.text().trim()
+        if (!title || /^(播放|详情|全集|HD|高清|下载)$/.test(title)) return
+        const cover = $img.length ? normalizeCover($img.attr('data-original') || $img.attr('data-src') || $img.attr('src'), base) : ''
+        sections.latest.push({ id, title: title.replace(/\s+/g, ' '), cover, desc: '', source: 'yhdm' })
+      })
+    }
+
+    // 4. 补全 hot/ranking（如果分类没爬到）
+    if (sections.hot.length === 0) sections.hot = sections.latest.slice(0, 18)
+    if (sections.ranking.length === 0) sections.ranking = sections.latest.slice(0, 10)
+
+    console.log(`[Anime] 樱花首页: latest=${sections.latest.length}, hot=${sections.hot.length}, ranking=${sections.ranking.length}`)
+    return {
+      latest: sections.latest.slice(0, 30),
+      hot: sections.hot.slice(0, 18),
+      ranking: sections.ranking.slice(0, 10)
+    }
+  } catch (e) {
+    console.error('[Anime] 樱花首页失败:', e.message)
+    return { latest: [], hot: [], ranking: [] }
+  }
+}
+
+async function searchYhdm(keyword) {
+  try {
+    const base = SOURCES.yhdm.base
+    // maccms 搜索 URL: /vodsearch/{kw}-------------.html
+    const url = `${base}/vodsearch/${encodeURIComponent(keyword)}-------------.html`
+    const html = await fetchHtml(url, base)
+    const $ = cheerio.load(html)
+    const results = []
+    const seen = new Set()
+    // 搜索结果用 .module-card-item
+    $('.module-card-item').each((_, el) => {
+      const card = parseYhdmCard($(el), base)
+      if (card && !seen.has(card.id)) {
+        seen.add(card.id)
+        results.push(card)
+      }
+    })
+    // 兜底
+    if (results.length === 0) {
+      $('a[href*="/v/"]').each((_, el) => {
+        const $el = $(el)
+        const href = $el.attr('href') || ''
+        const idMatch = href.match(/\/v\/(\w+)\.html/)
+        if (!idMatch) return
+        const id = idMatch[1]
+        if (seen.has(id)) return
+        // 过滤按钮文字，优先 img alt
+        const $parent = $el.closest('.module-card-item, .module-item, div, li')
+        const $img = $parent.length ? $parent.find('img').first() : $el.find('img').first()
+        let title = $el.attr('title') || $img.attr('alt') || ''
+        if (!title) {
+          const txt = $el.text().trim()
+          if (txt && txt.length >= 2 && !/^(播放|详情|全集|HD|高清|下载)$/.test(txt)) title = txt
+        }
+        if (!title) return
+        seen.add(id)
+        const cover = $img.length ? normalizeCover($img.attr('data-original') || $img.attr('src'), base) : ''
+        results.push({ id, title, cover, desc: '', source: 'yhdm' })
+      })
+    }
+    return results
+  } catch (e) {
+    console.error('[Anime] 樱花搜索失败:', e.message)
+    return []
+  }
+}
+
+async function getYhdmDetail(id) {
+  try {
+    const base = SOURCES.yhdm.base
+    const url = `${base}/v/${id}.html`
+    const html = await fetchHtml(url, base)
+    const $ = cheerio.load(html)
+
+    // 标题
+    const title = $('.module-info-heading h1, .page-title, h1').first().text().trim()
+      || $('meta[property="og:title"]').attr('content') || id
+
+    // 封面
+    const $coverImg = $('.module-info-poster img, .module-item-pic img, .content img').first()
+    const cover = normalizeCover($coverImg.attr('data-original') || $coverImg.attr('src'), base)
+
+    // 简介
+    const desc = $('.module-info-introduction, .video-info, .content, .summary, .brief').text().trim()
+
+    // 多线路：.module-tab-item[data-dropdown-value] 是线路，对应 .module-play-list
+    const routes = []
+    const $tabList = $('.module-player-list .module-tab-list, .playlist-tab-list, .tab-list')
+    const $panels = $('.module-player-list .tab-list, .playlist-content, .module-play-list')
+
+    // 尝试：每个 .module-play-list 是一条线路，对应 .module-tab-item
+    const $tabs = $('.module-tab-item[data-dropdown-value], .playlist-tab-item')
+    const $playLists = $('.module-play-list')
+
+    if ($tabs.length > 0 && $playLists.length > 0) {
+      $playLists.each((idx, list) => {
+        const $list = $(list)
+        const $tab = $tabs.eq(idx)
+        const routeName = $tab.attr('data-dropdown-value') || $tab.text().trim() || `线路${idx + 1}`
+        const episodes = []
+        $list.find('a.module-play-list-link, a[href*="/p/"]').each((_, el) => {
+          const $el = $(el)
+          const href = $el.attr('href') || ''
+          const epTitle = $el.find('span').text().trim() || $el.text().trim()
+          const epMatch = href.match(/\/p\/(\d+-\d+-\d+)\.html/)
+          if (epTitle && epMatch) {
+            episodes.push({ title: epTitle, url: epMatch[1], source: 'yhdm' })
+          }
+        })
+        if (episodes.length > 0) {
+          routes.push({ name: routeName, episodes })
+        }
+      })
+    }
+
+    // 兜底：所有播放链接归一条线路
+    if (routes.length === 0) {
+      const episodes = []
+      $('a[href*="/p/"]').each((_, el) => {
+        const $el = $(el)
+        const href = $el.attr('href') || ''
+        const epTitle = $el.find('span').text().trim() || $el.text().trim()
+        const epMatch = href.match(/\/p\/(\d+-\d+-\d+)\.html/)
+        if (epTitle && epMatch) {
+          episodes.push({ title: epTitle, url: epMatch[1], source: 'yhdm' })
+        }
+      })
+      // 去重
+      const seen = new Set()
+      const unique = episodes.filter(e => {
+        if (seen.has(e.title)) return false
+        seen.add(e.title)
+        return true
+      })
+      if (unique.length > 0) routes.push({ name: '线路1', episodes: unique })
+    }
+
+    return { id, title, cover, desc: desc.slice(0, 500), routes, source: 'yhdm' }
+  } catch (e) {
+    console.error('[Anime] 樱花详情失败:', e.message)
+    return null
+  }
+}
+
+async function parseYhdmPlay(episodeUrl) {
+  try {
+    const base = SOURCES.yhdm.base
+    // episodeUrl 形如 131086-5-1
+    const url = `${base}/p/${episodeUrl}.html`
+    const html = await fetchHtml(url, base)
+
+    // 方案1（首选）：从 player_aaaa = {...} 提取 m3u8 url，用 hls.js 播放
+    // 樱花播放页结构：<script>var player_aaaa = {"url":"https://.../index.m3u8",...}</script>
+    const playerMatch = html.match(/player_aaaa\s*=\s*(\{[\s\S]*?\})\s*<\/script>/)
+    if (playerMatch) {
+      try {
+        const player = JSON.parse(playerMatch[1])
+        if (player.url && /^https?:\/\//.test(player.url)) {
+          // 优先返回 m3u8（用 hls.js 播放，支持分辨率切换）
+          if (/\.m3u8/i.test(player.url)) {
+            return { success: true, url: player.url, type: 'm3u8' }
+          }
+          // 非 m3u8 的直链（mp4 等），也用 video 播放
+          return { success: true, url: player.url, type: 'm3u8' }
+        }
+      } catch (e) { /* JSON 解析失败，降级到正则 */ }
+    }
+
+    // 方案2：正则直接找 m3u8 URL
+    const m3u8Match = html.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/)
+    if (m3u8Match) {
+      return { success: true, url: m3u8Match[1].replace(/\\\//g, '/'), type: 'm3u8' }
+    }
+
+    // 方案3（兜底）：iframe 嵌入整个播放页（带侧边栏，但能播放）
+    return { success: true, url: url, type: 'iframe' }
+  } catch (e) {
+    console.error('[Anime] 樱花解析失败:', e.message)
+    return { success: false, message: e.message }
+  }
+}
+
+// ============================================================
+// 源调度
+// ============================================================
+const DISPATCH = {
+  yhdm: { search: searchYhdm, home: getYhdmHome, detail: getYhdmDetail, parse: parseYhdmPlay }
+}
+
+// ============================================================
+// IPC Handler
+// ============================================================
+ipcMain.handle('anime:sources', async () => {
+  return { success: true, data: SOURCES }
+})
+
+ipcMain.handle('anime:home', async (_, { source }) => {
+  try {
+    const handler = DISPATCH[source]
+    if (!handler) return { success: false, message: '未知源' }
+    const data = await handler.home()
+    return { success: true, data }
+  } catch (e) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('anime:search', async (_, { source, keyword }) => {
+  try {
+    const handler = DISPATCH[source]
+    if (!handler) return { success: false, message: '未知源' }
+    const data = await handler.search(keyword)
+    return { success: true, data }
+  } catch (e) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('anime:detail', async (_, { source, id }) => {
+  try {
+    const handler = DISPATCH[source]
+    if (!handler) return { success: false, message: '未知源' }
+    const data = await handler.detail(id)
+    return { success: true, data }
+  } catch (e) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('anime:parse-playurl', async (_, { source, episodeUrl }) => {
+  try {
+    const handler = DISPATCH[source]
+    if (!handler) return { success: false, message: '未知源' }
+    return await handler.parse(episodeUrl)
+  } catch (e) {
+    return { success: false, message: e.message }
+  }
+})
+
+console.log('[Anime] 模块已加载（1源：樱花动漫·iframe嵌入播放器）')

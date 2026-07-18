@@ -10,6 +10,15 @@ import LocalVideo from '../views/LocalVideo.vue'
 import AlbumDetail from '../views/AlbumDetail.vue'
 import CloudMusic from '../views/CloudMusic.vue'
 
+// 动漫模块（懒加载，减小首屏 bundle）
+const Anime = () => import('../views/Anime.vue')
+const AnimeRecommend = () => import('../views/AnimeRecommend.vue')
+const AnimeDetail = () => import('../views/AnimeDetail.vue')
+
+// 电影模块（懒加载）
+const Movie = () => import('../views/Movie.vue')
+const MovieDetail = () => import('../views/MovieDetail.vue')
+
 const routes = [
     {
         path: '/',
@@ -60,6 +69,33 @@ const routes = [
         path: '/cloud',
         name: 'CloudMusic',
         component: CloudMusic
+    },
+    // 动漫模块（注意：/anime/recommend 必须在 /anime/:source/:id 之前）
+    {
+        path: '/anime',
+        name: 'Anime',
+        component: Anime
+    },
+    {
+        path: '/anime/recommend',
+        name: 'AnimeRecommend',
+        component: AnimeRecommend
+    },
+    {
+        path: '/anime/:source/:id',
+        name: 'AnimeDetail',
+        component: AnimeDetail
+    },
+    // 电影模块
+    {
+        path: '/movie',
+        name: 'Movie',
+        component: Movie
+    },
+    {
+        path: '/movie/:source/:id',
+        name: 'MovieDetail',
+        component: MovieDetail
     }
 ]
 

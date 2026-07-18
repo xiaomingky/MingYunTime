@@ -2,7 +2,7 @@
 
 > **本项目完全由 AI (Claude Code) 创作** | [English Version](README_EN.md)
 
-一款精美的桌面音乐播放器，基于 **Vue 3** + **Electron** 构建，集成网易云音乐 API，支持在线音乐播放/搜索/歌单管理。
+一款精美的桌面音乐播放器，基于 **Vue 3** + **Electron** 构建，集成网易云音乐 API，支持在线音乐播放/搜索/歌单管理，并内置**动漫观看**与**影视播放**模块（HLS 流播放 + Bangumi 元信息聚合）。
 
 ---
 
@@ -90,6 +90,24 @@
 
 - 在线视频浏览、本地视频管理
 - MV 播放器，自动匹配本地 MV 文件
+
+### 🌸 动漫（樱花动漫）
+
+- **三页架构**：主页（轮播图 + 分类导航 + 最新/热门/排行）、推荐页（季度新番 / 评分榜 / 类型筛选 / 收藏）、详情页
+- **多源支持**：默认接入樱花动漫，HTML 卡片解析（`.module-poster-item`），封面优先 `data-original`
+- **HLS 播放器**：从播放页 `player_aaaa` JSON 提取 m3u8，hls.js 加载，支持多码率分辨率切换
+- **Bangumi 元信息聚合**：标题相似度匹配（Levenshtein 编辑距离，<0.5 自动丢弃），叠加评分/简介/标签/角色/Staff/相关推荐
+- **播放体验**：60s 缓冲上限、错误自动恢复、多源兜底、下集预加载、播放进度记忆
+- **收藏与历史**：本地收藏夹、观看集数记忆、最近观看列表
+- **分页搜索**：24 项/页，页码居中导航，去重过滤无封面项
+
+### 🎞️ 影视（电影/动漫/电视剧）
+
+- **主页**：神马电影网（smdyu.com，标准 maccms 结构），轮播图 + 8 大分类（动作/喜剧/爱情/科幻/悬疑/惊悚/恐怖/剧情）
+- **播放**：从播放页 `player_aaaa` JSON 直接提取 m3u8，hls.js 播放
+- **多线路解析**：自动识别 `.play-list#playlist_1/2/3...` 多条播放线路
+- **搜索**：`/vod-search--------------.html?wd=关键词`，分页去重
+- **TLS 兼容**：已淘汰 appys.pro / czys.tv（机房 TLS 握手失败），改用国内可达的神马电影网
 
 ### 🔐 登录
 
@@ -190,6 +208,7 @@ const request = axios.create({
 | 图标 | Lucide Vue Next |
 | 音频 | Web Audio API（均衡器）、HTML5 Audio |
 | 元数据 | music-metadata、node-id3 |
+| 动漫/影视 | cheerio（HTML 解析）、hls.js（HLS 流播放）、Bangumi API（元信息聚合） |
 
 ---
 
@@ -198,7 +217,10 @@ const request = axios.create({
 ```
 music/
 ├── electron/            # Electron 主进程
-│   └── main.js          # 窗口管理、IPC 处理、协议注册
+│   ├── main.js          # 窗口管理、IPC 处理、协议注册
+│   ├── anime.js         # 动漫模块 IPC（樱花动漫解析）
+│   ├── anime-meta.js    # Bangumi 元信息聚合 + 标题相似度匹配
+│   └── movie.js         # 影视模块 IPC（神马电影网解析）
 ├── src/
 │   ├── api/index.js     # API 客户端 (axios)
 │   ├── store/           # Pinia 状态管理 (player、user、message)
@@ -213,6 +235,11 @@ music/
 │   │   ├── LocalVideo.vue     # 本地视频管理
 │   │   ├── RecentPlay.vue     # 最近播放
 │   │   ├── Video.vue          # 在线视频
+│   │   ├── Anime.vue          # 动漫主页（樱花动漫）
+│   │   ├── AnimeRecommend.vue # 动漫推荐页（季度新番/评分/分类/收藏）
+│   │   ├── AnimeDetail.vue    # 动漫详情页（HLS 播放器 + Bangumi 元信息）
+│   │   ├── Movie.vue          # 影视主页（神马电影网）
+│   │   ├── MovieDetail.vue    # 影视详情页（多线路播放）
 │   │   └── DesktopLyrics.vue  # 桌面歌词窗口
 │   ├── components/      # 共享组件
 │   │   ├── EnglishAnalysis.vue  # AI 英文歌词解析
@@ -254,4 +281,5 @@ MIT
 
 ## 👤 联系
 
+- 网站：[xiaomingky.cn](https://xiaomingky.cn)
 - 问题反馈：[GitHub Issues](https://github.com/xiaomingky/MingYunTime/issues)

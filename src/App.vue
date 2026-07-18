@@ -43,7 +43,9 @@ import {
   Check,
   Github,
   HeartHandshake,
-  Film
+  Film,
+  MonitorPlay,
+  Sparkles
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -655,14 +657,16 @@ const openGithub = () => {
         <div class="sidebar-scroll-container">
             <!-- Navigation -->
             <div class="sidebar-section">
-              <div 
+              <div
                 v-for="item in [
                   { id: '/', label: '发现音乐', icon: Music },
                   { id: '/video', label: '视频', icon: Tv },
-                ]" 
-                :key="item.id" 
+                  { id: '/anime', label: '动漫', icon: MonitorPlay },
+                  { id: '/movie', label: '影视', icon: Film },
+                ]"
+                :key="item.id"
                 class="menu-item"
-                :class="{ active: route.path === item.id }"
+                :class="{ active: item.id === '/' ? route.path === '/' : route.path.startsWith(item.id) }"
                 @click="navigateTo(item.id)"
               >
                 <component :is="item.icon" :size="18" />

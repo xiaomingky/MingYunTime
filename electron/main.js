@@ -8,6 +8,11 @@ import axios from 'axios'
 import { exec, execFile } from 'node:child_process'
 import https from 'node:https'
 
+// 动漫模块
+import './anime.js'
+import './anime-meta.js'
+import './movie.js'
+
 // --- Win7 兼容性初始化 ---
 if (process.platform === 'win32') {
     // 强制使用软件渲染或特定的渲染限制会导致严重卡顿。
