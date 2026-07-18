@@ -15,6 +15,31 @@ const router = useRouter()
 const lyricFontSize = ref(32)
 const showGifCover = ref(localStorage.getItem('song_detail_show_gif_cover') !== 'false')
 const showEnglishAnalysis = ref(false)
+// 歌词颜色是否跟随桌面歌词所选颜色
+const lyricColorFollow = ref(localStorage.getItem('song_detail_lyric_color_follow') === 'true')
+
+const toggleLyricColorFollow = () => {
+    lyricColorFollow.value = !lyricColorFollow.value
+    localStorage.setItem('song_detail_lyric_color_follow', lyricColorFollow.value)
+}
+
+// 当前歌词高亮颜色：开启跟随时使用桌面歌词所选颜色，否则使用黑色
+const activeLyricColor = computed(() => {
+    return lyricColorFollow.value ? (playerStore.desktopLyricColor || '#000000') : '#000000'
+})
+
+// 将十六进制颜色转为带透明度的 rgba
+const hexToRgba = (hex, alpha) => {
+    if (!hex || hex[0] !== '#') return `rgba(0,0,0,${alpha})`
+    let h = hex.slice(1)
+    if (h.length === 3) h = h.split('').map(c => c + c).join('')
+    const r = parseInt(h.slice(0, 2), 16)
+    const g = parseInt(h.slice(2, 4), 16)
+    const b = parseInt(h.slice(4, 6), 16)
+    return `rgba(${r},${g},${b},${alpha})`
+}
+
+const inactiveLyricColor = computed(() => hexToRgba(activeLyricColor.value, 0.2))
 
 const toggleEnglishAnalysis = () => {
     showEnglishAnalysis.value = !showEnglishAnalysis.value
@@ -606,19 +631,23 @@ onMounted(() => {
 
       <div class="right-lyrics" v-show="!showCommentPanel">
         <div class="lyric-controls no-drag">
-            <div class="group">
-                <div class="action-item mv-btn" title="播放MV" @click="handlePlayMv">
+            <div class="group icon-group">
+                <div class="icon-with-label action-item mv-btn" title="播放MV" @click="handlePlayMv">
                    <Film :size="18" />
+                   <span class="icon-text">MV</span>
                 </div>
-                <div class="action-item en-btn" :class="{ active: showEnglishAnalysis }" title="英文解析" @click="toggleEnglishAnalysis">
+                <div class="icon-with-label action-item en-btn" :class="{ active: showEnglishAnalysis }" title="英文解析" @click="toggleEnglishAnalysis">
                    <BookOpen :size="18" />
+                   <span class="icon-text">解析</span>
                 </div>
-                <div class="action-item" :class="{ active: playerStore.bgMode === 'cover' }" :title="playerStore.bgMode === 'cover' ? '切换到经典样式' : '切换到沉浸模式'" @click="playerStore.toggleBgMode()">
+                <div class="icon-with-label action-item" :class="{ active: playerStore.bgMode === 'cover' }" :title="playerStore.bgMode === 'cover' ? '切换到经典样式' : '切换到沉浸模式'" @click="playerStore.toggleBgMode()">
                    <ImagePlay v-if="playerStore.bgMode === 'cover'" :size="18" />
                    <Image v-else :size="18" />
+                   <span class="icon-text">{{ playerStore.bgMode === 'cover' ? '沉浸' : '经典' }}</span>
                 </div>
-                <div class="action-item lyric-mode-btn" :class="{ active: lyricMode === 'apple' }" :title="lyricMode === 'apple' ? '切换到经典歌词' : '切换到苹果风格歌词'" @click="toggleLyricMode">
+                <div class="icon-with-label action-item lyric-mode-btn" :class="{ active: lyricMode === 'apple' }" :title="lyricMode === 'apple' ? '切换到经典歌词' : '切换到苹果风格歌词'" @click="toggleLyricMode">
                    <span class="mode-label">{{ lyricMode === 'apple' ? 'A' : 'C' }}</span>
+                   <span class="icon-text">{{ lyricMode === 'apple' ? '苹果' : '经典' }}</span>
                 </div>
             </div>
             <div class="group">
@@ -640,9 +669,15 @@ onMounted(() => {
                    <Plus :size="14" class="clickable" @click="lyricFontSize = lyricFontSize + 2" />
                 </div>
             </div>
+            <div class="group">
+                <span class="label">歌词变色</span>
+                <div class="switch-track" :class="{ active: lyricColorFollow }" @click="toggleLyricColorFollow" title="开启后歌词颜色跟随上方颜色选择器">
+                    <div class="switch-thumb"></div>
+                </div>
+            </div>
         </div>
 
-        <div class="lyric-wrapper" ref="lyricContainer" :class="['mode-' + lyricMode]">
+        <div class="lyric-wrapper" ref="lyricContainer" :class="['mode-' + lyricMode, { 'color-follow': lyricColorFollow }]" :style="{ '--active-color': activeLyricColor, '--active-color-faded': inactiveLyricColor }">
           <div class="lyric-track">
               <div 
                 v-for="(line, index) in displayLyrics" 
@@ -1060,6 +1095,10 @@ onMounted(() => {
     transition: all 0.2s;
 }
 
+.lyric-controls .action-item {
+    border-radius: 12px;
+}
+
 .action-item:hover {
     background: rgba(236, 65, 65, 0.1);
     color: var(--primary-color);
@@ -1084,8 +1123,8 @@ onMounted(() => {
 .en-btn {
     background: rgba(99, 102, 241, 0.08);
     color: #6366f1;
-    width: 32px;
-    height: 32px;
+    width: 48px;
+    height: 48px;
 }
 
 .en-btn:hover {
@@ -1099,8 +1138,13 @@ onMounted(() => {
 }
 
 .lyric-controls .mv-btn {
-    width: 32px;
-    height: 32px;
+    width: 48px;
+    height: 48px;
+}
+
+.lyric-controls .en-btn {
+    width: 48px;
+    height: 48px;
 }
 
 .right-lyrics {
@@ -1127,7 +1171,8 @@ onMounted(() => {
     display: flex;
     align-items: center;
     gap: 20px;
-    margin-bottom: 20px;
+    margin-bottom: 10px;
+    margin-top: -10px;
     justify-content: flex-end;
     flex-wrap: wrap;
 }
@@ -1136,6 +1181,74 @@ onMounted(() => {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+.icon-group {
+    gap: 10px;
+}
+
+.icon-with-label {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 48px;
+    gap: 2px;
+    padding: 4px 0;
+}
+
+.icon-with-label :deep(svg) {
+    flex-shrink: 0;
+}
+
+.icon-text {
+    font-size: 10px;
+    color: inherit;
+    line-height: 1;
+    user-select: none;
+    font-weight: 500;
+}
+
+.lyric-mode-btn .mode-label {
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.lyric-mode-btn .icon-text {
+    font-size: 9px;
+}
+
+/* 歌词变色开关 */
+.switch-track {
+    width: 36px;
+    height: 20px;
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 10px;
+    position: relative;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    flex-shrink: 0;
+}
+
+.switch-track.active {
+    background: var(--primary-color);
+}
+
+.switch-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.switch-track.active .switch-thumb {
+    transform: translateX(16px);
 }
 
 .font-select {
@@ -1457,6 +1570,52 @@ onMounted(() => {
     font-size: 11px;
     font-weight: 700;
     color: inherit;
+}
+
+/* === 歌词变色模式：高亮行使用所选颜色 === */
+.lyric-wrapper.color-follow .lyric-line.active {
+    color: var(--active-color) !important;
+}
+
+.lyric-wrapper.color-follow .lyric-line.active .main-text {
+    background: linear-gradient(to right, var(--active-color) var(--progress), var(--active-color-faded) var(--progress));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.lyric-wrapper.color-follow .main-text {
+    background: linear-gradient(to right, var(--active-color) var(--progress), var(--active-color-faded) var(--progress));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.lyric-wrapper.color-follow .yrc-word {
+    background: linear-gradient(to right, var(--active-color) calc(var(--wp) * 100%), var(--active-color-faded) calc(var(--wp) * 100%));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.lyric-wrapper.color-follow .lyric-line.active .yrc-word {
+    background: linear-gradient(to right, var(--active-color) calc(var(--wp) * 100%), var(--active-color-faded) calc(var(--wp) * 100%));
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.lyric-wrapper.color-follow .lyric-line:not(.active) .yrc-word {
+    background: none;
+    -webkit-text-fill-color: var(--active-color-faded);
+}
+
+.lyric-wrapper.color-follow .lyric-line {
+    color: var(--active-color-faded);
+}
+
+.lyric-wrapper.color-follow .lyric-line.played {
+    color: var(--active-color-faded);
 }
 
 /* Comment Styles */
