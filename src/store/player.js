@@ -245,6 +245,21 @@ export const usePlayerStore = defineStore('player', {
             this.initAudio()
             if (!song || !song.id) return
 
+            // 同一首歌再次点击：直接从头播放，不重新设置 src（避免浏览器忽略重复 src 导致无反应）
+            if (this.currentSong && this.currentSong.id === song.id && this.audio && this.audio.src) {
+                if (list.length > 0) {
+                    this.playlist = [...list]
+                    this.currentIndex = this.playlist.findIndex(s => s.id === song.id)
+                }
+                try {
+                    if (this.ctx) await this.ctx.resume()
+                    this.audio.currentTime = 0
+                    await this.audio.play()
+                    this.isPlaying = true
+                } catch (e) { console.error('Replay same song fail:', e) }
+                return
+            }
+
             // 清空旧歌曲的歌词缓存，防止切歌时闪烁上一首的歌词
             this.lyrics = []
             this.yrcLyrics = null

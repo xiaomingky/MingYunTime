@@ -1,16 +1,17 @@
 <script setup>
-// 搜索建议下拉组件（搜索历史 + 相似推荐 + 热门词）
+// 搜索建议下拉组件（搜索历史 + 相似推荐 + 您可能再找 + TOP 热度榜）
 // 供全局搜索栏和各页面搜索框共用
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { Search, Clock, Trash2, Flame, X, ArrowUpRight } from 'lucide-vue-next'
+import { Search, Clock, Trash2, Flame, X, ArrowUpRight, TrendingUp, Loader2 } from 'lucide-vue-next'
 import { useSearchHistoryStore } from '../store/searchHistory'
+import { cloudSearch, animeSearch, movieSearch } from '../api'
 
 const props = defineProps({
     module: { type: String, required: true }, // music | anime | movie | video
     query: { type: String, default: '' },     // 当前输入
     visible: { type: Boolean, default: false }
 })
-const emit = defineEmits(['select', 'clear-history', 'remove-item'])
+const emit = defineEmits(['select', 'clear-history', 'remove-item', 'select-item'])
 
 const historyStore = useSearchHistoryStore()
 
@@ -18,13 +19,103 @@ const history = computed(() => historyStore.getHistory(props.module))
 const suggestions = computed(() => historyStore.getSuggestions(props.module, props.query))
 const hotKeywords = computed(() => historyStore.getHotKeywords(props.module))
 
-// 区分「有输入时显示相似推荐」和「无输入时显示历史+热门」
+// ===== 您可能再找：实时搜索结果（输入时触发，300ms 防抖） =====
+const liveResults = ref([])        // 实时搜索结果列表
+const liveLoading = ref(false)     // 加载中状态
+let liveSearchTimer = null
+
+async function doLiveSearch(kw) {
+    if (!kw || !kw.trim()) {
+        liveResults.value = []
+        return
+    }
+    liveLoading.value = true
+    try {
+        const module = props.module
+        if (module === 'music') {
+            // type=1 单曲
+            const res = await cloudSearch(kw, 1)
+            const songs = res?.result?.songs || res?.songs || []
+            liveResults.value = songs.slice(0, 6).map(s => ({
+                id: s.id,
+                name: s.name,
+                sub: (s.ar || s.artists || []).map(a => a.name).join(' / '),
+                cover: s.al?.picUrl || s.album?.picUrl || '',
+                type: 'song'
+            }))
+        } else if (module === 'video') {
+            // type=1004 MV
+            const res = await cloudSearch(kw, 1004)
+            const mvs = res?.result?.mvs || res?.mvs || []
+            liveResults.value = mvs.slice(0, 6).map(m => ({
+                id: m.id,
+                name: m.name,
+                sub: (m.artists || []).map(a => a.name).join(' / '),
+                cover: m.cover || m.imgurl || '',
+                type: 'mv'
+            }))
+        } else if (module === 'anime') {
+            // 动漫搜索：用默认线路 yhf。返回 { success, data: [...] }
+            const res = await animeSearch('yhf', kw)
+            const list = Array.isArray(res?.data) ? res.data : (res?.data?.list || res?.list || [])
+            liveResults.value = list.slice(0, 6).map(a => ({
+                id: a.id,
+                source: a.source || 'yhf',
+                name: a.title,
+                sub: a.tags || a.desc || '',
+                cover: a.cover || '',
+                type: 'anime'
+            }))
+        } else if (module === 'movie') {
+            // 影视搜索。返回 { success, data: [...] }
+            const res = await movieSearch('smdyu', kw)
+            const list = Array.isArray(res?.data) ? res.data : (res?.data?.list || res?.list || [])
+            liveResults.value = list.slice(0, 6).map(m => ({
+                id: m.id,
+                source: m.source || 'smdyu',
+                name: m.title,
+                sub: m.tags || m.desc || '',
+                cover: m.cover || '',
+                type: 'movie'
+            }))
+        }
+    } catch (e) {
+        console.error('[SearchSuggest] 实时搜索失败:', props.module, kw, e?.message || e)
+        liveResults.value = []
+    } finally {
+        liveLoading.value = false
+    }
+}
+
+// 监听输入变化，防抖触发实时搜索（immediate 让初次显示时也能触发）
+watch(() => props.query, (newQ) => {
+    if (liveSearchTimer) clearTimeout(liveSearchTimer)
+    const q = (newQ || '').trim()
+    if (!q) {
+        liveResults.value = []
+        liveLoading.value = false
+        return
+    }
+    liveSearchTimer = setTimeout(() => doLiveSearch(q), 350)
+}, { immediate: true })
+
+// 组件卸载时清理
+onBeforeUnmount(() => {
+    if (liveSearchTimer) clearTimeout(liveSearchTimer)
+})
+
+// 区分「有输入时显示相似推荐 + 您可能再找」和「无输入时显示历史+热门」
 const showSuggestions = computed(() => props.query.trim().length > 0 && suggestions.value.length > 0)
+const showLiveResults = computed(() => props.query.trim().length > 0)
 const showHistory = computed(() => props.query.trim().length === 0 && history.value.length > 0)
 const showHot = computed(() => props.query.trim().length === 0)
 
 function selectKeyword(kw) {
     emit('select', kw)
+}
+
+function selectLiveItem(item) {
+    emit('select-item', item)
 }
 
 function removeItem(kw, e) {
@@ -41,6 +132,36 @@ function clearAll() {
 <template>
     <transition name="suggest-fade">
         <div v-if="visible" class="search-suggest">
+            <!-- 您可能再找：实时搜索结果（有输入时） -->
+            <div v-if="showLiveResults" class="suggest-section">
+                <div class="section-title">
+                    <TrendingUp :size="12" /> 您可能再找
+                    <Loader2 v-if="liveLoading" :size="12" class="spin" />
+                </div>
+                <div v-if="liveResults.length === 0 && !liveLoading" class="live-empty">
+                    暂无相关结果
+                </div>
+                <div v-else class="live-list">
+                    <div
+                        v-for="item in liveResults"
+                        :key="item.type + '-' + item.id"
+                        class="live-item"
+                        @mousedown.prevent="selectLiveItem(item)"
+                    >
+                        <div class="live-cover" v-if="item.cover">
+                            <img :src="item.cover" referrerpolicy="no-referrer" @error="$event.target.style.display='none'" />
+                        </div>
+                        <div class="live-cover placeholder" v-else>
+                            <Search :size="14" />
+                        </div>
+                        <div class="live-info">
+                            <div class="live-name">{{ item.name }}</div>
+                            <div class="live-sub" v-if="item.sub">{{ item.sub }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 相似推荐（有输入时） -->
             <div v-if="showSuggestions" class="suggest-section">
                 <div class="section-title">
@@ -75,17 +196,22 @@ function clearAll() {
                         @mousedown.prevent="selectKeyword(kw)"
                     >
                         <span class="tag-text">{{ kw }}</span>
-                        <span class="tag-remove" @click="removeItem(kw, $event)" title="删除">
+                        <span
+                            class="tag-remove"
+                            @click="removeItem(kw, $event)"
+                            @mousedown.stop.prevent
+                            title="删除"
+                        >
                             <X :size="10" />
                         </span>
                     </div>
                 </div>
             </div>
 
-            <!-- 热门搜索（无输入时） -->
+            <!-- TOP 热度榜（无输入时） -->
             <div v-if="showHot" class="suggest-section">
                 <div class="section-title">
-                    <Flame :size="12" /> 热门搜索
+                    <Flame :size="12" /> TOP 热度榜
                 </div>
                 <div class="hot-list">
                     <div
@@ -98,11 +224,6 @@ function clearAll() {
                         <span class="hot-text">{{ kw }}</span>
                     </div>
                 </div>
-            </div>
-
-            <!-- 空状态（有输入但无匹配） -->
-            <div v-if="query.trim() && !showSuggestions" class="suggest-empty">
-                暂无相关推荐，按回车搜索 "{{ query }}"
             </div>
         </div>
     </transition>
@@ -177,6 +298,65 @@ function clearAll() {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* 您可能再找 - 实时搜索结果 */
+.live-list { padding: 2px 6px; }
+.live-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 10px;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background .15s;
+}
+.live-item:hover { background: rgba(194, 12, 12, .08); }
+.live-cover {
+    width: 36px; height: 36px;
+    border-radius: 4px;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: #f5f5f5;
+}
+.live-cover img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+}
+.live-cover.placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ccc;
+}
+.live-info {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+.live-name {
+    font-size: 13px;
+    color: #333;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.live-sub {
+    font-size: 11px;
+    color: #999;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.live-empty {
+    padding: 16px;
+    text-align: center;
+    color: #999;
+    font-size: 12px;
+}
+.spin { animation: suggest-spin 1s linear infinite; }
+@keyframes suggest-spin { to { transform: rotate(360deg); } }
 
 /* 历史标签 */
 .history-tags {
