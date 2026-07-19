@@ -4,18 +4,53 @@ import { useRouter } from 'vue-router'
 import { animeHome, animeSearch } from '../api'
 import { useMessageStore } from '../store/message'
 import { useAnimeStore } from '../store/anime'
-import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock } from 'lucide-vue-next'
+import { useSearchHistoryStore } from '../store/searchHistory'
+import SearchSuggest from '../components/SearchSuggest.vue'
+import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock, RefreshCw } from 'lucide-vue-next'
+import './anime-common.css'
 
 const router = useRouter()
 const messageStore = useMessageStore()
 const animeStore = useAnimeStore()
+const searchHistoryStore = useSearchHistoryStore()
 
-// ===== 源配置 =====
+const showSearchSuggest = ref(false)
+
+// 封面加载失败的 URL 集合（用于切换到占位图）
+const failedCovers = ref(new Set())
+function onCoverError(url) {
+    if (!url) return
+    failedCovers.value = new Set([...failedCovers.value, url])
+}
+function isCoverFailed(url) {
+    return failedCovers.value.has(url)
+}
+
+// ===== 源配置（3线路：推荐/经典/备用，由后端 anime.js 自动故障转移）=====
 const sources = [
-    { id: 'yhdm', label: '樱花动漫', desc: '主源·资源全' }
+    { id: 'yhf', label: '推荐线路', desc: '稳定优先' },
+    { id: 'xdm', label: '经典线路', desc: '资源全' },
+    { id: 'yhdmfan', label: '备用线路', desc: '兜底' }
 ]
 
-const currentSource = ref('yhdm')
+const currentSource = ref('yhf')
+
+// ===== 刷新当前视图（首页 / 搜索结果）=====
+const refreshing = ref(false)
+async function refreshCurrent() {
+    if (refreshing.value) return
+    refreshing.value = true
+    try {
+        if (searchMode.value && keyword.value.trim()) {
+            await handleSearch()
+        } else {
+            await fetchHome()
+        }
+        messageStore.success('已刷新')
+    } finally {
+        refreshing.value = false
+    }
+}
 
 // ===== 数据 =====
 const homeData = ref({ latest: [], hot: [], ranking: [] })
@@ -144,6 +179,8 @@ const handleSearch = async () => {
         messageStore.warning('请输入搜索关键词')
         return
     }
+    searchHistoryStore.addHistory('anime', keyword.value)
+    showSearchSuggest.value = false
     searchLoading.value = true
     searchMode.value = true
     try {
@@ -154,6 +191,14 @@ const handleSearch = async () => {
             if (searchResultsRaw.value.length === 0) {
                 messageStore.warning('未找到相关动漫')
             }
+            // 保存搜索状态到 sessionStorage，返回时恢复
+            sessionStorage.setItem('anime_search_state', JSON.stringify({
+                keyword: keyword.value,
+                source: currentSource.value,
+                results: searchResultsRaw.value,
+                page: currentPage.value,
+                ts: Date.now()
+            }))
         } else {
             messageStore.error(res?.message || '搜索失败')
         }
@@ -162,6 +207,50 @@ const handleSearch = async () => {
     } finally {
         searchLoading.value = false
     }
+}
+
+// 恢复搜索状态（从详情页返回时）
+function restoreSearchState() {
+    try {
+        const raw = sessionStorage.getItem('anime_search_state')
+        if (!raw) return false
+        const state = JSON.parse(raw)
+        // 超过 30 分钟视为过期
+        if (Date.now() - state.ts > 30 * 60 * 1000) {
+            sessionStorage.removeItem('anime_search_state')
+            return false
+        }
+        keyword.value = state.keyword || ''
+        currentSource.value = state.source || 'yhf'
+        searchResultsRaw.value = state.results || []
+        currentPage.value = state.page || 1
+        searchMode.value = true
+        return true
+    } catch { return false }
+}
+
+const exitSearch = () => {
+    searchMode.value = false
+    keyword.value = ''
+    searchResultsRaw.value = []
+    showSearchSuggest.value = false
+    sessionStorage.removeItem('anime_search_state')
+}
+
+const onSelectSuggest = (kw) => {
+    keyword.value = kw
+    handleSearch()
+}
+
+// 搜索框 focus/blur：保存 timer 句柄，避免竞态导致下拉框刚显示就被隐藏
+let blurTimer = null
+const onSearchFocus = () => {
+    if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
+    showSearchSuggest.value = true
+}
+const onSearchBlur = () => {
+    if (blurTimer) clearTimeout(blurTimer)
+    blurTimer = setTimeout(() => { showSearchSuggest.value = false }, 200)
 }
 
 const switchSource = (src) => {
@@ -179,13 +268,19 @@ const openDetail = (item) => {
     router.push(`/anime/${item.source || currentSource.value}/${item.id}`)
 }
 
-const exitSearch = () => {
-    searchMode.value = false
-    keyword.value = ''
-    searchResultsRaw.value = []
-}
-
 onMounted(() => {
+    // 优先从 URL query 接管搜索（例如从详情页"找相似"跳转过来）
+    const kw = router.currentRoute.value.query.kw
+    if (kw && typeof kw === 'string' && kw.trim()) {
+        keyword.value = kw.trim()
+        handleSearch()
+        return
+    }
+    // 否则尝试恢复上次搜索状态（从详情页返回时）
+    if (restoreSearchState()) {
+        // 恢复成功，不加载首页
+        return
+    }
     fetchHome()
 })
 
@@ -212,6 +307,15 @@ onUnmounted(() => {
                     {{ s.label }}
                 </button>
             </div>
+            <button
+                class="refresh-btn"
+                @click="refreshCurrent"
+                :disabled="refreshing || loading"
+                title="刷新当前页面"
+            >
+                <RefreshCw :size="16" :class="{ spin: refreshing }" />
+                <span>{{ refreshing ? '刷新中' : '刷新' }}</span>
+            </button>
         </div>
 
         <!-- 搜索栏 -->
@@ -221,6 +325,14 @@ onUnmounted(() => {
                 v-model="keyword"
                 :placeholder="`在 ${sources.find(s => s.id === currentSource)?.label} 搜索动漫...`"
                 @keyup.enter="handleSearch"
+                @focus="onSearchFocus"
+                @blur="onSearchBlur"
+            />
+            <SearchSuggest
+                module="anime"
+                :query="keyword"
+                :visible="showSearchSuggest"
+                @select="onSelectSuggest"
             />
             <button class="search-btn" @click="handleSearch" :disabled="searchLoading">
                 <Loader2 v-if="searchLoading" :size="14" class="spin" />
@@ -260,11 +372,11 @@ onUnmounted(() => {
                         >
                             <div class="cover-wrapper">
                                 <img
-                                    v-if="item.cover"
+                                    v-if="item.cover && !isCoverFailed(item.cover)"
                                     :src="item.cover"
                                     class="cover"
                                     loading="lazy"
-                                    @error="$event.target.style.display='none'"
+                                    @error="onCoverError(item.cover)"
                                 />
                                 <div v-else class="cover-placeholder">
                                     <Film :size="32" />
@@ -317,7 +429,7 @@ onUnmounted(() => {
                         :class="{ active: carouselIndex === idx }"
                         @click="openDetail(item)"
                     >
-                        <img v-if="item.cover" :src="item.cover" class="carousel-img" @error="$event.target.style.display='none'" />
+                        <img v-if="item.cover && !isCoverFailed(item.cover)" :src="item.cover" class="carousel-img" @error="onCoverError(item.cover)" />
                         <div class="carousel-placeholder" v-else>
                             <Film :size="60" />
                         </div>
@@ -374,11 +486,11 @@ onUnmounted(() => {
                     >
                         <div class="cover-wrapper">
                             <img
-                                v-if="item.cover"
+                                v-if="item.cover && !isCoverFailed(item.cover)"
                                 :src="item.cover"
                                 class="cover"
                                 loading="lazy"
-                                @error="$event.target.style.display='none'"
+                                @error="onCoverError(item.cover)"
                             />
                             <div v-else class="cover-placeholder">
                                 <Film :size="28" />
@@ -405,11 +517,11 @@ onUnmounted(() => {
                     >
                         <div class="cover-wrapper">
                             <img
-                                v-if="item.cover"
+                                v-if="item.cover && !isCoverFailed(item.cover)"
                                 :src="item.cover"
                                 class="cover"
                                 loading="lazy"
-                                @error="$event.target.style.display='none'"
+                                @error="onCoverError(item.cover)"
                             />
                             <div v-else class="cover-placeholder">
                                 <Film :size="32" />
@@ -438,11 +550,11 @@ onUnmounted(() => {
                     >
                         <div class="ranking-no" :class="{ top: idx < 3 }">{{ idx + 1 }}</div>
                         <img
-                            v-if="item.cover"
+                            v-if="item.cover && !isCoverFailed(item.cover)"
                             :src="item.cover"
                             class="ranking-cover"
                             loading="lazy"
-                            @error="$event.target.style.display='none'"
+                            @error="onCoverError(item.cover)"
                         />
                         <div v-else class="ranking-cover-placeholder">
                             <Film :size="16" />
@@ -522,6 +634,7 @@ onUnmounted(() => {
 }
 
 .search-bar {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;

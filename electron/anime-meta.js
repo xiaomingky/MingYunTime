@@ -45,10 +45,20 @@ async function throttle() {
   lastRequestTime = Date.now()
 }
 
-// 字符串归一化：去除空格/标点/符号，小写
+// 字符串归一化：去除空格/标点/符号，小写，去除季/期/部等干扰后缀
 function normalizeStr(s) {
   if (!s) return ''
-  return String(s).toLowerCase().replace(/[\s\u3000\u00a0]+/g, '').replace(/[[:\-_·.,!！?？:：;；()（）\[\]【】""''`'"]+/g, '').replace(/第[一二三四五六七八九十0-9]+季/g, '')
+  return String(s).toLowerCase()
+    .replace(/[\s\u3000\u00a0]+/g, '')
+    .replace(/[[:\-_·.,!！?？:：;；()（）\[\]【】""''`'"]+/g, '')
+    // 去除 第N季/第N期/第N部/第N章
+    .replace(/第[一二三四五六七八九十百0-9]+[季期部章]/g, '')
+    // 去除 N季/N期/N部（1季/2期/3部）
+    .replace(/[0-9]+[季期部]/g, '')
+    // 去除 上半/下半/上期/下期/前篇/后篇/前篇/后篇
+    .replace(/(上半|下半|上期|下期|前篇|后篇|前传|后传|新|旧)/g, '')
+    // 去除 简体/繁体/中字/国语/日语/字幕 等标注
+    .replace(/(简体|繁体|中字|国语|日语|字幕|高清|蓝光|web|dvd|bd)/g, '')
 }
 
 // 标题相似度：0-1，1=完全一致
@@ -83,6 +93,25 @@ function levenshtein(a, b) {
 
 // 搜索番剧条目（带相似度匹配，避免重名作品错误匹配）
 async function searchSubject(keyword) {
+  // 第一次用原始关键词搜索
+  let result = await doSearch(keyword, 0.5)
+  if (result) return result
+
+  // 第二次用归一化关键词（去除季/期/部/简繁等干扰词）
+  const normalized = normalizeStr(keyword)
+  if (normalized && normalized !== keyword.toLowerCase().replace(/\s+/g, '')) {
+    // 从归一化结果中提取一个更干净的搜索词（取前 10 个非空字符）
+    const cleanKeyword = normalized.slice(0, 12)
+    if (cleanKeyword.length >= 2) {
+      result = await doSearch(cleanKeyword, 0.4)
+      if (result) return result
+    }
+  }
+  return null
+}
+
+// 实际执行搜索 + 匹配
+async function doSearch(keyword, threshold) {
   await throttle()
   let candidates = []
   try {
@@ -122,9 +151,8 @@ async function searchSubject(keyword) {
   scored.sort((a, b) => b.sim - a.sim)
 
   const best = scored[0]
-  // 阈值：相似度 < 0.5 视为不匹配（避免不相干作品）
-  if (best.sim < 0.5) {
-    console.log(`[AnimeMeta] 标题不匹配: "${keyword}" vs "${best.bgmTitle}" (sim=${best.sim.toFixed(2)})`)
+  if (best.sim < threshold) {
+    console.log(`[AnimeMeta] 标题不匹配: "${keyword}" vs "${best.bgmTitle}" (sim=${best.sim.toFixed(2)}, threshold=${threshold})`)
     return null
   }
   console.log(`[AnimeMeta] 匹配: "${keyword}" -> "${best.bgmTitle}" (sim=${best.sim.toFixed(2)})`)
@@ -143,19 +171,22 @@ async function getSubject(id) {
   return null
 }
 
-// 获取角色
+// 获取角色（主角 + 配角 + 客串，按主→配→客排序）
 async function getCharacters(id) {
   await throttle()
   try {
     const res = await bgmClient.get(`/v0/subjects/${id}/characters`)
     if (res.status === 200 && Array.isArray(res.data)) {
+      // 1=主角 2=配角 3=客串；按类型排序保证主角在前
       return res.data
-        .filter(c => c.type === 1) // 1 = 主角
-        .slice(0, 8)
+        .filter(c => c.type === 1 || c.type === 2 || c.type === 3)
+        .sort((a, b) => (a.type || 9) - (b.type || 9))
+        .slice(0, 24)
         .map(c => ({
           id: c.id,
           name: c.name,
           relation: c.relation,
+          type: c.type,
           cover: c.images?.large || ''
         }))
     }
@@ -165,20 +196,28 @@ async function getCharacters(id) {
   return []
 }
 
-// 获取制作人员
+// 获取制作人员（保留所有职位，不限制数量）
 async function getPersons(id) {
   await throttle()
   try {
     const res = await bgmClient.get(`/v0/subjects/${id}/persons`)
     if (res.status === 200 && Array.isArray(res.data)) {
+      // 按 Bangumi 标准职位优先级排序：原作/导演/副导演/系列构成/脚本/人物设定/音乐/音响监督/美术监督/摄影监督/动画制作/制片人...
+      const priority = ['原作', '导演', '总导演', '副导演', '系列构成', '脚本', '人物设定', '总作画监督', '作画监督', '机械设定', '美术监督', '色彩设计', '摄影监督', '音响监督', '音乐', '音乐制作', '动画制作', '制片', '制片人', '企画', '系列监督', '监督']
       return res.data
-        .filter(p => ['原作', '导演', '脚本', '音乐', '动画制作'].includes(p.relation))
-        .slice(0, 10)
         .map(p => ({
           id: p.id,
           name: p.name,
           relation: p.relation
         }))
+        .sort((a, b) => {
+          const ia = priority.indexOf(a.relation)
+          const ib = priority.indexOf(b.relation)
+          if (ia === -1 && ib === -1) return 0
+          if (ia === -1) return 1
+          if (ib === -1) return -1
+          return ia - ib
+        })
     }
   } catch (e) {
     console.error('[AnimeMeta] 制作人员失败:', e.message)

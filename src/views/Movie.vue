@@ -3,10 +3,33 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { movieHome, movieSearch } from '../api'
 import { useMessageStore } from '../store/message'
-import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock } from 'lucide-vue-next'
+import { useSearchHistoryStore } from '../store/searchHistory'
+import SearchSuggest from '../components/SearchSuggest.vue'
+import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock, RefreshCw } from 'lucide-vue-next'
+import './anime-common.css'
 
 const router = useRouter()
 const messageStore = useMessageStore()
+const searchHistoryStore = useSearchHistoryStore()
+
+const showSearchSuggest = ref(false)
+
+// 刷新当前视图（首页 / 搜索结果）
+const refreshing = ref(false)
+async function refreshCurrent() {
+    if (refreshing.value) return
+    refreshing.value = true
+    try {
+        if (searchMode.value && keyword.value.trim()) {
+            await handleSearch()
+        } else {
+            await fetchHome()
+        }
+        messageStore.success('已刷新')
+    } finally {
+        refreshing.value = false
+    }
+}
 
 // ===== 源配置 =====
 const sources = [
@@ -131,6 +154,8 @@ const handleSearch = async () => {
         messageStore.warning('请输入搜索关键词')
         return
     }
+    searchHistoryStore.addHistory('movie', keyword.value)
+    showSearchSuggest.value = false
     searchLoading.value = true
     searchMode.value = true
     try {
@@ -141,6 +166,14 @@ const handleSearch = async () => {
             if (searchResultsRaw.value.length === 0) {
                 messageStore.warning('未找到相关电影')
             }
+            // 保存搜索状态到 sessionStorage，返回时恢复
+            sessionStorage.setItem('movie_search_state', JSON.stringify({
+                keyword: keyword.value,
+                source: currentSource.value,
+                results: searchResultsRaw.value,
+                page: currentPage.value,
+                ts: Date.now()
+            }))
         } else {
             messageStore.error(res?.message || '搜索失败')
         }
@@ -149,6 +182,40 @@ const handleSearch = async () => {
     } finally {
         searchLoading.value = false
     }
+}
+
+// 恢复搜索状态（从详情页返回时）
+function restoreSearchState() {
+    try {
+        const raw = sessionStorage.getItem('movie_search_state')
+        if (!raw) return false
+        const state = JSON.parse(raw)
+        // 超过 30 分钟视为过期
+        if (Date.now() - state.ts > 30 * 60 * 1000) {
+            sessionStorage.removeItem('movie_search_state')
+            return false
+        }
+        keyword.value = state.keyword || ''
+        currentSource.value = state.source || 'smdyu'
+        searchResultsRaw.value = state.results || []
+        currentPage.value = state.page || 1
+        searchMode.value = true
+        return true
+    } catch { return false }
+}
+
+const onSelectSuggest = (kw) => {
+    keyword.value = kw
+    handleSearch()
+}
+const onSearchFocus = () => {
+    if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
+    showSearchSuggest.value = true
+}
+let blurTimer = null
+const onSearchBlur = () => {
+    if (blurTimer) clearTimeout(blurTimer)
+    blurTimer = setTimeout(() => { showSearchSuggest.value = false }, 200)
 }
 
 const switchSource = (src) => {
@@ -169,6 +236,8 @@ const exitSearch = () => {
     searchMode.value = false
     keyword.value = ''
     searchResultsRaw.value = []
+    showSearchSuggest.value = false
+    sessionStorage.removeItem('movie_search_state')
 }
 
 import { useRoute } from 'vue-router'
@@ -178,9 +247,13 @@ onMounted(() => {
     if (route.query.kw) {
         keyword.value = route.query.kw
         handleSearch()
-    } else {
-        fetchHome()
+        return
     }
+    // 否则尝试恢复上次搜索状态（从详情页返回时）
+    if (restoreSearchState()) {
+        return
+    }
+    fetchHome()
 })
 onUnmounted(() => { stopCarousel() })
 </script>
@@ -203,6 +276,15 @@ onUnmounted(() => { stopCarousel() })
                     {{ s.label }}
                 </button>
             </div>
+            <button
+                class="refresh-btn"
+                @click="refreshCurrent"
+                :disabled="refreshing || loading"
+                title="刷新当前页面"
+            >
+                <RefreshCw :size="16" :class="{ spin: refreshing }" />
+                <span>{{ refreshing ? '刷新中' : '刷新' }}</span>
+            </button>
         </div>
 
         <!-- 搜索栏 -->
@@ -212,6 +294,14 @@ onUnmounted(() => { stopCarousel() })
                 v-model="keyword"
                 :placeholder="`在 ${sources.find(s => s.id === currentSource)?.label} 搜索电影...`"
                 @keyup.enter="handleSearch"
+                @focus="onSearchFocus"
+                @blur="onSearchBlur"
+            />
+            <SearchSuggest
+                module="movie"
+                :query="keyword"
+                :visible="showSearchSuggest"
+                @select="onSelectSuggest"
             />
             <button class="search-btn" @click="handleSearch" :disabled="searchLoading">
                 <Loader2 v-if="searchLoading" :size="14" class="spin" />
@@ -448,7 +538,3 @@ onUnmounted(() => { stopCarousel() })
         </template>
     </div>
 </template>
-
-<style>
-@import './anime-common.css';
-</style>

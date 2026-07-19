@@ -4,8 +4,8 @@ import { useRouter, useRoute } from 'vue-router'
 import { animeDetail, animeParsePlayUrl, animeMetaSearch, animeMetaRelated } from '../api'
 import { useAnimeStore } from '../store/anime'
 import { useMessageStore } from '../store/message'
-import BiliPlayer from '../components/BiliPlayer.vue'
 import PlayDisclaimer from '../components/PlayDisclaimer.vue'
+import BiliPlayer from '../components/BiliPlayer.vue'
 import {
     ChevronLeft, Heart, Star, Loader2, Film, RefreshCw, Users, Clapperboard
 } from 'lucide-vue-next'
@@ -33,7 +33,7 @@ const episodes = computed(() => currentRoute.value?.episodes || [])
 const watchedSet = ref(new Set())
 
 // ===== 播放器状态 =====
-const playUrl = ref('')          // 播放地址（m3u8 或 iframe src）
+const playUrl = ref('')          // 播放地址（m3u8 直链或 iframe src）
 const playType = ref('iframe')   // iframe | m3u8
 const playerError = ref('')
 const showDisclaimer = ref(true) // 播放前免责声明（默认显示，点击开始播放后消失）
@@ -43,6 +43,11 @@ const isFavorited = computed(() => {
     if (!detail.value) return false
     return animeStore.isFavorited(source.value, id.value)
 })
+
+// 标题/封面：优先 Bangumi，回退樱花源站
+const displayTitle = computed(() => meta.value?.title || detail.value?.title || '')
+const displayCover = computed(() => meta.value?.cover || detail.value?.cover || '')
+const displaySummary = computed(() => meta.value?.summary || detail.value?.desc || '')
 
 // ===== 加载详情 =====
 async function loadDetail() {
@@ -82,9 +87,12 @@ async function fetchMetaAndRelated(title) {
     try {
         const res = await animeMetaSearch(title)
         if (res?.success && res.data) {
-            // 只取 Bangumi 的附加信息（评分/简介/角色/staff/标签），
-            // 不覆盖源站的标题和封面，避免重名/换季导致标题和封面被替换
+            // 优先使用 Bangumi 的标题/封面/简介等元信息
+            // 樱花源站仅作为兜底（Bangumi 匹配失败时）
             meta.value = {
+                title: res.data.title,                  // Bangumi 中文名（优先）
+                titleOriginal: res.data.titleOriginal,  // 原始名/日文名
+                cover: res.data.cover,                  // Bangumi 封面（优先）
                 score: res.data.score,
                 scoreCount: res.data.scoreCount,
                 summary: res.data.summary,
@@ -92,8 +100,7 @@ async function fetchMetaAndRelated(title) {
                 date: res.data.date,
                 characters: res.data.characters,
                 staff: res.data.staff,
-                titleOriginal: res.data.title,     // 仅作副标题展示
-                cover: res.data.cover,             // 仅在右侧信息卡展示作为参考
+                infobox: res.data.infobox,
                 id: res.data.id
             }
             if (res.data.id) {
@@ -114,8 +121,7 @@ function switchRoute(idx) {
     }
 }
 
-// ===== HLS 播放器（由 BiliPlayer 组件内部管理）=====
-// 仅保留 iframe 加载状态
+// ===== 播放器（iframe 嵌入式，由樱花3线路提供）=====
 const playerLoading = ref(false)
 
 function onIframeLoad() {
@@ -143,7 +149,7 @@ async function playEpisode(ep) {
     currentEpisode.value = ep
     playerError.value = ''
     playUrl.value = ''
-    playerLoading.value = playType.value !== 'm3u8'  // iframe 模式显示加载遮罩，m3u8 由 BiliPlayer 处理
+    playerLoading.value = true  // 解析期间显示加载遮罩
 
     try {
         const res = await animeParsePlayUrl(ep.source || source.value, ep.url)
@@ -154,15 +160,16 @@ async function playEpisode(ep) {
             animeStore.addHistory({
                 source: source.value,
                 id: id.value,
-                title: detail.value?.title || '',
-                cover: detail.value?.cover || meta.value?.cover || ''
+                title: displayTitle.value,
+                cover: displayCover.value
             }, ep)
             watchedSet.value.add(ep.title)
             animeStore.saveProgress(source.value, id.value, ep.title, 0, 0)
-            // iframe 模式等 load 事件，m3u8 模式由 BiliPlayer 自动加载
+            // m3u8 由 BiliPlayer 自动加载并隐藏外层 loading
             if (playType.value === 'm3u8') {
                 playerLoading.value = false
             }
+            // iframe 模式等 @load 事件触发后隐藏 loading
         } else {
             playerError.value = res?.message || '解析播放地址失败'
             playerLoading.value = false
@@ -183,13 +190,32 @@ function replayCurrent() {
     }
 }
 
+// ===== 上一集 / 下一集（供 BiliPlayer 切换剧集）=====
+const currentEpisodeIdx = computed(() => {
+    if (!currentEpisode.value) return -1
+    return episodes.value.findIndex(ep => ep.title === currentEpisode.value.title)
+})
+const hasPrevEpisode = computed(() => currentEpisodeIdx.value > 0)
+const hasNextEpisode = computed(() => {
+    const idx = currentEpisodeIdx.value
+    return idx >= 0 && idx < episodes.value.length - 1
+})
+function playPrevEpisode() {
+    const idx = currentEpisodeIdx.value
+    if (idx > 0) playEpisode(episodes.value[idx - 1])
+}
+function playNextEpisode() {
+    const idx = currentEpisodeIdx.value
+    if (idx >= 0 && idx < episodes.value.length - 1) playEpisode(episodes.value[idx + 1])
+}
+
 function toggleFavorite() {
     if (!detail.value) return
     const added = animeStore.toggleFavorite({
         source: source.value,
         id: id.value,
-        title: detail.value.title,
-        cover: detail.value.cover || meta.value?.cover || ''
+        title: displayTitle.value,
+        cover: displayCover.value
     })
     messageStore.success(added ? '已加入收藏' : '已取消收藏')
 }
@@ -200,7 +226,12 @@ function openRelated(item) {
 }
 
 function goBack() {
-    router.back()
+    // 优先返回上一级；若无历史则回动漫主页
+    if (window.history.length > 1) {
+        router.back()
+    } else {
+        router.push('/anime')
+    }
 }
 
 const formatScore = (s) => s ? s.toFixed(1) : '—'
@@ -226,7 +257,7 @@ onBeforeUnmount(() => {
                 <ChevronLeft :size="20" />
             </button>
             <div class="top-title">
-                {{ detail?.title || '加载中...' }}
+                {{ displayTitle || '加载中...' }}
                 <span v-if="meta?.score" class="top-score">
                     <Star :size="12" /> {{ formatScore(meta.score) }}
                 </span>
@@ -255,26 +286,30 @@ onBeforeUnmount(() => {
                     <!-- 播放前免责声明（用户点击开始播放后消失） -->
                     <PlayDisclaimer
                         v-if="showDisclaimer"
-                        :title="detail?.title || ''"
-                        :cover="detail?.cover || meta?.cover || ''"
+                        :title="displayTitle"
+                        :cover="displayCover"
                         type="动漫"
                         @start="startPlay"
                         @close="closeDisclaimer"
                     />
 
-                    <!-- m3u8 用 BiliPlayer（B站风格自定义控制条） -->
+                    <!-- m3u8/mp4 直链用 BiliPlayer（B站风格自定义控制条 + 上一集/下一集） -->
                     <BiliPlayer
-                        v-if="playUrl && playType === 'm3u8'"
+                        v-if="playUrl && playType === 'm3u8' && !playerError"
                         :src="playUrl"
                         play-type="m3u8"
                         :badge="currentEpisode ? `正在播放：${currentEpisode.title}` : ''"
+                        :has-prev="hasPrevEpisode"
+                        :has-next="hasNextEpisode"
                         @retry="replayCurrent"
                         @error="onPlayerError"
+                        @prev="playPrevEpisode"
+                        @next="playNextEpisode"
                     />
 
-                    <!-- iframe 嵌入式播放器（樱花 dplayer 兜底） -->
+                    <!-- iframe 嵌入式播放器（m3u8 提取失败时兜底，直接加载整页） -->
                     <iframe
-                        v-else-if="playUrl && playType !== 'm3u8' && !playerError"
+                        v-else-if="playUrl && playType === 'iframe' && !playerError"
                         :src="playUrl"
                         class="video-iframe"
                         allowfullscreen
@@ -283,13 +318,13 @@ onBeforeUnmount(() => {
                         @load="onIframeLoad"
                     ></iframe>
 
-                    <!-- iframe 模式加载遮罩 -->
+                    <!-- 加载遮罩（仅 iframe 模式） -->
                     <div v-if="playerLoading && playType !== 'm3u8'" class="player-mask">
                         <Loader2 :size="36" class="spin" />
                         <p>解析播放地址中...</p>
                     </div>
 
-                    <!-- iframe 模式错误遮罩 -->
+                    <!-- 错误遮罩（仅 iframe 模式；m3u8 由 BiliPlayer 自带错误遮罩） -->
                     <div v-if="playerError && playType !== 'm3u8'" class="player-mask error">
                         <Film :size="36" />
                         <p>{{ playerError }}</p>
@@ -339,16 +374,16 @@ onBeforeUnmount(() => {
                 <div class="info-card">
                     <div class="info-cover">
                         <img
-                            v-if="detail.cover"
-                            :src="detail.cover"
+                            v-if="displayCover"
+                            :src="displayCover"
                             referrerpolicy="no-referrer"
                             @error="$event.target.style.display='none'"
                         />
                         <div v-else class="info-cover-placeholder"><Film :size="40" /></div>
                     </div>
 
-                    <h3 class="info-title">{{ detail.title }}</h3>
-                    <div v-if="meta?.titleOriginal && meta.titleOriginal !== detail.title" class="info-subtitle">{{ meta.titleOriginal }}</div>
+                    <h3 class="info-title">{{ displayTitle }}</h3>
+                    <div v-if="meta?.titleOriginal && meta.titleOriginal !== displayTitle" class="info-subtitle">{{ meta.titleOriginal }}</div>
 
                     <div v-if="meta?.score" class="info-score">
                         <Star :size="16" />
@@ -361,12 +396,28 @@ onBeforeUnmount(() => {
                         <span>{{ meta.date }}</span>
                     </div>
 
+                    <div v-if="meta?.infobox && meta.infobox.length" class="info-infobox">
+                        <div v-for="(row, idx) in meta.infobox" :key="idx" class="infobox-row">
+                            <span class="infobox-key">{{ row.key || row.k || '' }}</span>
+                            <span class="infobox-val">
+                                <template v-if="Array.isArray(row.value || row.v)">
+                                    <span
+                                        v-for="(item, i) in (row.value || row.v)"
+                                        :key="i"
+                                        class="infobox-val-item"
+                                    >{{ typeof item === 'string' ? item : (item.name || item.text || JSON.stringify(item)) }}<span v-if="i < (row.value || row.v).length - 1" class="infobox-sep">、</span></span>
+                                </template>
+                                <template v-else>{{ row.value || row.v || '' }}</template>
+                            </span>
+                        </div>
+                    </div>
+
                     <div v-if="meta?.tags && meta.tags.length" class="info-tags">
                         <span v-for="t in meta.tags" :key="t.name" class="info-tag">{{ t.name }}</span>
                     </div>
 
-                    <div v-if="meta?.summary || detail.desc" class="info-summary">
-                        {{ meta?.summary || detail.desc }}
+                    <div v-if="displaySummary" class="info-summary">
+                        {{ displaySummary }}
                     </div>
 
                     <div v-if="meta?.characters && meta.characters.length" class="info-section">

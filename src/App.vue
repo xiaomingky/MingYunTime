@@ -47,14 +47,18 @@ import {
   MonitorPlay,
   Sparkles
 } from 'lucide-vue-next'
+import SearchSuggest from './components/SearchSuggest.vue'
+import { useSearchHistoryStore } from './store/searchHistory'
 
 const router = useRouter()
 const route = useRoute()
 const playerStore = usePlayerStore()
 const userStore = useUserStore()
 const messageStore = useMessageStore()
+const searchHistoryStore = useSearchHistoryStore()
 
 const searchText = ref('')
+const showSearchSuggest = ref(false)
 const showLogin = ref(false)
 const showUserMenu = ref(false)
 const isMaximized = ref(false)
@@ -247,8 +251,24 @@ const navigateTo = (path) => {
 
 const handleSearch = () => {
   if (searchText.value.trim()) {
+    searchHistoryStore.addHistory('music', searchText.value)
+    showSearchSuggest.value = false
     router.push({ path: '/search', query: { keywords: searchText.value, t: Date.now() } })
   }
+}
+
+const onSelectSuggest = (kw) => {
+  searchText.value = kw
+  handleSearch()
+}
+
+const onSearchFocus = () => {
+  showSearchSuggest.value = true
+}
+
+const onSearchBlur = () => {
+  // 延迟关闭，让点击事件先触发
+  setTimeout(() => { showSearchSuggest.value = false }, 200)
 }
 
 const handleCreatePlaylist = () => {
@@ -550,7 +570,20 @@ const openGithub = () => {
           <div class="header-search">
             <div class="search-input">
               <Search :size="14" class="search-icon clickable" @click="handleSearch" />
-              <input type="text" v-model="searchText" placeholder="搜索" @keyup.enter="handleSearch" />
+              <input
+                type="text"
+                v-model="searchText"
+                placeholder="搜索"
+                @keyup.enter="handleSearch"
+                @focus="onSearchFocus"
+                @blur="onSearchBlur"
+              />
+              <SearchSuggest
+                module="music"
+                :query="searchText"
+                :visible="showSearchSuggest"
+                @select="onSelectSuggest"
+              />
             </div>
             <div class="mic-icon clickable">
               <Mic :size="16" />
@@ -890,6 +923,9 @@ const openGithub = () => {
     position: relative;
     z-index: 5000;
 }
+
+.header-search { position: relative; }
+.header-search .search-input { position: relative; }
 
 .no-drag, .clickable, .search-input, .window-controls, .user-info, .logo, .nav-arrows, .mic-icon, .theme-icons, .keyboard-btn, .author-tag {
     -webkit-app-region: no-drag !important;

@@ -123,7 +123,14 @@ function replayCurrent() {
     if (currentEpisode.value) playEpisode(currentEpisode.value)
 }
 
-function goBack() { router.back() }
+function goBack() {
+    // 优先返回上一级；若无历史则回影视主页
+    if (window.history.length > 1) {
+        router.back()
+    } else {
+        router.push('/movie')
+    }
+}
 
 watch([source, id], () => { loadDetail() })
 onMounted(() => { loadDetail() })

@@ -6,16 +6,18 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Hls from 'hls.js'
 import {
     Play, Pause, Volume2, Volume1, VolumeX,
-    Maximize, Minimize, Loader2, Film, RefreshCw, Settings
+    Maximize, Minimize, Loader2, Film, RefreshCw, Settings, SkipBack, SkipForward
 } from 'lucide-vue-next'
 
 const props = defineProps({
     src: { type: String, default: '' },
     playType: { type: String, default: 'm3u8' }, // m3u8 | direct
     badge: { type: String, default: '' },
-    autoplay: { type: Boolean, default: true }
+    autoplay: { type: Boolean, default: true },
+    hasPrev: { type: Boolean, default: false },
+    hasNext: { type: Boolean, default: false }
 })
-const emit = defineEmits(['ended', 'retry', 'ready', 'error'])
+const emit = defineEmits(['ended', 'retry', 'ready', 'error', 'prev', 'next'])
 
 const videoEl = ref(null)
 const wrapperEl = ref(null)
@@ -41,6 +43,11 @@ let hideControlsTimer = null
 const levels = ref([])
 const currentLevel = ref(-1)
 const showLevelMenu = ref(false)
+
+// 倍速
+const playbackRate = ref(1)
+const showSpeedMenu = ref(false)
+const speedOptions = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
 // 进度条 hover 预览
 const hoverTime = ref(null)
@@ -145,6 +152,34 @@ function toggleMute() {
     const v = videoEl.value
     if (!v) return
     v.muted = !v.muted
+}
+
+// ===== 快退/快进 10秒 =====
+function skipBack() {
+    const v = videoEl.value
+    if (!v) return
+    v.currentTime = Math.max(0, v.currentTime - 10)
+    showControls()
+}
+function skipForward() {
+    const v = videoEl.value
+    if (!v) return
+    v.currentTime = Math.min(duration.value, v.currentTime + 10)
+    showControls()
+}
+
+// ===== 倍速 =====
+function changeSpeed(speed) {
+    const v = videoEl.value
+    if (!v) return
+    v.playbackRate = speed
+    playbackRate.value = speed
+    showSpeedMenu.value = false
+    showControls()
+}
+function toggleSpeedMenu() {
+    showSpeedMenu.value = !showSpeedMenu.value
+    if (showSpeedMenu.value) showLevelMenu.value = false
 }
 
 // ===== 全屏 =====
@@ -407,9 +442,15 @@ defineExpose({ videoEl })
             <!-- 按钮组 -->
             <div class="controls-row">
                 <div class="left-controls">
-                    <button class="ctrl-btn" @click="togglePlay" :title="isPlaying ? '暂停 (空格)' : '播放 (空格)'">
-                        <Pause v-if="isPlaying" :size="20" />
-                        <Play v-else :size="20" />
+                    <button class="ctrl-btn" @click="skipBack" title="后退10秒">
+                        <SkipBack :size="18" />
+                    </button>
+                    <button class="ctrl-btn play-btn" @click="togglePlay" :title="isPlaying ? '暂停 (空格)' : '播放 (空格)'">
+                        <Pause v-if="isPlaying" :size="22" fill="currentColor" />
+                        <Play v-else :size="22" fill="currentColor" />
+                    </button>
+                    <button class="ctrl-btn" @click="skipForward" title="前进10秒">
+                        <SkipForward :size="18" />
                     </button>
 
                     <div class="volume-group">
@@ -434,6 +475,34 @@ defineExpose({ videoEl })
                 </div>
 
                 <div class="right-controls">
+                    <!-- 倍速 -->
+                    <div class="speed-switcher" @click.stop="toggleSpeedMenu">
+                        <span class="speed-label">{{ playbackRate }}x</span>
+                        <div v-if="showSpeedMenu" class="speed-menu" @click.stop>
+                            <div
+                                v-for="sp in speedOptions"
+                                :key="sp"
+                                class="speed-menu-item"
+                                :class="{ active: playbackRate === sp }"
+                                @click="changeSpeed(sp)"
+                            >{{ sp }}x</div>
+                        </div>
+                    </div>
+
+                    <!-- 上一集 / 下一集（剧集切换） -->
+                    <button
+                        v-if="hasPrev"
+                        class="ep-switch-btn"
+                        @click.stop="emit('prev')"
+                        title="上一集"
+                    >上一集</button>
+                    <button
+                        v-if="hasNext"
+                        class="ep-switch-btn"
+                        @click.stop="emit('next')"
+                        title="下一集"
+                    >下一集</button>
+
                     <button class="ctrl-btn" @click="toggleFullscreen" :title="isFullscreen ? '退出全屏 (F)' : '全屏 (F)'">
                         <Minimize v-if="isFullscreen" :size="20" />
                         <Maximize v-else :size="20" />
@@ -588,6 +657,47 @@ defineExpose({ videoEl })
 }
 .level-menu-item:hover { background: rgba(255, 255, 255, .12); }
 .level-menu-item.active { color: #ff6b6b; background: rgba(194, 12, 12, .22); }
+
+/* ===== 倍速切换器 ===== */
+.speed-switcher {
+    position: relative;
+    padding: 0 12px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background .15s;
+    user-select: none;
+}
+.speed-switcher:hover { background: rgba(255, 255, 255, .15); }
+.speed-label {
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+}
+.speed-menu {
+    position: absolute;
+    bottom: 100%;
+    right: 0;
+    margin-bottom: 6px;
+    background: rgba(0, 0, 0, .92);
+    border-radius: 4px;
+    padding: 4px 0;
+    min-width: 72px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+    cursor: default;
+}
+.speed-menu-item {
+    padding: 7px 14px;
+    color: #fff;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background .15s;
+    text-align: center;
+}
+.speed-menu-item:hover { background: rgba(255, 255, 255, .12); }
+.speed-menu-item.active { color: #ff6b6b; background: rgba(194, 12, 12, .22); }
 
 /* ===== 控制条 ===== */
 .control-bar {
@@ -788,6 +898,25 @@ defineExpose({ videoEl })
 }
 .time-sep { margin: 0 3px; opacity: .6; }
 .duration { opacity: .8; }
+
+/* 上一集/下一集按钮 */
+.ep-switch-btn {
+    padding: 0 10px;
+    height: 28px;
+    border: 1px solid rgba(255, 255, 255, .35);
+    background: rgba(255, 255, 255, .08);
+    color: #fff;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s;
+    white-space: nowrap;
+}
+.ep-switch-btn:hover {
+    background: rgba(194, 12, 12, .9);
+    border-color: #c20c0c;
+    color: #fff;
+}
 
 /* ===== 过渡动画 ===== */
 .bili-fade-enter-active, .bili-fade-leave-active {
