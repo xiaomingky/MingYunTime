@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿node_modules/
+node_modules/
 dist/
 dist-electron/
 release/
@@ -13,3 +13,11 @@ Thumbs.db
 .env.*
 !.env.example
 
+# Mobile build artifacts
+mobile/www/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/captures/
+mobile/android/local.properties
+mobile/*.apk

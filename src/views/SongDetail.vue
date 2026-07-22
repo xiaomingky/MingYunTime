@@ -135,9 +135,6 @@ const updateVisualizer = () => {
     return
   }
 
-  // 气泡等待动画（使用 requestAnimationFrame 更丝滑）
-  updateBubbleWait()
-
   // 逐词歌词动画更新（只刷新当前行）
   if (hasYrcLyrics.value && playerStore.isPlaying) {
       updateYrcWordProgress()
@@ -256,86 +253,7 @@ const blurClassMap = computed(() => {
     return map
 })
 
-// 歌词前/歌词间隙显示气泡等待动画（从右到左逐个戳破）
-const bubbleWaitState = ref({ show: false, bubbles: [] })
-
-const updateBubbleWait = () => {
-    const lrc = displayLyrics.value
-    if (!lrc || !lrc.length) {
-        bubbleWaitState.value = { show: false, bubbles: [] }
-        return
-    }
-    // 使用音频高精度时间，动画更丝滑
-    const t = playerStore.audio?.currentTime ?? playerStore.currentTime
-    const idx = currentLyricIndex.value
-
-    let waitStart, waitEnd
-    if (idx === -1) {
-        waitStart = 0
-        waitEnd = lrc[0].time
-        if (waitEnd < 1.5) {
-            bubbleWaitState.value = { show: false, bubbles: [] }
-            return
-        }
-    } else {
-        const cur = lrc[idx]
-        const next = lrc[idx + 1]
-        if (!next) {
-            bubbleWaitState.value = { show: false, bubbles: [] }
-            return
-        }
-        const curEnd = cur.time + (cur.duration ? cur.duration / 1000 : 0)
-        waitStart = curEnd
-        waitEnd = next.time
-        if (waitEnd - waitStart < 2.0) {
-            bubbleWaitState.value = { show: false, bubbles: [] }
-            return
-        }
-    }
-
-    if (t < waitStart + 0.1 || t > waitEnd - 0.1) {
-        bubbleWaitState.value = { show: false, bubbles: [] }
-        return
-    }
-
-    const totalWait = waitEnd - waitStart
-    const count = Math.max(4, Math.min(10, Math.round(totalWait / 0.6)))
-    const popInterval = totalWait / (count + 1)
-    const bubbles = []
-
-    for (let i = 0; i < count; i++) {
-        // i=0 是最左侧，i=count-1 是最右侧
-        // 从右到左戳破：最右侧（i=count-1）最先破
-        const popAt = waitStart + (count - i) * popInterval
-        const popProgress = Math.min(1, Math.max(0, (t - (popAt - 0.16)) / 0.16))
-        const isPopped = t >= popAt
-        const isPopping = t >= popAt - 0.16 && t < popAt
-
-        let scale = 1
-        let opacity = 0.85
-        if (isPopped) {
-            scale = 0
-            opacity = 0
-        } else if (isPopping) {
-            // 戳破动画：ease-out 膨胀 -> ease-out 消失，更丝滑
-            if (popProgress < 0.5) {
-                const p = popProgress / 0.5
-                const eased = 1 - Math.pow(1 - p, 2)
-                scale = 1 + eased * 0.35
-                opacity = 0.85 + eased * 0.15
-            } else {
-                const p = (popProgress - 0.5) / 0.5
-                const eased = 1 - Math.pow(p, 2)
-                scale = 1.35 * eased
-                opacity = eased
-            }
-        }
-
-        bubbles.push({ scale, opacity })
-    }
-
-    bubbleWaitState.value = { show: true, bubbles }
-}
+// 气泡等待动画已移除（用户要求取消）
 
 const scrollToCenter = async (index) => {
   await nextTick()
@@ -708,41 +626,15 @@ onMounted(() => {
                     >{{ word.text }}</span>
                 </div>
                 <!-- 普通歌词模式 -->
-                <div 
+                <div
                     v-else
-                    class="main-text" 
+                    class="main-text"
                     :style="{ '--progress': index === currentLyricIndex ? getLineProgress(index) + '%' : '0%' }"
-                >
-                    <template v-if="leavingIndexes.has(index) && line.text.length <= 30">
-                        <span 
-                            v-for="(char, ci) in line.text" 
-                            :key="ci"
-                            class="lyric-char"
-                            :style="getParticleStyle(index, ci)"
-                        >{{ char }}</span>
-                    </template>
-                    <template v-else>{{ line.text }}</template>
+                >{{ line.text }}
                 </div>
                 <div v-if="line.ttext" class="trans-text">{{ line.ttext }}</div>
               </div>
               <div v-if="!displayLyrics.length" class="no-lyric">纯音乐，请欣赏</div>
-          </div>
-          <div
-              v-if="bubbleWaitState.show"
-              class="lyric-bubble-wait"
-              :style="{ gap: Math.round(lyricFontSize / 3) + 'px' }"
-          >
-              <div
-                  class="bubble"
-                  v-for="(b, i) in bubbleWaitState.bubbles"
-                  :key="i"
-                  :style="{
-                      opacity: b.opacity,
-                      transform: `scale(${b.scale})`,
-                      width: lyricFontSize + 'px',
-                      height: lyricFontSize + 'px'
-                  }"
-              ></div>
           </div>
         </div>
       </div>
@@ -1423,31 +1315,7 @@ onMounted(() => {
      -webkit-text-fill-color: transparent;
 }
 
-.lyric-bubble-wait {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 100%;
-    max-width: 90%;
-    padding: 0 24px;
-    box-sizing: border-box;
-    pointer-events: none;
-    z-index: 5;
-}
-
-.lyric-bubble-wait .bubble {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    background: var(--primary-color);
-    flex-shrink: 0;
-    opacity: 0.85;
-    will-change: transform, opacity;
-}
+/* 气泡等待条样式已移除 */
 
 .no-lyric {
     color: rgba(0,0,0,0.3);
@@ -1777,8 +1645,9 @@ onMounted(() => {
       mask-image: linear-gradient(to bottom, transparent, black 15%, black 85%, transparent);
   }
   .cover-container {
-      width: 200px;
-      height: 200px;
+      width: min(320px, 80vw);
+      height: auto;
+      aspect-ratio: 1/1;
   }
   .song-name {
       font-size: 24px;

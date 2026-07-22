@@ -6,7 +6,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Hls from 'hls.js'
 import {
     Play, Pause, Volume2, Volume1, VolumeX,
-    Maximize, Minimize, Loader2, Film, RefreshCw, Settings, SkipBack, SkipForward
+    Maximize, Minimize, Loader2, Film, RefreshCw, SkipBack, SkipForward, Repeat
 } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -15,13 +15,16 @@ const props = defineProps({
     badge: { type: String, default: '' },
     autoplay: { type: Boolean, default: true },
     hasPrev: { type: Boolean, default: false },
-    hasNext: { type: Boolean, default: false }
+    hasNext: { type: Boolean, default: false },
+    episodes: { type: Array, default: () => [] },
+    currentEpisode: { type: Object, default: null }
 })
-const emit = defineEmits(['ended', 'retry', 'ready', 'error', 'prev', 'next'])
+const emit = defineEmits(['ended', 'retry', 'ready', 'error', 'prev', 'next', 'selectEpisode'])
 
 const videoEl = ref(null)
 const wrapperEl = ref(null)
 const progressBar = ref(null)
+const volumeSlider = ref(null)
 
 // 播放状态
 const isPlaying = ref(false)
@@ -31,6 +34,7 @@ const buffered = ref(0)
 const volume = ref(0.8)
 const isMuted = ref(false)
 const isFullscreen = ref(false)
+const isLooping = ref(false)
 const buffering = ref(false)
 const loading = ref(false)
 const playerError = ref('')
@@ -48,6 +52,9 @@ const showLevelMenu = ref(false)
 const playbackRate = ref(1)
 const showSpeedMenu = ref(false)
 const speedOptions = [0.5, 0.75, 1, 1.25, 1.5, 2]
+
+// 选集面板
+const showEpPanel = ref(false)
 
 // 进度条 hover 预览
 const hoverTime = ref(null)
@@ -79,6 +86,8 @@ function showControls() {
         hideControlsTimer = setTimeout(() => {
             if (isPlaying.value) controlsVisible.value = false
             showLevelMenu.value = false
+            showSpeedMenu.value = false
+            showEpPanel.value = false
         }, 2800)
     }
 }
@@ -86,6 +95,8 @@ function hideControls() {
     if (hideControlsTimer) clearTimeout(hideControlsTimer)
     if (isPlaying.value) controlsVisible.value = false
     showLevelMenu.value = false
+    showSpeedMenu.value = false
+    showEpPanel.value = false
 }
 
 // ===== 播放控制 =====
@@ -123,22 +134,92 @@ function onVolumeChange() {
     isMuted.value = v.muted
 }
 
-// ===== 进度条交互 =====
+// ===== 指针/触摸辅助 =====
+function pointerClient(e) {
+    if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0]
+    if (e.touches && e.touches.length) return e.touches[0]
+    return e
+}
+
+function progressRatioFromClientX(clientX) {
+    const bar = progressBar.value
+    if (!bar || duration.value === 0) return null
+    const rect = bar.getBoundingClientRect()
+    return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+}
+
+// ===== 进度条交互（支持鼠标+触摸拖动） =====
+let isDragging = false
 function seek(e) {
     const v = videoEl.value
-    const bar = progressBar.value
-    if (!v || !bar || duration.value === 0) return
-    const rect = bar.getBoundingClientRect()
-    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+    if (!v) return
+    const ratio = progressRatioFromClientX(pointerClient(e).clientX)
+    if (ratio === null) return
     v.currentTime = ratio * duration.value
 }
 function onProgressHover(e) {
-    const bar = progressBar.value
-    if (!bar || duration.value === 0) return
-    const rect = bar.getBoundingClientRect()
-    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width))
+    const ratio = progressRatioFromClientX(pointerClient(e).clientX)
+    if (ratio === null) return
     hoverPercent.value = ratio * 100
     hoverTime.value = ratio * duration.value
+}
+function onProgressMouseDown(e) {
+    // 鼠标按下：开始拖动
+    isDragging = true
+    const v = videoEl.value
+    if (v && !v.paused) v.pause()
+    seek(e)
+    // 拖动期间跟踪鼠标移动（绑定到 window 以便超出进度条也能继续拖动）
+    window.addEventListener('mousemove', onProgressDragging)
+    window.addEventListener('mouseup', onProgressMouseUp)
+    e.preventDefault()
+}
+function onProgressDragging(e) {
+    if (!isDragging) return
+    const v = videoEl.value
+    const ratio = progressRatioFromClientX(pointerClient(e).clientX)
+    if (!v || ratio === null) return
+    // 实时更新 currentTime 让用户看到进度条跟随
+    v.currentTime = ratio * duration.value
+    currentTime.value = ratio * duration.value
+    hoverPercent.value = ratio * 100
+    hoverTime.value = ratio * duration.value
+}
+function onProgressMouseUp() {
+    if (!isDragging) return
+    isDragging = false
+    const v = videoEl.value
+    // 拖动结束后恢复播放
+    if (v) v.play().catch(() => {})
+    window.removeEventListener('mousemove', onProgressDragging)
+    window.removeEventListener('mouseup', onProgressMouseUp)
+}
+
+// 进度条触摸
+function onProgressTouchStart(e) {
+    isDragging = true
+    const v = videoEl.value
+    if (v && !v.paused) v.pause()
+    seek(e)
+    window.addEventListener('touchmove', onProgressTouchMove, { passive: false })
+    window.addEventListener('touchend', onProgressTouchEnd)
+    window.addEventListener('touchcancel', onProgressTouchEnd)
+    e.preventDefault()
+    e.stopPropagation()
+}
+function onProgressTouchMove(e) {
+    if (!isDragging) return
+    onProgressDragging(e)
+    e.preventDefault()
+}
+function onProgressTouchEnd() {
+    if (!isDragging) return
+    isDragging = false
+    const v = videoEl.value
+    if (v) v.play().catch(() => {})
+    window.removeEventListener('touchmove', onProgressTouchMove)
+    window.removeEventListener('touchend', onProgressTouchEnd)
+    window.removeEventListener('touchcancel', onProgressTouchEnd)
 }
 
 // ===== 音量 =====
@@ -152,6 +233,32 @@ function toggleMute() {
     const v = videoEl.value
     if (!v) return
     v.muted = !v.muted
+}
+
+function setVolumeFromClientX(clientX) {
+    const bar = volumeSlider.value
+    if (!bar) return
+    const rect = bar.getBoundingClientRect()
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+    volume.value = ratio
+    onVolumeInput()
+}
+function onVolumeTouchStart(e) {
+    setVolumeFromClientX(pointerClient(e).clientX)
+    window.addEventListener('touchmove', onVolumeTouchMove, { passive: false })
+    window.addEventListener('touchend', onVolumeTouchEnd)
+    window.addEventListener('touchcancel', onVolumeTouchEnd)
+    e.preventDefault()
+    e.stopPropagation()
+}
+function onVolumeTouchMove(e) {
+    setVolumeFromClientX(pointerClient(e).clientX)
+    e.preventDefault()
+}
+function onVolumeTouchEnd() {
+    window.removeEventListener('touchmove', onVolumeTouchMove)
+    window.removeEventListener('touchend', onVolumeTouchEnd)
+    window.removeEventListener('touchcancel', onVolumeTouchEnd)
 }
 
 // ===== 快退/快进 10秒 =====
@@ -179,7 +286,33 @@ function changeSpeed(speed) {
 }
 function toggleSpeedMenu() {
     showSpeedMenu.value = !showSpeedMenu.value
-    if (showSpeedMenu.value) showLevelMenu.value = false
+    if (showSpeedMenu.value) {
+        showLevelMenu.value = false
+        showEpPanel.value = false
+    }
+}
+
+// ===== 循环播放 =====
+function toggleLoop() {
+    const v = videoEl.value
+    if (!v) return
+    isLooping.value = !isLooping.value
+    v.loop = isLooping.value
+    showControls()
+}
+
+// ===== 选集面板 =====
+function toggleEpPanel() {
+    showEpPanel.value = !showEpPanel.value
+    if (showEpPanel.value) {
+        showSpeedMenu.value = false
+        showLevelMenu.value = false
+    }
+}
+function onEpisodeSelect(ep) {
+    emit('selectEpisode', ep)
+    showEpPanel.value = false
+    showControls()
 }
 
 // ===== 全屏 =====
@@ -209,6 +342,13 @@ function onKeydown(e) {
     if (!wrapperEl.value || !wrapperEl.value.contains(document.activeElement) && document.activeElement !== document.body) return
     const v = videoEl.value
     if (!v) return
+    if (/^[0-9]$/.test(e.key)) {
+        e.preventDefault()
+        const ratio = parseInt(e.key, 10) / 10
+        v.currentTime = ratio * duration.value
+        showControls()
+        return
+    }
     switch (e.key) {
         case ' ':
         case 'k':
@@ -251,6 +391,7 @@ function loadSource(url) {
     destroyHls()
     playerError.value = ''
     loading.value = true
+    v.loop = isLooping.value
 
     // 原生 HLS（Safari）
     if (v.canPlayType('application/vnd.apple.mpegurl') && /\.m3u8/i.test(url)) {
@@ -423,13 +564,17 @@ defineExpose({ videoEl })
             :class="{ visible: controlsVisible || !isPlaying }"
             @click.stop
         >
-            <!-- 进度条 -->
+            <!-- 进度条（支持拖动） -->
             <div
                 class="progress-bar"
                 ref="progressBar"
-                @click="seek"
+                @mousedown="onProgressMouseDown"
                 @mousemove="onProgressHover"
                 @mouseleave="hoverTime = null"
+                @touchstart="onProgressTouchStart"
+                @touchmove="onProgressTouchMove"
+                @touchend="onProgressTouchEnd"
+                @touchcancel="onProgressTouchEnd"
             >
                 <div class="progress-buffered" :style="{ width: bufferedPercent + '%' }"></div>
                 <div class="progress-played" :style="{ width: playedPercent + '%' }"></div>
@@ -459,7 +604,14 @@ defineExpose({ videoEl })
                             <Volume1 v-else-if="!isMuted && volume > 0" :size="20" />
                             <VolumeX v-else :size="20" />
                         </button>
-                        <div class="volume-slider">
+                        <div
+                            class="volume-slider"
+                            ref="volumeSlider"
+                            @touchstart="onVolumeTouchStart"
+                            @touchmove="onVolumeTouchMove"
+                            @touchend="onVolumeTouchEnd"
+                            @touchcancel="onVolumeTouchEnd"
+                        >
                             <div class="volume-track">
                                 <div class="volume-fill" :style="{ width: (isMuted ? 0 : volume * 100) + '%' }"></div>
                             </div>
@@ -486,6 +638,33 @@ defineExpose({ videoEl })
                                 :class="{ active: playbackRate === sp }"
                                 @click="changeSpeed(sp)"
                             >{{ sp }}x</div>
+                        </div>
+                    </div>
+
+                    <!-- 循环播放 -->
+                    <button
+                        class="ctrl-btn"
+                        :class="{ active: isLooping }"
+                        @click.stop="toggleLoop"
+                        :title="isLooping ? '关闭循环' : '循环播放'"
+                    >
+                        <Repeat :size="18" :class="{ 'loop-active': isLooping }" />
+                    </button>
+
+                    <!-- 选集 -->
+                    <div class="ep-panel-wrapper">
+                        <button class="ep-switch-btn" @click.stop="toggleEpPanel" title="选集">选集</button>
+                        <div v-if="showEpPanel" class="ep-panel" @click.stop>
+                            <div v-if="!episodes.length" class="ep-panel-empty">暂无集数</div>
+                            <div v-else class="ep-panel-list">
+                                <button
+                                    v-for="ep in episodes"
+                                    :key="ep.title"
+                                    class="ep-panel-item"
+                                    :class="{ active: currentEpisode?.title === ep.title }"
+                                    @click="onEpisodeSelect(ep)"
+                                >{{ ep.title }}</button>
+                            </div>
                         </div>
                     </div>
 
@@ -717,7 +896,7 @@ defineExpose({ videoEl })
     pointer-events: auto;
 }
 
-/* ===== 进度条 ===== */
+/* ===== 进度条（可拖动 + 美化，无白底） ===== */
 .progress-bar {
     position: relative;
     width: 100%;
@@ -727,51 +906,60 @@ defineExpose({ videoEl })
     display: flex;
     align-items: center;
 }
+/* 底色：完全透明，无白底 */
 .progress-bar::before {
     content: '';
     position: absolute;
     left: 0; right: 0;
-    height: 6px;
-    background: rgba(255, 255, 255, .22);
+    height: 4px;
+    background: transparent;
     border-radius: 4px;
     transition: height .15s;
 }
-.progress-bar:hover::before { height: 8px; }
+.progress-bar:hover::before,
+.progress-bar:active::before { height: 6px; }
 
+/* 缓冲条：用半透明深灰，不用白色 */
 .progress-buffered {
     position: absolute;
     left: 0;
-    height: 6px;
-    background: rgba(255, 255, 255, .45);
+    height: 4px;
+    background: rgba(0, 0, 0, .25);
     border-radius: 4px;
     transition: height .15s;
 }
-.progress-bar:hover .progress-buffered { height: 8px; }
+.progress-bar:hover .progress-buffered,
+.progress-bar:active .progress-buffered { height: 6px; }
 
 .progress-played {
     position: absolute;
     left: 0;
-    height: 6px;
+    height: 4px;
     background: linear-gradient(to right, #c20c0c, #ff4d4d);
     border-radius: 4px;
     transition: height .15s;
-    box-shadow: 0 0 8px rgba(194, 12, 12, .5);
+    box-shadow: 0 0 10px rgba(255, 77, 77, .65);
 }
-.progress-bar:hover .progress-played { height: 8px; }
+.progress-bar:hover .progress-played,
+.progress-bar:active .progress-played { height: 6px; }
 
 .progress-thumb {
     position: absolute;
     top: 50%;
     width: 14px; height: 14px;
     border-radius: 50%;
-    background: #fff;
-    border: 2px solid #c20c0c;
+    background: #ff4d4d;
     transform: translate(-50%, -50%) scale(0);
-    transition: transform .15s;
-    box-shadow: 0 0 8px rgba(194, 12, 12, .7);
+    transition: transform .15s, background .15s;
+    box-shadow: 0 0 0 4px rgba(255, 77, 77, .25), 0 2px 8px rgba(0, 0, 0, .5);
     pointer-events: none;
 }
 .progress-bar:hover .progress-thumb { transform: translate(-50%, -50%) scale(1); }
+.progress-bar:active .progress-thumb {
+    transform: translate(-50%, -50%) scale(1.25);
+    background: #c20c0c;
+    box-shadow: 0 0 0 6px rgba(255, 77, 77, .35), 0 2px 12px rgba(0, 0, 0, .6);
+}
 
 .progress-preview {
     position: absolute;
@@ -818,8 +1006,12 @@ defineExpose({ videoEl })
     transition: background .15s, color .15s;
 }
 .ctrl-btn:hover { background: rgba(255, 255, 255, .15); color: #ff6b6b; }
+.ctrl-btn.active { color: #ff6b6b; }
+.ctrl-btn.active:hover { color: #ff4d4d; }
 
-/* 音量组 */
+.loop-active { color: #ff6b6b; }
+
+/* 音量组（常驻显示，更易调节） */
 .volume-group {
     display: flex;
     align-items: center;
@@ -827,21 +1019,19 @@ defineExpose({ videoEl })
     position: relative;
 }
 .volume-slider {
-    width: 0;
-    overflow: hidden;
-    transition: width .2s;
+    width: 70px;
     position: relative;
     height: 32px;
     display: flex;
     align-items: center;
+    margin-left: 2px;
 }
-.volume-group:hover .volume-slider { width: 78px; }
 
 .volume-track {
     position: absolute;
     left: 4px; right: 4px;
-    height: 3px;
-    background: rgba(255, 255, 255, .25);
+    height: 4px;
+    background: transparent;
     border-radius: 2px;
     pointer-events: none;
 }
@@ -849,6 +1039,7 @@ defineExpose({ videoEl })
     height: 100%;
     background: linear-gradient(to right, #c20c0c, #ff4d4d);
     border-radius: 2px;
+    box-shadow: 0 0 6px rgba(255, 77, 77, .5);
 }
 .volume-slider input[type=range] {
     width: 70px;
@@ -856,6 +1047,7 @@ defineExpose({ videoEl })
     height: 14px;
     background: transparent;
     -webkit-appearance: none;
+    -moz-appearance: none;
     appearance: none;
     cursor: pointer;
     position: relative;
@@ -863,7 +1055,7 @@ defineExpose({ videoEl })
     outline: none;
     border: none;
 }
-/* 音量滑块 track（清除描边） */
+/* 音量滑块 track（清除描边，透明由 .volume-track 显示底色） */
 .volume-slider input[type=range]::-webkit-slider-runnable-track {
     -webkit-appearance: none;
     height: 4px;
@@ -876,17 +1068,46 @@ defineExpose({ videoEl })
     appearance: none;
     width: 12px; height: 12px;
     border-radius: 50%;
-    background: #fff;
-    border: 2px solid #c20c0c;
-    box-shadow: 0 0 6px rgba(194, 12, 12, .7);
+    background: #ff4d4d;
+    box-shadow: 0 0 0 3px rgba(255, 77, 77, .25), 0 2px 6px rgba(0, 0, 0, .4);
     cursor: pointer;
     margin-top: -4px;
     outline: none;
+    transition: transform .15s, box-shadow .15s;
+}
+.volume-slider input[type=range]:hover::-webkit-slider-thumb {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 4px rgba(255, 77, 77, .35), 0 2px 8px rgba(0, 0, 0, .5);
 }
 .volume-slider input[type=range]:focus { outline: none; }
 .volume-slider input[type=range]:focus::-webkit-slider-thumb {
-    box-shadow: 0 0 0 4px rgba(194, 12, 12, .25), 0 0 6px rgba(194, 12, 12, .7);
+    box-shadow: 0 0 0 4px rgba(255, 77, 77, .35), 0 0 6px rgba(255, 77, 77, .7);
 }
+
+/* Firefox 音量滑块 */
+.volume-slider input[type=range]::-moz-range-track {
+    height: 4px;
+    background: transparent;
+    border: none;
+    border-radius: 2px;
+}
+.volume-slider input[type=range]::-moz-range-thumb {
+    width: 12px; height: 12px;
+    border: none;
+    border-radius: 50%;
+    background: #ff4d4d;
+    box-shadow: 0 0 0 3px rgba(255, 77, 77, .25), 0 2px 6px rgba(0, 0, 0, .4);
+    cursor: pointer;
+    transition: transform .15s, box-shadow .15s;
+}
+.volume-slider input[type=range]:hover::-moz-range-thumb {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 4px rgba(255, 77, 77, .35), 0 2px 8px rgba(0, 0, 0, .5);
+}
+.volume-slider input[type=range]:focus::-moz-range-thumb {
+    box-shadow: 0 0 0 4px rgba(255, 77, 77, .35), 0 0 6px rgba(255, 77, 77, .7);
+}
+.volume-slider input[type=range]::-moz-focus-outer { border: 0; }
 
 /* 时间显示 */
 .time-display {
@@ -916,6 +1137,56 @@ defineExpose({ videoEl })
     background: rgba(194, 12, 12, .9);
     border-color: #c20c0c;
     color: #fff;
+}
+
+/* 选集面板 */
+.ep-panel-wrapper { position: relative; }
+.ep-panel {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    width: 220px;
+    max-height: 260px;
+    overflow-y: auto;
+    background: rgba(0, 0, 0, .92);
+    border-radius: 6px;
+    padding: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+    z-index: 10;
+    cursor: default;
+}
+.ep-panel-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+    gap: 6px;
+}
+.ep-panel-item {
+    padding: 6px 4px;
+    border: 1px solid rgba(255, 255, 255, .15);
+    background: rgba(255, 255, 255, .06);
+    color: #fff;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all .15s;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ep-panel-item:hover {
+    background: rgba(255, 255, 255, .12);
+    border-color: rgba(255, 255, 255, .25);
+}
+.ep-panel-item.active {
+    color: #ff6b6b;
+    background: rgba(194, 12, 12, .22);
+    border-color: rgba(194, 12, 12, .5);
+}
+.ep-panel-empty {
+    color: #aaa;
+    font-size: 12px;
+    text-align: center;
+    padding: 12px 0;
 }
 
 /* ===== 过渡动画 ===== */

@@ -221,13 +221,14 @@ function toggleFavorite() {
 }
 
 function openRelated(item) {
-    // 跳转到动漫主页搜索
-    router.push({ path: '/anime', query: { kw: item.name_cn || item.name } })
+    // 跳转到动漫主页搜索，标记 from=related 避免覆盖用户主动搜索的 sessionStorage 状态
+    router.push({ path: '/anime', query: { kw: item.name_cn || item.name, from: 'related' } })
 }
 
 function goBack() {
-    // 优先返回上一级；若无历史则回动漫主页
-    if (window.history.length > 1) {
+    // 优先返回上一级站内路由；若无历史或来自外部则回动漫主页
+    const back = router.options.history.state?.back
+    if (typeof back === 'string' && back && back !== '/' && !back.startsWith('http')) {
         router.back()
     } else {
         router.push('/anime')
@@ -263,7 +264,7 @@ onBeforeUnmount(() => {
                 </span>
             </div>
             <button class="icon-btn fav-btn" :class="{ active: isFavorited }" @click="toggleFavorite" title="收藏">
-                <Heart :size="20" />
+                <Heart :size="20" :fill="isFavorited ? 'currentColor' : 'none'" />
             </button>
         </div>
 
@@ -299,12 +300,15 @@ onBeforeUnmount(() => {
                         :src="playUrl"
                         play-type="m3u8"
                         :badge="currentEpisode ? `正在播放：${currentEpisode.title}` : ''"
+                        :episodes="episodes"
+                        :current-episode="currentEpisode"
                         :has-prev="hasPrevEpisode"
                         :has-next="hasNextEpisode"
                         @retry="replayCurrent"
                         @error="onPlayerError"
                         @prev="playPrevEpisode"
                         @next="playNextEpisode"
+                        @selectEpisode="playEpisode"
                     />
 
                     <!-- iframe 嵌入式播放器（m3u8 提取失败时兜底，直接加载整页） -->

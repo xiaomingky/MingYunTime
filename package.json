@@ -1,6 +1,6 @@
 {
   "name": "music-player",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",

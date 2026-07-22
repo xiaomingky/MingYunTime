@@ -123,9 +123,29 @@ function replayCurrent() {
     if (currentEpisode.value) playEpisode(currentEpisode.value)
 }
 
+// ===== 上一集 / 下一集（供 BiliPlayer 切换剧集）=====
+const currentEpisodeIdx = computed(() => {
+    if (!currentEpisode.value) return -1
+    return episodes.value.findIndex(ep => ep.title === currentEpisode.value.title)
+})
+const hasPrevEpisode = computed(() => currentEpisodeIdx.value > 0)
+const hasNextEpisode = computed(() => {
+    const idx = currentEpisodeIdx.value
+    return idx >= 0 && idx < episodes.value.length - 1
+})
+function playPrevEpisode() {
+    const idx = currentEpisodeIdx.value
+    if (idx > 0) playEpisode(episodes.value[idx - 1])
+}
+function playNextEpisode() {
+    const idx = currentEpisodeIdx.value
+    if (idx >= 0 && idx < episodes.value.length - 1) playEpisode(episodes.value[idx + 1])
+}
+
 function goBack() {
-    // 优先返回上一级；若无历史则回影视主页
-    if (window.history.length > 1) {
+    // 优先返回上一级站内路由；若无历史或来自外部则回影视主页
+    const back = router.options.history.state?.back
+    if (typeof back === 'string' && back && back !== '/' && !back.startsWith('http')) {
         router.back()
     } else {
         router.push('/movie')
@@ -183,8 +203,15 @@ onBeforeUnmount(() => {
                         :src="playUrl"
                         play-type="m3u8"
                         :badge="currentEpisode ? `正在播放：${currentEpisode.title}` : ''"
+                        :episodes="episodes"
+                        :current-episode="currentEpisode"
+                        :has-prev="hasPrevEpisode"
+                        :has-next="hasNextEpisode"
                         @retry="replayCurrent"
                         @error="onPlayerError"
+                        @prev="playPrevEpisode"
+                        @next="playNextEpisode"
+                        @selectEpisode="playEpisode"
                     />
 
                     <iframe

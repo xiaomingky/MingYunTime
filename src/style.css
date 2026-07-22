@@ -401,7 +401,7 @@ footer.footer {
 .progress-bar {
     flex: 1;
     height: 4px;
-    background-color: #eee;
+    background-color: rgba(0, 0, 0, 0.12);
     border-radius: 2px;
     position: relative;
     cursor: pointer;
@@ -412,22 +412,25 @@ footer.footer {
     left: 0;
     top: 0;
     height: 100%;
-    background-color: var(--primary-color);
+    background: linear-gradient(90deg, #c20c0c, var(--primary-color));
     border-radius: 2px;
 }
 
 .progress-dot {
     position: absolute;
     right: -6px;
-    top: -4px;
+    top: 50%;
+    transform: translateY(-50%);
     width: 12px;
     height: 12px;
     background-color: var(--primary-color);
     border-radius: 50%;
+    box-shadow: 0 0 0 3px rgba(236, 65, 65, 0.25);
     display: none;
 }
 
-.progress-bar:hover .progress-dot {
+.progress-bar:hover .progress-dot,
+.progress-bar.dragging .progress-dot {
     display: block;
 }
 
@@ -442,7 +445,7 @@ footer.footer {
 .volume-slider {
     width: 100px;
     height: 4px;
-    background-color: #eee;
+    background-color: rgba(0, 0, 0, 0.12);
     border-radius: 2px;
     position: relative;
     cursor: pointer;
@@ -453,11 +456,12 @@ footer.footer {
     left: 0;
     top: 0;
     height: 100%;
-    background-color: var(--primary-color);
+    background: linear-gradient(90deg, #c20c0c, var(--primary-color));
     border-radius: 2px;
 }
 
-.volume-slider:hover .progress-dot {
+.volume-slider:hover .progress-dot,
+.volume-slider.dragging .progress-dot {
     display: block;
 }
 

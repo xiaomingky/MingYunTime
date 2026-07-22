@@ -35,6 +35,13 @@ export const RENDERER_DIST = path.join(process.env.APP_ROOT, 'dist')
 
 process.env.VITE_PUBLIC = VITE_DEV_SERVER_URL ? path.join(process.env.APP_ROOT, 'public') : RENDERER_DIST
 
+// 支持的本地音频格式
+const AUDIO_EXTENSIONS = [
+    '.mp3', '.wav', '.flac', '.ogg', '.oga', '.m4a', '.aac', '.wma', '.ape',
+    '.opus', '.wv', '.tta', '.dsf', '.dff', '.mp2', '.ac3', '.amr', '.aiff',
+    '.au', '.ra', '.ram', '.mpc', '.mka', '.weba'
+]
+
 let win
 let tray = null
 
@@ -277,8 +284,7 @@ async function scanAudioFiles(filePath) {
         return results
     }
 
-    const extensions = ['.mp3', '.wav', '.flac', '.ogg', '.m4a']
-    if (extensions.includes(path.extname(filePath).toLowerCase())) {
+    if (AUDIO_EXTENSIONS.includes(path.extname(filePath).toLowerCase())) {
         try {
             const metadata = await mm.parseFile(filePath)
             const name = metadata.common.title || path.basename(filePath, path.extname(filePath))
@@ -318,7 +324,7 @@ async function scanAudioFiles(filePath) {
 ipcMain.handle('open-file-dialog', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
         properties: ['openFile', 'multiSelections'],
-        filters: [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'flac', 'ogg', 'm4a'] }]
+        filters: [{ name: 'Audio Files', extensions: AUDIO_EXTENSIONS.map(ext => ext.replace('.', '')) }]
     })
     if (canceled) return []
     let allSongs = []
@@ -695,7 +701,26 @@ app.whenReady().then(() => {
                 '.wav': 'audio/wav',
                 '.flac': 'audio/flac',
                 '.ogg': 'audio/ogg',
+                '.oga': 'audio/ogg',
                 '.m4a': 'audio/mp4',
+                '.aac': 'audio/aac',
+                '.wma': 'audio/x-ms-wma',
+                '.ape': 'audio/ape',
+                '.opus': 'audio/opus',
+                '.wv': 'audio/x-wavpack',
+                '.tta': 'audio/tta',
+                '.dsf': 'audio/dsf',
+                '.dff': 'audio/dff',
+                '.mp2': 'audio/mpeg',
+                '.ac3': 'audio/ac3',
+                '.amr': 'audio/amr',
+                '.aiff': 'audio/aiff',
+                '.au': 'audio/basic',
+                '.ra': 'audio/vnd.rn-realaudio',
+                '.ram': 'audio/vnd.rn-realaudio',
+                '.mpc': 'audio/x-musepack',
+                '.mka': 'audio/x-matroska',
+                '.weba': 'audio/webm',
                 '.ttf': 'font/ttf',
                 '.otf': 'font/otf',
                 '.woff': 'font/woff',
@@ -960,7 +985,8 @@ ipcMain.handle('save-song-metadata', async (_, { songPath, metadata, coverDataUr
     try {
         const ext = path.extname(songPath).toLowerCase()
         const isMP3 = ext === '.mp3'
-        if (!isMP3 && !['.flac', '.ogg', '.oga', '.wav', '.m4a', '.mp4', '.aac', '.wma'].includes(ext)) {
+        const SUPPORTED_SAVE_EXTENSIONS = [...AUDIO_EXTENSIONS, '.mp4']
+        if (!isMP3 && !SUPPORTED_SAVE_EXTENSIONS.includes(ext)) {
             return { success: false, error: `暂不支持 ${ext} 格式的元数据写入（支持 MP3/FLAC/OGG/WAV/M4A 等）` }
         }
 
