@@ -2,7 +2,7 @@
 
 > **This project is entirely created by AI (Claude Code)** | [中文版](README.md)
 
-A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron**, integrated with Netease Cloud Music API for online music playback, search, and playlist management, with built-in **Anime** and **Movie/TV** streaming modules (HLS playback + Bangumi metadata aggregation).
+A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron**, integrated with Netease Cloud Music API for online music playback, search, and playlist management, with built-in **Anime**, **Movie/TV**, **Unified Download Center**, and **Bilibili Video Parsing** modules (HLS playback + Bangumi metadata aggregation + DASH high-quality merging).
 
 ---
 
@@ -52,7 +52,7 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 
 ![Download with Cover](showimage/下载歌曲带封面.png)
 
-- Local MV matching and playback
+- MV playback: **local-first + online auto-match**. The MV button on the song detail page prefers local MV files; when none is found, it automatically calls the Netease MV API to match an online MV by song name
 
 ![Local MV](showimage/本地MV展示.png)
 
@@ -90,7 +90,30 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 ![MV](showimage/MV.png)
 
 - Online video browsing, local video management
-- MV player with local MV matching
+- MV player with local MV matching; the MV button on the song detail page supports **local-first + online auto-match** (calls Netease MV API by song name when no local MV is found)
+- **Bilibili video parsing**: paste a `bilibili.com/video/BVxxx` URL or `b23.tv` short link, automatically calls Bilibili API (view + playurl) to extract direct streams
+- **QR-code login for higher quality**: after Bilibili QR-code login, requests DASH format (fnval=16) to unlock 4K / 1080P+ / HDR / Dolby Vision; cookies persist for 30 days, and the login status bar shows avatar / nickname / VIP status
+- **DASH auto-merge**: when downloading audio-video separated streams, ffmpeg stream-copy merges them into a single mp4 with audio (very fast)
+- **webRequest Referer injection**: automatically injects Referer for Bilibili CDN (bilivideo.com) and image CDN (hdslb.com) to bypass 403/hotlink protection
+
+### 📺 Local Video
+
+The local video page is split into three tabs:
+
+- **Local Video**: import files/folders, auto-scan metadata (duration, format, size)
+- **Stream/Live**: add MP4/WebM direct links, HLS (m3u8), FLV streams; live streams are auto-tagged LIVE
+- **URL Parse**: paste any video page URL (including Bilibili URLs) to auto-extract video streams from the page; supports 21 video format extensions (mp4/webm/avi/mkv/mov, etc.); results are listed for the user to play or download
+
+### 📦 Unified Download Center
+
+All download tasks (music / movie / anime / MV / video) are unified into a single "Downloads" section:
+
+- **128-thread concurrent, uncapped speed**: custom HTTP Agent (maxSockets: Infinity) + aria2c multi-threading for full-bandwidth downloads
+- **aria2c + ffmpeg bundled** (resources/), no external dependencies
+- **Real-time progress**: speed / progress / details / link copy, with cancel / retry / remove / status filters
+- **Persistent history**: download records saved to disk, survive restarts
+- **Custom download URL**: paste a URL and the filename is auto-fetched
+- m3u8 streams use parallel shard download + ffmpeg concat merge; Bilibili DASH streams auto-merge audio and video
 
 ### 🌸 Anime (Yhdm)
 
@@ -101,6 +124,7 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 - **Playback Experience**: 60s buffer cap, auto error recovery, multi-source fallback, next-episode preload, playback progress memory
 - **Favorites & History**: Local favorites, watched-episode memory, recent-watched list
 - **Paginated Search**: 24 items per page, centered page navigation, dedup with no-cover filtering
+- **Download**: detail page provides a download entry, unified into the Download Center
 
 ### 🎞️ Movies & TV (Smdyu)
 
@@ -109,6 +133,7 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 - **Multi-route Parsing**: Auto-detects multiple play routes via `.play-list#playlist_1/2/3...`
 - **Search**: `/vod-search--------------.html?wd=keyword`, paginated with dedup
 - **TLS Compatibility**: Dropped appys.pro / czys.tv (machine-room TLS handshake failures), switched to the China-reachable Smdyu
+- **Download**: detail page provides a download entry, unified into the Download Center
 
 ### 🔐 Login
 
@@ -194,6 +219,8 @@ Two options:
 | Audio | Web Audio API (Equalizer), HTML5 Audio |
 | Metadata | music-metadata, node-id3 |
 | Anime/Movie | cheerio (HTML parsing), hls.js (HLS streaming), Bangumi API (metadata aggregation) |
+| Download Engine | aria2c (multi-thread direct links), ffmpeg (m3u8 merge / DASH merge), axios custom Agent (128-thread concurrent, uncapped) |
+| Bilibili Parsing | Bilibili API (view/playurl), QR-code login, DASH high-quality format, webRequest Referer injection |
 
 ---
 
@@ -202,7 +229,12 @@ Two options:
 ```
 music/
 ├── electron/            # Electron main process
-│   └── main.js          # Window management, IPC handlers, protocols
+│   ├── main.js          # Window management, IPC, Bilibili parsing/login, protocols
+│   ├── anime.js         # Anime module IPC (Yhdm parsing)
+│   ├── anime-meta.js    # Bangumi metadata aggregation + title similarity matching
+│   ├── movie.js         # Movie module IPC (Smdyu parsing)
+│   └── download-manager.js  # Unified download manager (aria2c + ffmpeg + 128 concurrent)
+├── resources/           # Bundled aria2c.exe + ffmpeg.exe (download engine)
 ├── src/
 │   ├── api/index.js     # API client (axios)
 │   ├── store/           # Pinia stores (player, user, message)
@@ -214,9 +246,15 @@ music/
 │   │   ├── PlaylistDetail.vue # Playlist detail + management
 │   │   ├── AlbumDetail.vue    # Album detail
 │   │   ├── LocalMusic.vue     # Local music management
-│   │   ├── LocalVideo.vue     # Local video management
+│   │   ├── LocalVideo.vue     # Local video / streams / URL parsing
 │   │   ├── RecentPlay.vue     # Recent play history
 │   │   ├── Video.vue          # Online videos
+│   │   ├── Anime.vue          # Anime home (Yhdm)
+│   │   ├── AnimeRecommend.vue # Anime recommend (seasonal/rating/genre/favorites)
+│   │   ├── AnimeDetail.vue    # Anime detail (HLS player + Bangumi metadata)
+│   │   ├── Movie.vue          # Movie home (Smdyu)
+│   │   ├── MovieDetail.vue    # Movie detail (multi-route playback)
+│   │   ├── Downloads.vue      # Unified download center
 │   │   └── DesktopLyrics.vue  # Desktop lyrics window
 │   ├── components/      # Shared components
 │   │   ├── EnglishAnalysis.vue  # AI English lyrics analysis
