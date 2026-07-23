@@ -9,6 +9,7 @@ import SongDetail from './views/SongDetail.vue'
 import LoginModal from './components/LoginModal.vue'
 import LockModal from './components/LockModal.vue'
 import MvPlayer from './components/MvPlayer.vue'
+import VideoDownloadToast from './components/VideoDownloadToast.vue'
 import Toast from './components/Toast.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
@@ -26,6 +27,7 @@ import {
   Tv,
   Heart,
   Download,
+  HardDrive,
   Clock,
   Cloud,
   Lock,
@@ -260,6 +262,15 @@ const handleSearch = () => {
 const onSelectSuggest = (kw) => {
   searchText.value = kw
   handleSearch()
+}
+
+// "您可能再找"实时搜索结果点击：song → 跳转到搜索页用歌名搜索
+const onSelectItem = (item) => {
+  showSearchSuggest.value = false
+  if (item?.type === 'song' && item.name) {
+    searchText.value = item.name
+    handleSearch()
+  }
 }
 
 const onSearchFocus = () => {
@@ -498,6 +509,7 @@ const openGithub = () => {
 <template>
   <div class="app-container" :class="{ 'is-desktop-lyrics': route.path === '/desktop-lyrics' }">
     <Toast />
+    <VideoDownloadToast />
     <ConfirmModal />
     <UpdateDialog :visible="updateInfo.available" :version="updateInfo.version" :notes="updateInfo.notes" :downloadUrl="updateInfo.downloadUrl" @close="updateInfo.available = false" />
 
@@ -583,6 +595,7 @@ const openGithub = () => {
                 :query="searchText"
                 :visible="showSearchSuggest"
                 @select="onSelectSuggest"
+                @select-item="onSelectItem"
               />
             </div>
             <div class="mic-icon clickable">
@@ -693,7 +706,7 @@ const openGithub = () => {
               <div
                 v-for="item in [
                   { id: '/', label: '发现音乐', icon: Music },
-                  { id: '/video', label: '视频', icon: Tv },
+                  { id: '/video', label: 'MV', icon: Tv },
                   { id: '/anime', label: '动漫', icon: MonitorPlay },
                   { id: '/movie', label: '影视', icon: Film },
                 ]"
@@ -710,14 +723,15 @@ const openGithub = () => {
             <!-- Library -->
             <div class="sidebar-label">我的音乐</div>
             <div class="sidebar-section">
-              <div 
+              <div
                 v-for="item in [
-                  { id: '/local', label: '本地音乐', icon: Download },
+                  { id: '/local', label: '本地音乐', icon: HardDrive },
                   { id: '/local-video', label: '本地视频', icon: Film },
                   { id: '/recent', label: '最近播放', icon: Clock },
                   { id: '/cloud', label: '我的云音乐', icon: Cloud },
-                ]" 
-                :key="item.id" 
+                  { id: '/downloads', label: '下载', icon: Download },
+                ]"
+                :key="item.id"
                 class="menu-item"
                 :class="{ active: route.path === item.id }"
                 @click="navigateTo(item.id)"

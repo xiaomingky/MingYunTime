@@ -1,14 +1,32 @@
 <script setup>
 import { usePlayerStore } from '../store/player'
+import { useMessageStore } from '../store/message'
 import BiliPlayer from './BiliPlayer.vue'
-import { X, Maximize, Minimize } from 'lucide-vue-next'
-import { ref, watch } from 'vue'
+import { X, Maximize, Minimize, Download } from 'lucide-vue-next'
+import { ref, watch, computed } from 'vue'
+import { downloadVideo } from '../api'
 
 const playerStore = usePlayerStore()
+const messageStore = useMessageStore()
 const containerRef = ref(null)
 const isFullscreen = ref(false)
 const isMaximized = ref(false)
 const showSizeMenu = ref(false)
+const isDownloading = ref(false)
+
+// 显示标题：优先 MV 标题，回退歌曲名
+const displayTitle = computed(() => {
+    return playerStore.currentMvTitle || playerStore.currentSong?.name || '视频'
+})
+
+// 根据 URL 自动判断 BiliPlayer 的 playType
+const biliPlayType = computed(() => {
+    const url = playerStore.currentMvUrl || ''
+    if (/\.flv(\?|$)/i.test(url)) return 'flv'
+    if (/\.m3u8(\?|$)/i.test(url)) return 'm3u8'
+    if (url.startsWith('local-file://') || url.startsWith('file://')) return 'direct'
+    return 'direct'
+})
 
 const close = () => {
     if (isFullscreen.value) {
@@ -18,6 +36,44 @@ const close = () => {
     playerStore.showMvPlayer = false
     playerStore.currentMvUrl = ''
     playerStore.currentMvId = null
+    playerStore.currentMvTitle = ''
+    playerStore.currentMvAudioUrl = ''
+}
+
+// 下载当前 MV
+const handleDownload = async () => {
+    if (!playerStore.currentMvUrl) {
+        messageStore.warning('暂无可下载的视频地址')
+        return
+    }
+    if (isDownloading.value) {
+        messageStore.info('正在下载中，请稍候...')
+        return
+    }
+    isDownloading.value = true
+    try {
+        const name = displayTitle.value || playerStore.currentSong?.name || 'MV'
+        const params = {
+            url: playerStore.currentMvUrl,
+            name,
+            type: /\.m3u8(\?|$)/i.test(playerStore.currentMvUrl) ? 'm3u8' : undefined,
+            category: 'mv'
+        }
+        // DASH 音视频分离流：传递 audioUrl 让后端用 ffmpeg 合并
+        if (playerStore.currentMvAudioUrl) params.audioUrl = playerStore.currentMvAudioUrl
+        const result = await downloadVideo(params)
+        if (result?.success) {
+            messageStore.success(`已保存到：${result.path}`, 4000)
+        } else if (result?.canceled) {
+            // 用户取消保存对话框
+        } else {
+            messageStore.error('下载失败：' + (result?.error || '未知错误'))
+        }
+    } catch (e) {
+        messageStore.error('下载失败：' + (e.message || e))
+    } finally {
+        isDownloading.value = false
+    }
 }
 
 // 程序全屏（在窗口内最大化，不覆盖任务栏）
@@ -88,11 +144,17 @@ watch(() => playerStore.showMvPlayer, (val) => {
     >
       <!-- 顶部标题栏 -->
       <div class="mv-top-bar" style="-webkit-app-region: drag;">
-        <span class="mv-title" style="-webkit-app-region: no-drag;">
-          MV - {{ playerStore.currentSong?.name || '视频' }}
+        <span class="mv-title" style="-webkit-app-region: no-drag;" :title="displayTitle">
+          MV - {{ displayTitle }}
         </span>
         <div class="top-right-btns" style="-webkit-app-region: no-drag;">
           <span class="size-hint" v-if="isMaximized && !isFullscreen">已放大</span>
+
+          <!-- 下载按钮 -->
+          <div class="ctrl-btn download-btn" :class="{ active: isDownloading }" @click.stop="handleDownload" :title="isDownloading ? '正在下载...' : '下载此 MV'">
+            <Download :size="18" />
+            <span v-if="isDownloading" class="dl-spin"></span>
+          </div>
 
           <!-- 放大模式选择 -->
           <div class="size-toggle-wrap">
@@ -122,7 +184,7 @@ watch(() => playerStore.showMvPlayer, (val) => {
       <div class="video-wrapper" @click="closeSizeMenu">
         <BiliPlayer
           :src="playerStore.currentMvUrl"
-          playType="direct"
+          :playType="biliPlayType"
           :autoplay="true"
         />
       </div>
@@ -260,6 +322,26 @@ watch(() => playerStore.showMvPlayer, (val) => {
 
 .size-toggle-wrap {
   position: relative;
+}
+
+.download-btn.active {
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
+}
+
+.dl-spin {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid rgba(245, 158, 11, 0.3);
+  border-top-color: #f59e0b;
+  border-radius: 50%;
+  animation: dlSpin 0.8s linear infinite;
+  margin-left: 4px;
+  display: inline-block;
+}
+
+@keyframes dlSpin {
+  to { transform: rotate(360deg); }
 }
 
 .size-menu {

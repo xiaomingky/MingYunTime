@@ -14,9 +14,9 @@ export default defineConfig({
         entry: 'electron/main.js',
         vite: {
             build: {
-              // 为 Electron 22 强制输出 CJS 格式且不外置 music-metadata
+              // 为 Electron 22 强制输出 CJS 格式，iconv-lite/music-metadata 走 node_modules 运行时加载
               rollupOptions: {
-                external: ['electron', 'node:fs', 'node:path', 'node:url', 'node:stream', 'node:crypto', 'cheerio'],
+                external: ['electron', 'node:fs', 'node:path', 'node:url', 'node:stream', 'node:crypto', 'cheerio', 'iconv-lite', 'music-metadata'],
                 output: {
                   format: 'cjs',
                   entryFileNames: '[name].js',

@@ -32,8 +32,18 @@
 }
 
 .icon-btn:hover { background: #f5f5f5; color: #c20c0c; }
-.fav-btn.active { color: #c20c0c; }
+.fav-btn { transition: all .25s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.fav-btn.active {
+    color: #c20c0c;
+    transform: scale(1.1);
+    animation: heart-pop .35s ease-out;
+}
 .fav-btn.active:hover { background: rgba(194, 12, 12, .08); }
+@keyframes heart-pop {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.35); }
+    100% { transform: scale(1.1); }
+}
 
 .top-title {
     flex: 1;
@@ -182,6 +192,41 @@
     margin-bottom: 10px;
     font-size: 13px;
     color: #888;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.ep-download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    font-size: 12px;
+    border: 1px solid #e0e0e0;
+    background: #fff;
+    color: #555;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.ep-download-btn:hover:not(:disabled) {
+    border-color: #c20c0c;
+    color: #c20c0c;
+    background: rgba(194, 12, 12, 0.05);
+}
+
+.ep-download-btn.active {
+    color: #f59e0b;
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.08);
+}
+
+.ep-download-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .ep-empty {

@@ -31,6 +31,21 @@ const SOURCES = {
 // 故障转移顺序：推荐 → 经典 → 备用
 const FALLBACK_ORDER = ['yhf', 'xdm', 'yhdmfan']
 
+// 各播放源(from)对应的解析接口（来自 playerconfig.js）
+// 方案一：直接 iframe 套用解析播放器，快速无需提取直链
+const PARSE_MAP = {
+  'CYC67':    'https://jx.yhdm5.one/player?url=',
+  'LMM97':    'https://jx.yhdm5.one/player?url=',
+  'qq':       'https://jx.yhdm5.one/player?url=',
+  'youku':    'https://jx.yhdm5.one/player?url=',
+  'bilibili': 'https://jx.yhdm5.one/player?url=',
+  'lzm3u8':   'https://jx.yhdz.one/?url=',
+  'ffm3u8':   'https://jx.yhdz.one/?url=',
+  'bfzym3u8': 'https://jx.yhdz.one/?url=',
+  'dbm3u8':   'https://jx.yhdz.one/?url=',
+  'vwnet':    'https://jx.yinghuafan.com/?url='
+}
+
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 async function fetchHtml(url, referer, timeout = 12000) {
@@ -353,9 +368,10 @@ async function getDetail(sourceId, id) {
   return null
 }
 
-// 解析播放地址：优先从 player_aaaa 提取 m3u8/mp4 直链，前端用 BiliPlayer(hls.js) 播放
-// 提取失败则降级为 iframe 直接嵌入 /p/ 整页（樱花原生 Artplayer）
-async function parsePlay(sourceId, episodeUrl) {
+// 解析播放地址
+// 方案一（默认 scheme=1）：提取 player_aaaa，拼解析接口 iframe 套用，快速无需提取直链
+// 方案二（scheme=2）：提取 m3u8/mp4 直链由 BiliPlayer(hls.js) 播放，失败则 iframe 整页
+async function parsePlay(sourceId, episodeUrl, scheme = 1) {
   // episodeUrl 形如 131086-5-1
   const trySources = [sourceId, ...FALLBACK_ORDER.filter(s => s !== sourceId)]
   for (const sid of trySources) {
@@ -366,31 +382,43 @@ async function parsePlay(sourceId, episodeUrl) {
       const html = await fetchHtml(url, base)
       if (!html || html.length < 1000) continue
 
-      // 方案1：player_aaaa JSON 提取直链（m3u8/mp4/flv 等都给 BiliPlayer）
+      // 提取 player_aaaa
       const playerMatch = html.match(/player_aaaa\s*=\s*(\{[\s\S]*?\})\s*<\/script>/)
+      let player = null
       if (playerMatch) {
-        try {
-          const player = JSON.parse(playerMatch[1])
-          if (player.url && /^https?:\/\//.test(player.url)) {
-            const playUrl = String(player.url).replace(/\\\//g, '/')
-            // m3u8 / mp4 / flv 等直链，用 BiliPlayer 播放
-            if (/\.(m3u8|mp4|flv|m4v|webm)(\?|$)/i.test(playUrl)) {
-              console.log(`[Anime] 播放解析成功(${SOURCES[sid].label}): 直链提取 ${playUrl.slice(0, 60)}`)
-              return { success: true, url: playUrl, type: 'm3u8' }
-            }
-          }
-        } catch (e) { /* 降级 */ }
+        try { player = JSON.parse(playerMatch[1]) } catch (e) { /* 忽略 */ }
       }
 
-      // 方案2：正则找 m3u8
+      // ===== 方案一：解析播放器 iframe 套用（快速） =====
+      if (scheme === 1 && player && player.url && player.from) {
+        const parseUrl = PARSE_MAP[player.from]
+        if (parseUrl) {
+          const playUrl = String(player.url).replace(/\\\//g, '/')
+          const iframeUrl = parseUrl + encodeURIComponent(playUrl)
+          console.log(`[Anime] 方案一解析成功(${SOURCES[sid].label}): from=${player.from} -> iframe`)
+          return { success: true, url: iframeUrl, type: 'iframe', scheme: 1 }
+        }
+        // from 不在映射表，降级到方案二逻辑
+      }
+
+      // ===== 方案二：提取 m3u8/mp4 直链给 BiliPlayer =====
+      if (player && player.url && /^https?:\/\//.test(player.url)) {
+        const playUrl = String(player.url).replace(/\\\//g, '/')
+        if (/\.(m3u8|mp4|flv|m4v|webm)(\?|$)/i.test(playUrl)) {
+          console.log(`[Anime] 方案二解析成功(${SOURCES[sid].label}): 直链提取 ${playUrl.slice(0, 60)}`)
+          return { success: true, url: playUrl, type: 'm3u8', scheme: 2 }
+        }
+      }
+
+      // 方案二降级：正则找 m3u8
       const m3u8Match = html.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/)
       if (m3u8Match) {
-        console.log(`[Anime] 播放解析成功(${SOURCES[sid].label}): m3u8 正则`)
-        return { success: true, url: m3u8Match[1].replace(/\\\//g, '/'), type: 'm3u8' }
+        console.log(`[Anime] 方案二解析成功(${SOURCES[sid].label}): m3u8 正则`)
+        return { success: true, url: m3u8Match[1].replace(/\\\//g, '/'), type: 'm3u8', scheme: 2 }
       }
 
-      // 方案3：iframe 直接嵌入整页（樱花原生 Artplayer）
-      console.log(`[Anime] 播放解析成功(${SOURCES[sid].label}): iframe 整页嵌入`)
+      // 最终兜底：iframe 直接嵌入整页（樱花原生 Artplayer）
+      console.log(`[Anime] 播放解析(${SOURCES[sid].label}): iframe 整页嵌入`)
       return { success: true, url: url, type: 'iframe' }
     } catch (e) {
       console.warn(`[Anime] 播放解析失败(${sid}): ${e.message}`)
@@ -436,12 +464,12 @@ ipcMain.handle('anime:detail', async (_, { source, id }) => {
   }
 })
 
-ipcMain.handle('anime:parse-playurl', async (_, { source, episodeUrl }) => {
+ipcMain.handle('anime:parse-playurl', async (_, { source, episodeUrl, scheme }) => {
   try {
-    return await parsePlay(source, episodeUrl)
+    return await parsePlay(source, episodeUrl, scheme || 1)
   } catch (e) {
     return { success: false, message: e.message }
   }
 })
 
-console.log('[Anime] 模块已加载（3线路：推荐/经典/备用，m3u8 优先 + iframe 兜底）')
+console.log('[Anime] 模块已加载（3线路：推荐/经典/备用，方案一=iframe快速解析(默认) + 方案二=m3u8直链）')

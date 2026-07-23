@@ -2,7 +2,17 @@
 
 > **本项目完全由 AI (Claude Code) 创作** | [English Version](README_EN.md)
 
-一款精美的桌面音乐播放器，基于 **Vue 3** + **Electron** 构建，集成网易云音乐 API，支持在线音乐播放/搜索/歌单管理，并内置**动漫观看**与**影视播放**模块（HLS 流播放 + Bangumi 元信息聚合）。
+一款精美的桌面音乐播放器，基于 **Vue 3** + **Electron** 构建，集成网易云音乐 API，支持在线音乐播放/搜索/歌单管理，并内置**动漫观看**、**影视播放**、**统一下载中心**与 **B站视频解析**模块（HLS 流播放 + Bangumi 元信息聚合 + DASH 高画质合并）。
+
+---
+
+## 🆕 v1.9.0 更新亮点
+
+- **📦 统一下载中心**：新增「下载」专区，统一管理音乐/影视/动漫/MV/视频下载，128 路并发不限速，aria2c + ffmpeg 打包进程序
+- **🎬 B站视频解析 + 登录提升画质**：扫码登录解锁 4K/1080P+，DASH 音视频分离流下载时自动用 ffmpeg 合并
+- **🎵 MV/影视/动漫专区下载**：三大专区均接入下载中心，歌曲详情页 MV 按钮支持本地/线上自动匹配
+- **🌐 本地视频三 Tab**：本地视频 / 链接直播流 / 网址解析（支持 21 种视频格式 + B站 URL）
+- **🔒 安全修复**：清除硬编码 API key，改为用户自行输入
 
 ---
 
@@ -90,6 +100,30 @@
 
 - 在线视频浏览、本地视频管理
 - MV 播放器，自动匹配本地 MV 文件
+- 歌曲详情页 MV 按钮支持**本地/线上自动切换**：本地无 MV 时自动用网易云 MV API 按歌名匹配
+
+### 📦 统一下载中心（v1.9.0 新增）
+
+- **一站式下载管理**：音乐 / 影视 / 动漫 / MV / 视频 全部归口到「下载」专区
+- **128 路并发不限速**：自定义 HTTP Agent（maxSockets: Infinity）+ aria2c 多线程，满带宽下载
+- **aria2c + ffmpeg 打包进程序**（resources/），无需外部依赖
+- **实时进度**：速度 / 进度 / 详情 / 链接复制，支持取消 / 重试 / 移除 / 状态筛选
+- **历史持久化**：下载记录保存到磁盘，重启不丢失
+- **自定义下载链接**：粘贴 URL 自动获取文件名
+
+### 🎬 B站视频解析 + 登录提升画质（v1.9.0 新增）
+
+- **B站 URL 解析**：粘贴 `bilibili.com/video/BVxxx` 或 `b23.tv` 短链自动解析直链
+- **二维码扫码登录**：Cookie 持久化 30 天，登录状态栏显示**头像 / 昵称 / 大会员**
+- **登录解锁高画质**：请求 DASH 格式（fnval=16），可获取 4K / 1080P+ / HDR / 杜比视界
+- **DASH 自动合并**：音视频分离流下载时自动用 ffmpeg 流复制合并为有声 mp4（极快）
+- **webRequest 注入 Referer**：自动为 B站 CDN（bilivideo.com）和图片 CDN（hdslb.com）注入 Referer
+
+### 🌐 本地视频三 Tab（v1.9.0 增强）
+
+- **本地视频**：导入文件/文件夹，扫描元数据
+- **链接/直播流**：添加 MP4/WebM 直链、HLS(m3u8)、FLV 流，直播流自动标记 LIVE
+- **网址解析**：粘贴任意影视/视频网页地址，自动提取视频流（支持 21 种视频格式扩展名）
 
 ### 🌸 动漫（樱花动漫）
 
@@ -209,6 +243,8 @@ const request = axios.create({
 | 音频 | Web Audio API（均衡器）、HTML5 Audio |
 | 元数据 | music-metadata、node-id3 |
 | 动漫/影视 | cheerio（HTML 解析）、hls.js（HLS 流播放）、Bangumi API（元信息聚合） |
+| 下载引擎 | aria2c（多线程直链）、ffmpeg（m3u8 合并/DASH 合并）、axios 自定义 Agent（128 路并发不限速） |
+| B站解析 | B站 API（view/playurl）、二维码扫码登录、DASH 格式高画质、webRequest Referer 注入 |
 
 ---
 
@@ -217,10 +253,12 @@ const request = axios.create({
 ```
 music/
 ├── electron/            # Electron 主进程
-│   ├── main.js          # 窗口管理、IPC 处理、协议注册
+│   ├── main.js          # 窗口管理、IPC 处理、B站解析/登录、协议注册
 │   ├── anime.js         # 动漫模块 IPC（樱花动漫解析）
 │   ├── anime-meta.js    # Bangumi 元信息聚合 + 标题相似度匹配
-│   └── movie.js         # 影视模块 IPC（神马电影网解析）
+│   ├── movie.js         # 影视模块 IPC（神马电影网解析）
+│   └── download-manager.js  # 统一下载管理器（aria2c + ffmpeg + 128 并发）
+├── resources/           # 打包的 aria2c.exe + ffmpeg.exe（下载引擎）
 ├── src/
 │   ├── api/index.js     # API 客户端 (axios)
 │   ├── store/           # Pinia 状态管理 (player、user、message)
@@ -240,6 +278,7 @@ music/
 │   │   ├── AnimeDetail.vue    # 动漫详情页（HLS 播放器 + Bangumi 元信息）
 │   │   ├── Movie.vue          # 影视主页（神马电影网）
 │   │   ├── MovieDetail.vue    # 影视详情页（多线路播放）
+│   │   ├── Downloads.vue      # 统一下载中心（v1.9.0 新增）
 │   │   └── DesktopLyrics.vue  # 桌面歌词窗口
 │   ├── components/      # 共享组件
 │   │   ├── EnglishAnalysis.vue  # AI 英文歌词解析

@@ -3,7 +3,15 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import { Readable } from 'node:stream'
-import * as mm from 'music-metadata'
+// music-metadata 是 ESM-only，Electron 22 CJS 环境用动态 import 懒加载
+let mm = null
+async function getMM() {
+    if (!mm) {
+        const mod = await import('music-metadata')
+        mm = mod.default || mod
+    }
+    return mm
+}
 import axios from 'axios'
 import { exec, execFile } from 'node:child_process'
 import https from 'node:https'
@@ -12,6 +20,8 @@ import https from 'node:https'
 import './anime.js'
 import './anime-meta.js'
 import './movie.js'
+// 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
+import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload } from './download-manager.js'
 
 // --- Win7 兼容性初始化 ---
 if (process.platform === 'win32') {
@@ -130,6 +140,26 @@ function createWindow() {
         }
     })
 
+    // 接入统一下载管理器
+    setDownloadManagerWindow(win)
+
+    // 为 B站 CDN 请求注入 Referer（B站视频流需要 Referer: https://www.bilibili.com/ 才能访问）
+    session.defaultSession.webRequest.onBeforeSendHeaders(
+        { urls: ['https://*.bilivideo.com/*', 'http://*.bilivideo.com/*', 'https://*.bilivideo.cn/*', 'http://*.bilivideo.cn/*'] },
+        (details, callback) => {
+            details.requestHeaders['Referer'] = 'https://www.bilibili.com/'
+            details.requestHeaders['User-Agent'] = PARSE_UA
+            callback({ requestHeaders: details.requestHeaders })
+        }
+    )
+    // 为 B站图片 CDN 注入 Referer（头像等图片有防盗链，需要 Referer: https://www.bilibili.com/）
+    session.defaultSession.webRequest.onBeforeSendHeaders(
+        { urls: ['https://*.hdslb.com/*', 'http://*.hdslb.com/*'] },
+        (details, callback) => {
+            details.requestHeaders['Referer'] = 'https://www.bilibili.com/'
+            callback({ requestHeaders: details.requestHeaders })
+        }
+    )
 }
 let lyricWin = null
 let isLocked = false
@@ -204,6 +234,30 @@ ipcMain.on('toggle-desktop-lyrics', (_, show) => {
         }
     } else {
         lyricWin?.hide()
+    }
+})
+
+// 打开本地文件/文件夹路径（下载专区使用）
+ipcMain.handle('open-path', async (_, { path: p }) => {
+    if (!p) return { success: false, error: '路径为空' }
+    try {
+        // 如果路径文件不存在，尝试打开其所在目录
+        if (!fs.existsSync(p)) {
+            const dir = path.dirname(p)
+            if (fs.existsSync(dir)) {
+                await shell.openPath(dir)
+                return { success: true }
+            }
+            return { success: false, error: '路径不存在' }
+        }
+        const result = await shell.openPath(p)
+        if (result) {
+            // openPath 返回非空字符串表示错误
+            return { success: false, error: result }
+        }
+        return { success: true }
+    } catch (e) {
+        return { success: false, error: e.message }
     }
 })
 
@@ -286,7 +340,7 @@ async function scanAudioFiles(filePath) {
 
     if (AUDIO_EXTENSIONS.includes(path.extname(filePath).toLowerCase())) {
         try {
-            const metadata = await mm.parseFile(filePath)
+            const metadata = await (await getMM()).parseFile(filePath)
             const name = metadata.common.title || path.basename(filePath, path.extname(filePath))
             const artist = metadata.common.artist || '未知歌手'
 
@@ -362,7 +416,7 @@ async function scanVideoFiles(filePath) {
         // 尝试提取视频时长
         let duration = 0
         try {
-            const metadata = await mm.parseFile(filePath, { duration: true })
+            const metadata = await (await getMM()).parseFile(filePath, { duration: true })
             duration = (metadata.format.duration || 0) * 1000
         } catch (e) { /* 忽略解析错误 */ }
         return [{
@@ -625,6 +679,422 @@ ipcMain.handle('find-local-mv', async (_, { songName, songPath, mvDir }) => {
     return { success: false, error: '未找到匹配的MV视频文件' }
 })
 
+// ============================================================
+// 视频下载 —— 委托给统一下载管理器（download-manager.js）
+// 旧 IPC 保留兼容，实际逻辑由 download-manager 处理：
+// - aria2c 多线程直链下载（16 连接）
+// - ffmpeg m3u8 合并
+// - 本地文件复制
+// - 统一历史记录 + 速度/进度事件
+// ============================================================
+ipcMain.handle('video-download', async (_, { url, name, headers, type, category, audioUrl }) => {
+    // 委托给统一下载管理器，category 由调用方指定（mv/movie/anime/video），默认 video
+    // audioUrl: DASH 音视频分离时，下载后由 ffmpeg 流复制合并（B站高画质，极快）
+    return delegateStartDownload({ url, name, headers, type, category: category || 'video', audioUrl })
+})
+
+ipcMain.handle('video-download-cancel', async (_, { downloadId }) => {
+    return delegateCancelDownload(downloadId)
+})
+
+// ===== 网址视频流解析 =====
+// 输入一个网页地址，抓取页面并提取其中的视频流（m3u8/mp4/iframe播放器）
+// 返回 { success, streams: [{url, type, title}], pageUrl }
+const PARSE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+// ===== B站专用解析 =====
+// 从 URL 提取 BV 号（支持 bilibili.com/video/BVxxx、b23.tv 短链、av 号）
+async function extractBvid(target) {
+    // 直接匹配 BV 号
+    let m = target.match(/\/video\/(BV\w+)/i)
+    if (m) return m[1]
+    // 匹配 av 号 → 需要后续转 BV
+    m = target.match(/\/video\/av(\d+)/i)
+    if (m) return { aid: m[1] }
+    // b23.tv 短链：跟随重定向获取最终 URL
+    if (/b23\.tv/i.test(target)) {
+        try {
+            let current = target
+            for (let i = 0; i < 5; i++) {
+                const r = await axios.get(current, { maxRedirects: 0, validateStatus: () => true, timeout: 10000, headers: { 'User-Agent': PARSE_UA } })
+                if (r.status >= 300 && r.status < 400 && r.headers.location) {
+                    current = r.headers.location
+                    const bm = current.match(/\/video\/(BV\w+)/i)
+                    if (bm) return bm[1]
+                } else { break }
+            }
+        } catch (e) {}
+    }
+    return null
+}
+
+// 调用 B站 API 解析视频流
+async function parseBilibili(target, addStream) {
+    const bvidInfo = await extractBvid(target)
+    if (!bvidInfo) return null
+
+    // 带上已登录的 Cookie（提升画质，大会员可解锁 4K/1080P+）
+    const biliCookies = loadBiliCookie()
+    const isLoggedIn = !!(biliCookies && biliCookies.SESSDATA)
+    const biliHeaders = { 'User-Agent': PARSE_UA, 'Referer': 'https://www.bilibili.com/' }
+    if (isLoggedIn) {
+        biliHeaders['Cookie'] = biliCookieString(biliCookies)
+    }
+    let bvid = null
+
+    // av 号转 BV 号
+    if (typeof bvidInfo === 'object' && bvidInfo.aid) {
+        try {
+            const r = await axios.get(`https://api.bilibili.com/x/web-interface/view?id=${bvidInfo.aid}`, { headers: biliHeaders, timeout: 10000 })
+            if (r.data?.code === 0) bvid = r.data.data.bvid
+        } catch (e) { return null }
+    } else {
+        bvid = bvidInfo
+    }
+    if (!bvid) return null
+
+    // 获取视频信息（cid、标题、封面）
+    let viewData
+    try {
+        const r = await axios.get(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: biliHeaders, timeout: 10000 })
+        if (r.data?.code !== 0) return null
+        viewData = r.data.data
+    } catch (e) { return null }
+
+    const { cid, title } = viewData
+    const pageTitle = title
+    const qualityMap = { 127: '8K', 126: '杜比视界', 125: 'HDR', 120: '4K', 116: '1080P60', 112: '1080P高码率', 80: '1080P', 74: '720P60', 64: '720P', 32: '480P', 16: '360P' }
+    const loggedInfo = isLoggedIn ? '（已登录）' : '（未登录·仅低画质）'
+    let addedAny = false
+
+    // === 1. 登录后优先尝试 DASH 格式（fnval=16），可获取 4K/1080P+ 高画质（音视频分离）===
+    // B站对 durl(fnval=1) 限制了高画质，登录用户的高画质必须走 DASH（音视频分离）
+    // 下载时由下载管理器自动用 ffmpeg 合并 video+audio 成有声 mp4
+    if (isLoggedIn) {
+        try {
+            const r = await axios.get('https://api.bilibili.com/x/player/playurl', {
+                params: { bvid, cid, qn: 127, fnval: 16, fourk: 1 },
+                headers: biliHeaders,
+                timeout: 10000
+            })
+            if (r.data?.code === 0 && r.data.data?.dash) {
+                const dash = r.data.data.dash
+                // 取最高音质的 audio（按 id 降序），下载时与 video 合并
+                const audios = (dash.audio || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                const bestAudio = audios[0]
+                const audioUrl = bestAudio ? (bestAudio.baseUrl || bestAudio.base_url) : ''
+                // 视频流按 id 降序（高画质在前），同时去重相同 id（不同码率备份）
+                const videos = (dash.video || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                const seenQ = new Set()
+                videos.forEach(v => {
+                    if (seenQ.has(v.id)) return
+                    seenQ.add(v.id)
+                    const qLabel = qualityMap[v.id] || `${v.id}P`
+                    addStream(v.baseUrl || v.base_url, 'mp4', `${title} [${qLabel} 高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
+                    addedAny = true
+                })
+            }
+        } catch (e) {}
+    }
+
+    // === 2. 请求 durl 格式（fnval=1），完整音视频流（有声，画质取决于登录状态）===
+    try {
+        const r = await axios.get('https://api.bilibili.com/x/player/playurl', {
+            params: { bvid, cid, qn: 127, fnval: 1, fourk: 1 },
+            headers: biliHeaders,
+            timeout: 10000
+        })
+        if (r.data?.code === 0 && r.data.data?.durl) {
+            const durl = r.data.data.durl
+            const quality = r.data.data.quality
+            const qLabel = qualityMap[quality] || `${quality}P`
+            durl.forEach((d, i) => {
+                const partTitle = durl.length > 1
+                    ? `${title} - 第${i + 1}段/共${durl.length}段 [${qLabel} 完整·有声]${loggedInfo}`
+                    : `${title} [${qLabel} 完整·有声]${loggedInfo}`
+                addStream(d.url, 'mp4', partTitle, { bili: true })
+            })
+            addedAny = true
+        }
+    } catch (e) {}
+
+    // === 3. 降级：尝试不同清晰度的 durl ===
+    if (!addedAny) {
+        for (const qn of [80, 64, 32, 16]) {
+            try {
+                const r = await axios.get('https://api.bilibili.com/x/player/playurl', {
+                    params: { bvid, cid, qn, fnval: 1, fourk: 0 },
+                    headers: biliHeaders,
+                    timeout: 10000
+                })
+                if (r.data?.code === 0 && r.data.data?.durl) {
+                    const durl = r.data.data.durl
+                    const quality = r.data.data.quality
+                    const qLabel = qualityMap[quality] || `${quality}P`
+                    durl.forEach((d, i) => {
+                        const partTitle = durl.length > 1
+                            ? `${title} - 第${i + 1}段/共${durl.length}段 [${qLabel}]${loggedInfo}`
+                            : `${title} [${qLabel}]${loggedInfo}`
+                        addStream(d.url, 'mp4', partTitle, { bili: true })
+                    })
+                    addedAny = true
+                    break
+                }
+            } catch (e) {}
+        }
+    }
+
+    return addedAny ? { title: pageTitle } : null
+}
+
+// ===== B站登录（二维码扫码，获取 Cookie 提升画质） =====
+const BILI_COOKIE_FILE = () => path.join(app.getPath('userData'), 'bilibili-cookie.json')
+
+function loadBiliCookie() {
+    try {
+        const raw = fs.readFileSync(BILI_COOKIE_FILE(), 'utf8')
+        const data = JSON.parse(raw)
+        // 检查过期（B站 SESSDATA 默认 180 天，这里保守按 30 天判断）
+        if (data.savedAt && Date.now() - data.savedAt > 30 * 24 * 60 * 60 * 1000) return null
+        return data.cookies || null
+    } catch (e) { return null }
+}
+
+function saveBiliCookie(cookies) {
+    try {
+        fs.writeFileSync(BILI_COOKIE_FILE(), JSON.stringify({ cookies, savedAt: Date.now() }), 'utf8')
+    } catch (e) {}
+}
+
+function biliCookieString(cookies) {
+    if (!cookies) return ''
+    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ')
+}
+
+// 生成二维码登录
+ipcMain.handle('bilibili:login-qr', async () => {
+    try {
+        const r = await axios.get('https://passport.bilibili.com/x/passport-login/web/qrcode/generate', {
+            headers: { 'User-Agent': PARSE_UA },
+            timeout: 10000
+        })
+        if (r.data?.code === 0 && r.data.data) {
+            return { success: true, qrcodeUrl: r.data.data.url, qrcodeKey: r.data.data.qrcode_key }
+        }
+        return { success: false, message: r.data?.message || '获取二维码失败' }
+    } catch (e) {
+        return { success: false, message: e.message }
+    }
+})
+
+// 检查扫码状态
+ipcMain.handle('bilibili:login-check', async (_, { qrcodeKey }) => {
+    try {
+        const r = await axios.get('https://passport.bilibili.com/x/passport-login/web/qrcode/poll', {
+            params: { qrcode_key: qrcodeKey },
+            headers: { 'User-Agent': PARSE_UA },
+            timeout: 10000
+        })
+        const code = r.data?.data?.code
+        // code: 0=成功, 86038=失效, 86090=已扫码未确认, 86101=未扫码
+        if (code === 0) {
+            // 登录成功，从返回的 url 中提取 Cookie
+            const url = r.data.data.url || ''
+            const cookies = {}
+            // url 形如 https://passport.biligame.com/x/passport-login/web/crossDomain?DedeUserID=xxx&DedeUserID__ckMd5=xxx&Expires=xxx&SESSDATA=xxx&bili_jct=xxx&gourl=xxx
+            const params = new URL(url).searchParams
+            for (const key of ['SESSDATA', 'bili_jct', 'DedeUserID', 'DedeUserID__ckMd5']) {
+                const val = params.get(key)
+                if (val) cookies[key] = val
+            }
+            // 补充从 set-cookie 获取（如有）
+            const setCookies = r.headers?.['set-cookie'] || []
+            for (const sc of setCookies) {
+                const m = sc.match(/^([^=]+)=([^;]*)/)
+                if (m) cookies[m[1]] = m[2]
+            }
+            if (cookies.SESSDATA) {
+                saveBiliCookie(cookies)
+                // 立即获取完整用户信息（昵称、头像、大会员）
+                let userInfo = { uid: cookies.DedeUserID }
+                try {
+                    const nr = await axios.get('https://api.bilibili.com/x/web-interface/nav', {
+                        headers: { 'User-Agent': PARSE_UA, 'Cookie': biliCookieString(cookies) },
+                        timeout: 10000
+                    })
+                    if (nr.data?.code === 0 && nr.data.data?.isLogin) {
+                        userInfo = {
+                            uid: nr.data.data.mid,
+                            uname: nr.data.data.uname,
+                            face: nr.data.data.face,
+                            vip: nr.data.data.vipStatus
+                        }
+                    }
+                } catch (e) {}
+                return { success: true, loggedIn: true, userInfo }
+            }
+            return { success: false, message: 'Cookie 解析失败' }
+        }
+        const msgMap = { 86038: 'expired', 86090: 'scanned', 86101: 'waiting' }
+        return { success: true, loggedIn: false, status: msgMap[code] || 'unknown' }
+    } catch (e) {
+        return { success: false, message: e.message }
+    }
+})
+
+// 检查登录状态
+ipcMain.handle('bilibili:login-status', async () => {
+    const cookies = loadBiliCookie()
+    if (!cookies || !cookies.SESSDATA) return { success: true, loggedIn: false }
+    try {
+        const r = await axios.get('https://api.bilibili.com/x/web-interface/nav', {
+            headers: { 'User-Agent': PARSE_UA, 'Cookie': biliCookieString(cookies) },
+            timeout: 10000
+        })
+        if (r.data?.code === 0 && r.data.data?.isLogin) {
+            return { success: true, loggedIn: true, userInfo: { uid: r.data.data.mid, uname: r.data.data.uname, face: r.data.data.face, vip: r.data.data.vipStatus } }
+        }
+        return { success: true, loggedIn: false }
+    } catch (e) {
+        return { success: true, loggedIn: false }
+    }
+})
+
+// 退出登录
+ipcMain.handle('bilibili:logout', async () => {
+    try { fs.unlinkSync(BILI_COOKIE_FILE()) } catch (e) {}
+    return { success: true }
+})
+
+ipcMain.handle('video:parse-url', async (_, { url }) => {
+    try {
+        const target = String(url || '').trim()
+        if (!/^https?:\/\//i.test(target)) {
+            return { success: false, message: '请输入以 http:// 或 https:// 开头的网址' }
+        }
+
+        const found = new Map()  // url -> {url, type, title, audioUrl?}
+        const addStream = (u, type, title, extra = {}) => {
+            let clean = String(u).replace(/\\\//g, '/').replace(/&amp;/g, '&').trim()
+            if (clean.startsWith('//')) clean = 'https:' + clean
+            else if (clean.startsWith('/')) {
+                try { clean = new URL(target).origin + clean } catch (e) { return }
+            }
+            if (!/^https?:\/\//i.test(clean)) return
+            if (found.has(clean)) return
+            const item = { url: clean, type, title: title || '' }
+            // 透传 DASH 音频地址（用于下载时 ffmpeg 合并）等附加字段
+            if (extra.audioUrl) item.audioUrl = extra.audioUrl
+            if (extra.bili) item.bili = true
+            found.set(clean, item)
+        }
+
+        // === B站专用解析 ===
+        if (/bilibili\.com|b23\.tv/i.test(target)) {
+            const biliResult = await parseBilibili(target, addStream)
+            if (biliResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: biliResult.title || '', pageUrl: target }
+            }
+        }
+
+        // === 通用 HTML 解析 ===
+        const res = await axios.get(target, {
+            headers: {
+                'User-Agent': PARSE_UA,
+                'Referer': target,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9'
+            },
+            responseType: 'text',
+            timeout: 15000,
+            validateStatus: () => true,
+            maxRedirects: 5
+        })
+        const html = res.data || ''
+        if (!html) return { success: false, message: '页面内容为空' }
+
+        // 1. maccms player_aaaa JSON（最常见，url 字段多为 m3u8 直链）
+        const pm = html.match(/player_aaaa\s*=\s*(\{[\s\S]*?\})\s*<\/script>/)
+        if (pm) {
+            try {
+                const player = JSON.parse(pm[1])
+                if (player.url && /^https?:\/\//.test(player.url)) {
+                    const u = String(player.url).replace(/\\\//g, '/')
+                    const isM3u8 = /\.m3u8/i.test(u)
+                    addStream(u, isM3u8 ? 'm3u8' : 'iframe', player.title || '')
+                }
+            } catch (e) { /* 降级到正则 */ }
+        }
+
+        // 2. 正则提取所有 m3u8
+        const m3u8Matches = html.matchAll(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/gi)
+        for (const m of m3u8Matches) addStream(m[1], 'm3u8', '')
+
+        // 3. 正则提取所有视频直链（支持任何视频格式）
+        const videoExts = 'mp4|webm|flv|avi|mkv|mov|wmv|m4v|ts|mpg|mpeg|mpe|3gp|asf|f4v|ogv|mts|m2ts|vob|rm|rmvb|ts'
+        const videoMatches = html.matchAll(new RegExp(`["'](https?://[^"'\\s<>]+\\.(?:${videoExts})(?:[?#][^"'\\s<>]*)?)["']`, 'gi'))
+        for (const m of videoMatches) {
+            const u = m[1]
+            const ext = u.match(/\.(\w+)(?:[?#]|$)/i)?.[1]?.toLowerCase() || 'mp4'
+            addStream(u, ext, '')
+        }
+
+        // 4. iframe 播放器源（含 player/dplayer/m3u8 关键字）
+        const iframeMatches = html.matchAll(/<iframe[^>]+src=["']([^"']+)["'][^>]*>/gi)
+        for (const m of iframeMatches) {
+            let src = m[1].replace(/\\\//g, '/').replace(/&amp;/g, '&')
+            if (src.startsWith('//')) src = 'https:' + src
+            else if (src.startsWith('/')) {
+                try { src = new URL(target).origin + src } catch (e) { continue }
+            }
+            if (/player|dplayer|url=|\.m3u8/i.test(src)) addStream(src, 'iframe', '')
+        }
+
+        const streams = Array.from(found.values())
+        // 获取页面标题作为默认名
+        let pageTitle = ''
+        const tm = html.match(/<title>([^<]*)<\/title>/i)
+        if (tm) pageTitle = tm[1].trim()
+        return { success: true, streams, pageTitle, pageUrl: target }
+    } catch (e) {
+        return { success: false, message: e.message || '解析失败' }
+    }
+})
+
+// 获取网易云 MV 搜索结果（按歌名匹配）
+ipcMain.handle('ncm-mv-search', async (_, { keyword }) => {
+    try {
+        const apiBase = process.env.NCM_API_BASE || 'https://api.xiaomingky.cn'
+        const res = await axios.get(`${apiBase}/cloudsearch`, {
+            params: { keywords: keyword, type: 1004, timestamp: Date.now() },
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://music.163.com/'
+            },
+            timeout: 15000,
+            validateStatus: () => true
+        })
+        if (res.status === 200 && res.data?.code === 200) {
+            const mvs = res.data?.result?.mvs || []
+            return {
+                success: true,
+                mvs: mvs.map(m => ({
+                    id: m.id,
+                    name: m.name || '',
+                    artistName: m.artistName || '',
+                    duration: m.duration || 0,
+                    cover: m.cover || '',
+                    playCount: m.playCount || 0
+                }))
+            }
+        }
+        return { success: false, message: res.data?.msg || `HTTP ${res.status}` }
+    } catch (err) {
+        return { success: false, message: err.message }
+    }
+})
+
 // --- 自动更新（GitHub API 直连）---
 function checkForUpdates() {
     win?.webContents.send('update-checking')
@@ -790,7 +1260,7 @@ app.whenReady().then(() => {
 
             // 提取内嵌
             try {
-                const metadata = await mm.parseFile(filePath)
+                const metadata = await (await getMM()).parseFile(filePath)
                 if (metadata.common.picture && metadata.common.picture.length > 0) {
                     const pic = metadata.common.picture[0]
                     // 如果要求静态图片且内嵌的是GIF，则跳过使用兜底图
@@ -842,24 +1312,17 @@ ipcMain.on('window-quit', () => {
 })
 
 ipcMain.handle('download-song', async (_, { url, name, artist, picUrl }) => {
-    try {
-        const sanitize = (str) => String(str).replace(/[\\/:*?"<>|]/g, '_').trim()
-        const { canceled, filePath } = await dialog.showSaveDialog({
-            title: '选择保存位置',
-            defaultPath: `${sanitize(name)} - ${sanitize(artist)}.mp3`,
-            filters: [{ name: 'Audio Files', extensions: ['mp3'] }]
-        })
-        if (canceled || !filePath) return { success: false, canceled: true }
-        const response = await axios.get(url, { responseType: 'arraybuffer' })
-        fs.writeFileSync(filePath, Buffer.from(response.data))
-        if (picUrl) {
-            try {
-                const picResponse = await axios.get(picUrl, { responseType: 'arraybuffer' })
-                fs.writeFileSync(path.join(path.dirname(filePath), path.basename(filePath, '.mp3') + '.jpg'), Buffer.from(picResponse.data))
-            } catch (e) { }
-        }
-        return { success: true, path: filePath }
-    } catch (err) { return { success: false, error: err.message } }
+    // 委托给统一下载管理器，category='music'，封面单独后台下载
+    const fullName = artist ? `${name} - ${artist}` : name
+    const result = await delegateStartDownload({ url, name: fullName, category: 'music' })
+    // 后台下载封面到同目录（不纳入下载管理器，避免污染列表）
+    if (result?.success && picUrl && result.path) {
+        const coverPath = path.join(path.dirname(result.path), path.basename(result.path, path.extname(result.path)) + '.jpg')
+        axios.get(picUrl, { responseType: 'arraybuffer', timeout: 15000 }).then(res => {
+            try { fs.writeFileSync(coverPath, Buffer.from(res.data)) } catch (e) {}
+        }).catch(() => {})
+    }
+    return result
 })
 
 ipcMain.on('open-osk', () => {
@@ -959,7 +1422,7 @@ function saveMP3Metadata(songPath, metadata, coverBuf) {
 
 ipcMain.handle('read-song-metadata', async (_, songPath) => {
     try {
-        const metadata = await mm.parseFile(songPath)
+        const metadata = await (await getMM()).parseFile(songPath)
         const ext = path.extname(songPath).toLowerCase()
         const result = {
             title: metadata.common.title || '',

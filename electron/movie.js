@@ -14,6 +14,18 @@ const SOURCES = {
     base: 'https://www.smdyu.com',
     label: '神马电影',
     type: 'maccms'
+  },
+  zy360: {
+    id: 'zy360',
+    base: 'https://360zy.com',
+    label: '360资源',
+    type: 'maccms-api'
+  },
+  ffzy: {
+    id: 'ffzy',
+    base: 'https://www.ffzy.tv',
+    label: '非凡资源',
+    type: 'maccms-api'
   }
 }
 
@@ -33,6 +45,122 @@ async function fetchHtml(url, referer) {
     maxRedirects: 5
   })
   return res.data
+}
+
+// maccms 标准采集 API 请求（返回 JSON，含重试）
+async function maccmsApi(src, params) {
+  const q = new URLSearchParams({ ac: 'detail', ...params })
+  const url = `${src.base}/api.php/provide/vod/?${q.toString()}`
+  let lastErr = null
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await axios.get(url, {
+        headers: { 'User-Agent': UA, 'Accept': 'application/json' },
+        timeout: 30000,
+        validateStatus: () => true,
+        maxRedirects: 5
+      })
+      if (!res.data || res.data.code !== 1) return { list: [], total: 0 }
+      return res.data
+    } catch (e) {
+      lastErr = e
+      // 超时/网络错误短暂等待后重试
+      if (attempt < 2) await new Promise(r => setTimeout(r, 800))
+    }
+  }
+  console.error(`[Movie] ${src.id} api failed after retries:`, lastErr && lastErr.message)
+  return { list: [], total: 0 }
+}
+
+// API vod → 卡片结构（ac=list 模式只有基础字段）
+function parseApiCard(v, sourceId) {
+  const cover = (v.vod_pic || '').replace(/\\\//g, '/')
+  return {
+    id: String(v.vod_id),
+    title: (v.vod_name || '').trim(),
+    cover,
+    desc: v.vod_remarks || v.vod_class || '',
+    source: sourceId
+  }
+}
+
+// API vod → 详情结构（ac=detail 模式含播放地址）
+function parseApiDetail(v, sourceId) {
+  const cover = (v.vod_pic || '').replace(/\\\//g, '/')
+  // 去除 HTML 标签的简介
+  let desc = (v.vod_content || v.vod_blurb || '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim()
+  if (desc.length > 500) desc = desc.slice(0, 500)
+
+  const routes = []
+  const froms = (v.vod_play_from || '').split('$$$').filter(Boolean)
+  const urls = (v.vod_play_url || '').split('$$$')
+  for (let i = 0; i < froms.length; i++) {
+    const routeName = froms[i] || `线路${i + 1}`
+    const epsStr = urls[i] || ''
+    const episodes = []
+    for (const seg of epsStr.split('#')) {
+      const idx = seg.indexOf('$')
+      if (idx < 0) continue
+      const epTitle = seg.slice(0, idx).trim()
+      const epUrl = seg.slice(idx + 1).replace(/\\\//g, '/').trim()
+      if (epTitle && epUrl) {
+        episodes.push({ title: epTitle, url: epUrl, source: sourceId })
+      }
+    }
+    if (episodes.length > 0) routes.push({ name: routeName, episodes })
+  }
+
+  return {
+    id: String(v.vod_id),
+    title: (v.vod_name || '').trim(),
+    cover,
+    desc,
+    routes,
+    source: sourceId
+  }
+}
+
+// API 源首页（最新入库）
+async function apiHome(sourceId) {
+  const src = SOURCES[sourceId]
+  try {
+    const data = await maccmsApi(src, { pg: 1 })
+    const cards = (data.list || []).map(v => parseApiCard(v, sourceId))
+    return {
+      latest: cards.slice(0, 30),
+      hot: cards.slice(0, 18),
+      ranking: cards.slice(0, 10)
+    }
+  } catch (e) {
+    console.error(`[Movie] ${src.id} home failed:`, e.message)
+    return { latest: [], hot: [], ranking: [] }
+  }
+}
+
+// API 源搜索
+async function apiSearch(sourceId, keyword) {
+  const src = SOURCES[sourceId]
+  try {
+    const data = await maccmsApi(src, { wd: keyword, pg: 1 })
+    return (data.list || []).map(v => parseApiCard(v, sourceId))
+  } catch (e) {
+    console.error(`[Movie] ${src.id} search failed:`, e.message)
+    return []
+  }
+}
+
+// API 源详情
+async function apiGetDetail(sourceId, id) {
+  const src = SOURCES[sourceId]
+  try {
+    const data = await maccmsApi(src, { ids: id })
+    const v = (data.list || [])[0]
+    if (!v) return null
+    return parseApiDetail(v, sourceId)
+  } catch (e) {
+    console.error(`[Movie] ${src.id} detail failed:`, e.message)
+    return null
+  }
 }
 
 function normalizeCover(url, base) {
@@ -86,6 +214,7 @@ function parseCard($el, base, sourceId) {
 async function getHome(sourceId) {
   const src = SOURCES[sourceId]
   if (!src) return { latest: [], hot: [], ranking: [] }
+  if (src.type === 'maccms-api') return apiHome(sourceId)
   try {
     const base = src.base
     const sections = { latest: [], hot: [], ranking: [] }
@@ -127,6 +256,7 @@ async function getHome(sourceId) {
 async function search(sourceId, keyword) {
   const src = SOURCES[sourceId]
   if (!src) return []
+  if (src.type === 'maccms-api') return apiSearch(sourceId, keyword)
   try {
     const base = src.base
     // 神马搜索 URL：/vod-search--------------.html?wd=关键词
@@ -153,6 +283,7 @@ async function search(sourceId, keyword) {
 async function getDetail(sourceId, id) {
   const src = SOURCES[sourceId]
   if (!src) return null
+  if (src.type === 'maccms-api') return apiGetDetail(sourceId, id)
   try {
     const base = src.base
     const url = `${base}/vod-detail-id-${id}.html`
@@ -208,6 +339,12 @@ async function getDetail(sourceId, id) {
 async function parsePlay(sourceId, episodeUrl) {
   const src = SOURCES[sourceId]
   if (!src) return { success: false, message: '未知源' }
+  // API 源：播放地址已是直链，直接返回
+  if (src.type === 'maccms-api') {
+    const u = String(episodeUrl).replace(/\\\//g, '/')
+    const isM3u8 = /\.m3u8/i.test(u)
+    return { success: true, url: u, type: isM3u8 ? 'm3u8' : 'iframe' }
+  }
   try {
     const base = src.base
     const detailReferer = `${base}/vod-detail-id-${episodeUrl.split('-src-')[0]}.html`

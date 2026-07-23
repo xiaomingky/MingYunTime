@@ -1,13 +1,13 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { animeDetail, animeParsePlayUrl, animeMetaSearch, animeMetaRelated } from '../api'
+import { animeDetail, animeParsePlayUrl, animeMetaSearch, animeMetaRelated, downloadVideo } from '../api'
 import { useAnimeStore } from '../store/anime'
 import { useMessageStore } from '../store/message'
 import PlayDisclaimer from '../components/PlayDisclaimer.vue'
 import BiliPlayer from '../components/BiliPlayer.vue'
 import {
-    ChevronLeft, Heart, Star, Loader2, Film, RefreshCw, Users, Clapperboard
+    ChevronLeft, Heart, Star, Loader2, Film, RefreshCw, Users, Clapperboard, Download
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -38,6 +38,7 @@ const playType = ref('iframe')   // iframe | m3u8
 const playerError = ref('')
 const showDisclaimer = ref(true) // 播放前免责声明（默认显示，点击开始播放后消失）
 const pendingEpisode = ref(null) // 待播放的集数（用户点击开始后再解析）
+const playScheme = ref(1)        // 播放方案：1=iframe快速解析（默认），2=m3u8直链BiliPlayer
 
 const isFavorited = computed(() => {
     if (!detail.value) return false
@@ -152,7 +153,7 @@ async function playEpisode(ep) {
     playerLoading.value = true  // 解析期间显示加载遮罩
 
     try {
-        const res = await animeParsePlayUrl(ep.source || source.value, ep.url)
+        const res = await animeParsePlayUrl(ep.source || source.value, ep.url, playScheme.value)
         if (res?.success && res.url) {
             playUrl.value = res.url
             playType.value = res.type || 'iframe'
@@ -186,6 +187,16 @@ function onPlayerError(msg) {
 
 function replayCurrent() {
     if (currentEpisode.value) {
+        playEpisode(currentEpisode.value)
+    }
+}
+
+// 切换播放方案：1=iframe快速解析，2=m3u8直链
+function switchScheme(s) {
+    if (playScheme.value === s) return
+    playScheme.value = s
+    // 切换方案后重播当前集
+    if (currentEpisode.value && !showDisclaimer.value) {
         playEpisode(currentEpisode.value)
     }
 }
@@ -248,6 +259,52 @@ onMounted(() => {
 onBeforeUnmount(() => {
     playUrl.value = ''
 })
+
+// ===== 下载当前剧集 =====
+const downloadingEp = ref(false)
+const handleDownloadEpisode = async () => {
+    if (!currentEpisode.value) {
+        messageStore.warning('请先选择要下载的集数')
+        return
+    }
+    if (downloadingEp.value) {
+        messageStore.info('正在下载中，请查看右下角下载列表')
+        return
+    }
+    downloadingEp.value = true
+    try {
+        const epTitle = currentEpisode.value.title || '第1集'
+        const name = `${displayTitle.value || '动漫'} - ${epTitle}`
+        // 当前无直链（iframe 方案一）：自动用方案二重新解析拿 m3u8 直链
+        let downUrl = playUrl.value
+        let downType = playType.value === 'm3u8' ? 'm3u8' : ''
+        if (playType.value !== 'm3u8' || !downUrl) {
+            messageStore.info('正在解析直链用于下载...', 2000)
+            const res = await animeParsePlayUrl(currentEpisode.value.source || source.value, currentEpisode.value.url, 2)
+            if (!res?.success || !res?.url || res.type !== 'm3u8') {
+                messageStore.error('无法获取直链，下载失败：' + (res?.message || '该源未提供 m3u8 直链'))
+                return
+            }
+            downUrl = res.url
+            downType = 'm3u8'
+        }
+        const result = await downloadVideo({
+            url: downUrl,
+            name,
+            type: downType,
+            category: 'anime'
+        })
+        if (result?.success) {
+            messageStore.success(`已开始下载：${name}（进度见右下角）`, 3000)
+        } else if (!result?.canceled) {
+            messageStore.error('下载失败：' + (result?.error || '未知错误'))
+        }
+    } catch (e) {
+        messageStore.error('下载失败：' + (e.message || e))
+    } finally {
+        downloadingEp.value = false
+    }
+}
 </script>
 
 <template>
@@ -338,6 +395,21 @@ onBeforeUnmount(() => {
                     </div>
                 </div>
 
+                <!-- 播放方案切换条 -->
+                <div class="scheme-bar">
+                    <span class="scheme-label">播放方案</span>
+                    <button
+                        class="scheme-btn"
+                        :class="{ active: playScheme === 1 }"
+                        @click="switchScheme(1)"
+                    >方案一</button>
+                    <button
+                        class="scheme-btn"
+                        :class="{ active: playScheme === 2 }"
+                        @click="switchScheme(2)"
+                    >方案二</button>
+                </div>
+
                 <!-- 选集面板 -->
                 <div class="episodes-panel">
                     <div v-if="routes.length > 1" class="route-tabs">
@@ -352,6 +424,17 @@ onBeforeUnmount(() => {
 
                     <div class="episodes-header">
                         <span class="ep-title">选集 ({{ episodes.length }})</span>
+                        <button
+                            class="ep-download-btn"
+                            :class="{ active: downloadingEp }"
+                            :disabled="!currentEpisode || downloadingEp"
+                            :title="!currentEpisode ? '请先选择集数' : '下载当前集（iframe 模式将自动解析直链）'"
+                            @click="handleDownloadEpisode"
+                        >
+                            <Loader2 v-if="downloadingEp" :size="14" class="spin" />
+                            <Download v-else :size="14" />
+                            <span>下载当前集</span>
+                        </button>
                     </div>
 
                     <div v-if="episodes.length === 0" class="ep-empty">暂无集数</div>
@@ -751,10 +834,72 @@ onBeforeUnmount(() => {
 .route-tab:hover { border-color: #c20c0c; color: #c20c0c; }
 .route-tab.active { background: #c20c0c; color: #fff; border-color: #c20c0c; }
 
+/* 播放方案切换条 */
+.scheme-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 8px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+}
+.scheme-label {
+    font-size: 12px;
+    color: #888;
+    margin-right: 8px;
+}
+.scheme-btn {
+    padding: 5px 12px;
+    border: 1px solid #ddd;
+    background: #fff;
+    color: #666;
+    font-size: 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all .2s;
+}
+.scheme-btn:hover { border-color: #c20c0c; color: #c20c0c; }
+.scheme-btn.active { background: #c20c0c; color: #fff; border-color: #c20c0c; }
+
 .episodes-header {
     margin-bottom: 10px;
     font-size: 13px;
     color: #888;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.ep-download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    font-size: 12px;
+    border: 1px solid #e0e0e0;
+    background: #fff;
+    color: #555;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.ep-download-btn:hover:not(:disabled) {
+    border-color: var(--primary-color, #c20c0c);
+    color: var(--primary-color, #c20c0c);
+    background: rgba(194, 12, 12, 0.05);
+}
+
+.ep-download-btn.active {
+    color: #f59e0b;
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.08);
+}
+
+.ep-download-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .ep-empty {

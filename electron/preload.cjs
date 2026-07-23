@@ -33,7 +33,68 @@ const bridgeAPI = {
     loadOnlineEnglishAnalysis: (songId) => ipcRenderer.invoke('load-online-english-analysis', songId),
     // 窗口全屏控制
     setWindowFullscreen: () => ipcRenderer.invoke('set-window-fullscreen'),
-    exitWindowFullscreen: () => ipcRenderer.invoke('exit-window-fullscreen')
+    exitWindowFullscreen: () => ipcRenderer.invoke('exit-window-fullscreen'),
+    // 视频下载（m3u8/直链/本地）—— 旧接口，委托给统一下载管理器
+    downloadVideo: (params) => ipcRenderer.invoke('video-download', params),
+    cancelVideoDownload: (downloadId) => ipcRenderer.invoke('video-download-cancel', { downloadId }),
+    // 网址视频流解析
+    parseVideoUrl: (url) => ipcRenderer.invoke('video:parse-url', { url }),
+    // B站登录（二维码扫码，获取 Cookie 提升画质）
+    biliLoginQr: () => ipcRenderer.invoke('bilibili:login-qr'),
+    biliLoginCheck: (qrcodeKey) => ipcRenderer.invoke('bilibili:login-check', { qrcodeKey }),
+    biliLoginStatus: () => ipcRenderer.invoke('bilibili:login-status'),
+    biliLogout: () => ipcRenderer.invoke('bilibili:logout'),
+    onVideoDownloadProgress: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('video-download-progress', sub)
+        return () => ipcRenderer.removeListener('video-download-progress', sub)
+    },
+    onVideoDownloadStarted: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('video-download-started', sub)
+        return () => ipcRenderer.removeListener('video-download-started', sub)
+    },
+    onVideoDownloadDone: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('video-download-done', sub)
+        return () => ipcRenderer.removeListener('video-download-done', sub)
+    },
+    onVideoDownloadError: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('video-download-error', sub)
+        return () => ipcRenderer.removeListener('video-download-error', sub)
+    },
+    // ===== 统一下载管理器（新） =====
+    downloadStart: (params) => ipcRenderer.invoke('download:start', params),
+    downloadCancel: (downloadId) => ipcRenderer.invoke('download:cancel', { downloadId }),
+    downloadList: () => ipcRenderer.invoke('download:list'),
+    downloadRemove: (downloadId) => ipcRenderer.invoke('download:remove', { downloadId }),
+    downloadClear: (status) => ipcRenderer.invoke('download:clear', { status }),
+    downloadRetry: (downloadId) => ipcRenderer.invoke('download:retry', { downloadId }),
+    onDownloadStarted: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('download:started', sub)
+        return () => ipcRenderer.removeListener('download:started', sub)
+    },
+    onDownloadProgress: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('download:progress', sub)
+        return () => ipcRenderer.removeListener('download:progress', sub)
+    },
+    onDownloadDone: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('download:done', sub)
+        return () => ipcRenderer.removeListener('download:done', sub)
+    },
+    onDownloadError: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('download:error', sub)
+        return () => ipcRenderer.removeListener('download:error', sub)
+    },
+    // 网易云 MV 搜索（按歌名匹配）
+    ncmMvSearch: (keyword) => ipcRenderer.invoke('ncm-mv-search', { keyword }),
+    // 打开本地文件/文件夹路径
+    openPath: (p) => ipcRenderer.invoke('open-path', { path: p })
 }
 
 // 导出到全局

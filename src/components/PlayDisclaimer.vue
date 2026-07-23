@@ -49,7 +49,7 @@ const tips = [
             <X :size="20" />
         </button>
 
-        <!-- 内容卡片 -->
+        <!-- 铺满内容（不再滚动） -->
         <div class="disclaimer-card">
             <!-- 头部 -->
             <div class="disclaimer-header">
@@ -62,7 +62,7 @@ const tips = [
                 </div>
             </div>
 
-            <!-- 提示列表 -->
+            <!-- 提示网格（横向铺开，无需滚动） -->
             <div class="disclaimer-tips">
                 <div v-for="(tip, idx) in tips" :key="idx" class="disclaimer-tip-item">
                     <span class="tip-icon">{{ tip.icon }}</span>
@@ -134,39 +134,40 @@ const tips = [
     transform: rotate(90deg);
 }
 
-/* 内容卡片 */
+/* 内容铺满整个播放器区域（自适应窗口，不滚动） */
 .disclaimer-card {
     position: relative;
     z-index: 2;
-    width: min(680px, calc(100% - 48px));
-    max-height: calc(100% - 48px);
-    background: rgba(20, 20, 24, .82);
+    width: 100%;
+    height: 100%;
+    background: rgba(20, 20, 24, .85);
     backdrop-filter: blur(24px);
-    border: 1px solid rgba(255, 255, 255, .08);
-    border-radius: 16px;
-    padding: 28px 32px;
+    padding: 14px 18px;
     color: #fff;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 20px 60px rgba(0, 0, 0, .6);
     animation: disclaimer-in .4s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
 }
 @keyframes disclaimer-in {
-    from { opacity: 0; transform: translateY(20px) scale(.96); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
+    from { opacity: 0; transform: scale(.96); }
+    to   { opacity: 1; transform: scale(1); }
 }
 
 /* 头部 */
 .disclaimer-header {
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding-bottom: 18px;
-    margin-bottom: 18px;
+    gap: 12px;
+    padding-bottom: 8px;
+    margin-bottom: 10px;
     border-bottom: 1px solid rgba(255, 255, 255, .08);
+    flex-shrink: 0;
 }
 .disclaimer-icon {
-    width: 52px; height: 52px;
-    border-radius: 12px;
+    width: 38px; height: 38px;
+    border-radius: 10px;
     background: linear-gradient(135deg, #c20c0c, #ff4d4d);
     display: flex;
     align-items: center;
@@ -175,82 +176,88 @@ const tips = [
     box-shadow: 0 6px 20px rgba(194, 12, 12, .4);
     flex-shrink: 0;
 }
+.disclaimer-icon svg { width: 22px; height: 22px; }
 .disclaimer-title h2 {
     margin: 0;
-    font-size: 22px;
+    font-size: 17px;
     font-weight: 700;
     letter-spacing: 1px;
 }
 .disclaimer-subtitle {
-    margin: 4px 0 0;
-    font-size: 13px;
+    margin: 2px 0 0;
+    font-size: 11px;
     color: rgba(255, 255, 255, .6);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 520px;
 }
 
-/* 提示列表 */
+/* 提示区：flex 自适应换行铺满，不滚动 */
 .disclaimer-tips {
+    flex: 1;
     display: flex;
-    flex-direction: column;
-    gap: 14px;
-    margin-bottom: 22px;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+    align-content: center;
+    justify-content: center;
+    min-height: 0;
 }
 .disclaimer-tip-item {
+    flex: 1 1 200px;
+    min-width: 0;
     display: flex;
-    gap: 12px;
-    padding: 12px 14px;
+    gap: 8px;
+    padding: 8px 10px;
     background: rgba(255, 255, 255, .04);
-    border-radius: 10px;
+    border-radius: 8px;
     border-left: 3px solid rgba(194, 12, 12, .5);
     transition: all .2s;
 }
 .disclaimer-tip-item:hover {
     background: rgba(255, 255, 255, .07);
     border-left-color: #c20c0c;
-    transform: translateX(2px);
 }
 .tip-icon {
-    font-size: 22px;
+    font-size: 16px;
     line-height: 1.2;
     flex-shrink: 0;
 }
 .tip-body { flex: 1; min-width: 0; }
 .tip-title {
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 600;
     color: #fff;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
 }
 .tip-content {
-    font-size: 12.5px;
+    font-size: 11px;
     color: rgba(255, 255, 255, .72);
-    line-height: 1.65;
+    line-height: 1.45;
 }
 
 /* 底部 */
 .disclaimer-footer {
     text-align: center;
-    padding-top: 18px;
+    padding-top: 8px;
     border-top: 1px solid rgba(255, 255, 255, .08);
+    flex-shrink: 0;
 }
 .disclaimer-confirm-text {
-    font-size: 12px;
+    font-size: 10px;
     color: rgba(255, 255, 255, .5);
-    margin: 0 0 14px;
+    margin: 0 0 6px;
 }
 .disclaimer-start-btn {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
-    padding: 12px 36px;
+    gap: 6px;
+    padding: 8px 26px;
     border: none;
-    border-radius: 24px;
+    border-radius: 20px;
     background: linear-gradient(135deg, #c20c0c, #ff4d4d);
     color: #fff;
-    font-size: 15px;
+    font-size: 13px;
     font-weight: 600;
     cursor: pointer;
     transition: all .25s;
@@ -263,19 +270,10 @@ const tips = [
 .disclaimer-start-btn:active { transform: translateY(0); }
 .disclaimer-start-btn svg { margin-left: 2px; }
 
-/* 滚动条 */
-.disclaimer-card::-webkit-scrollbar { width: 6px; }
-.disclaimer-card::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, .2);
-    border-radius: 3px;
-}
-.disclaimer-card::-webkit-scrollbar-thumb:hover { background: rgba(194, 12, 12, .6); }
-
-/* 响应式 */
-@media (max-width: 640px) {
-    .disclaimer-card { padding: 20px; }
-    .disclaimer-title h2 { font-size: 18px; }
-    .tip-content { font-size: 12px; }
-    .disclaimer-start-btn { padding: 10px 28px; font-size: 14px; }
+/* 响应式：极窄屏单列 */
+@media (max-width: 480px) {
+    .disclaimer-card { padding: 10px 14px; }
+    .disclaimer-tip-item { flex-basis: 100%; }
+    .disclaimer-title h2 { font-size: 15px; }
 }
 </style>

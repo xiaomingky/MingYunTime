@@ -33,6 +33,10 @@ export const usePlayerStore = defineStore('player', {
         showMvPlayer: false,
         currentMvId: null,
         currentMvUrl: '',
+        currentMvTitle: '', // MV 实际标题（解决播放时显示歌曲名的问题）
+        currentMvAudioUrl: '', // DASH 音视频分离时的音频地址（下载时合并用）
+        mvSearchCandidates: [], // 网易云 MV 搜索结果（供 UI 选择）
+        showMvSearchPicker: false, // 是否显示 MV 选择弹层
         showDesktopLyrics: localStorage.getItem('show_desktop_lyrics') === 'true',
         desktopLyricFont: '',
         desktopLyricColor: '#00E5FF',
@@ -1053,7 +1057,7 @@ export const usePlayerStore = defineStore('player', {
 
             return null
         },
-        async playMv(id) {
+        async playMv(id, title) {
             if (!id) return
             // Pause music if playing
             if (this.isPlaying) {
@@ -1074,6 +1078,7 @@ export const usePlayerStore = defineStore('player', {
                 if (url) {
                     this.currentMvUrl = url
                     this.currentMvId = id
+                    this.currentMvTitle = title || ''
                     this.showMvPlayer = true
                 } else {
                     useMessageStore().warning('未获取到视频地址，由于版权或区域限制，该内容暂无法播放。')
@@ -1083,9 +1088,9 @@ export const usePlayerStore = defineStore('player', {
                 useMessageStore().error('播放视频失败')
             }
         },
+        // 仅播放本地 MV（mode='local'）；找不到时返回 false，不自动回退到线上
         async playLocalMv() {
             if (!this.currentSong.name) return
-
             // 暂停音乐
             if (this.isPlaying) {
                 this.audio.pause()
@@ -1093,8 +1098,6 @@ export const usePlayerStore = defineStore('player', {
             }
 
             const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
-
-            // 尝试查找本地 MV 文件
             if (bridge && bridge.findLocalMv) {
                 try {
                     const mvDir = localStorage.getItem('mv_directory') || ''
@@ -1106,38 +1109,76 @@ export const usePlayerStore = defineStore('player', {
                     if (res && res.success) {
                         this.currentMvUrl = res.url
                         this.currentMvId = null
+                        // 本地 MV 标题优先用文件名（去掉扩展名），否则用歌曲名
+                        const fileName = res.name || res.path?.split(/[\\/]/).pop() || ''
+                        this.currentMvTitle = fileName ? fileName.replace(/\.[^.]+$/, '') : this.currentSong.name
                         this.showMvPlayer = true
-                        return
+                        return true
                     }
                 } catch (e) {
                     console.error('findLocalMv error:', e)
                 }
             }
-
-            // 回退：在线歌曲尝试 API 获取 MV
-            const isLocal = String(this.currentSong.id).startsWith('local-') || !!this.currentSong.path
-            if (!isLocal && this.currentSong.id) {
-                // 尝试用歌曲 ID 获取 MV
-                try {
-                    const { getMvUrl: fetchMvUrl } = await import('../api')
-                    const res = await fetchMvUrl(this.currentSong.id)
-                    let url = res.data?.url
-                    if (!url && res.data?.urls) {
-                        const keys = Object.keys(res.data.urls)
-                        if (keys.length > 0) url = res.data.urls[keys[0]]
-                    }
-                    if (url) {
-                        this.currentMvUrl = url
-                        this.currentMvId = this.currentSong.id
-                        this.showMvPlayer = true
-                        return
-                    }
-                } catch (e) {
-                    console.error('Online MV fallback error:', e)
-                }
+            useMessageStore().info('本地未找到匹配的MV。提示：将视频文件放在歌曲同目录下，或在歌曲目录下创建 mv 文件夹，视频文件名需与歌曲名一致；或点击"线上"用网易云 MV API 匹配')
+            return false
+        },
+        // 线上：用网易云 MV 搜索 API 按歌名匹配
+        // 返回 true 表示已开始播放或弹出了选择面板
+        async playOnlineMv() {
+            if (!this.currentSong.name) return false
+            if (this.isPlaying) {
+                this.audio.pause()
+                this.isPlaying = false
             }
+            try {
+                const { ncmMvSearch } = await import('../api')
+                const res = await ncmMvSearch(this.currentSong.name)
+                if (!res?.success || !res?.mvs?.length) {
+                    useMessageStore().warning('网易云未搜索到该歌曲的 MV')
+                    return false
+                }
+                // 按歌名相似度排序，挑出最匹配的
+                const songName = (this.currentSong.name || '').toLowerCase()
+                const artistName = (this.currentSong.artist || this.currentSong.ar?.[0]?.name || '').toLowerCase()
+                const scored = res.mvs.map(m => {
+                    const n = (m.name || '').toLowerCase()
+                    let score = 0
+                    if (n === songName) score += 3
+                    else if (n.includes(songName) || songName.includes(n)) score += 2
+                    else score += 1
+                    if (artistName && (m.artistName || '').toLowerCase().includes(artistName)) score += 1
+                    if (m.playCount) score += Math.min(0.5, m.playCount / 1000000)
+                    return { ...m, _score: score }
+                })
+                scored.sort((a, b) => b._score - a._score)
 
-            useMessageStore().info('未找到匹配的MV视频文件。提示：将视频文件放在歌曲同目录下，或在歌曲目录下创建 mv 文件夹，视频文件名需与歌曲名一致')
+                // 只有一个候选 或 最高分明显领先：直接播放
+                if (scored.length === 1 || scored[0]._score > scored[1]?._score) {
+                    const best = scored[0]
+                    await this.playMv(best.id, best.name)
+                    useMessageStore().success(`正在播放线上 MV：${best.name}`, 2500)
+                    return true
+                }
+                // 多个候选分接近：弹选择面板
+                this.mvSearchCandidates = scored.slice(0, 6)
+                this.showMvSearchPicker = true
+                return true
+            } catch (e) {
+                console.error('playOnlineMv error:', e)
+                useMessageStore().error('线上 MV 获取失败：' + (e.message || e))
+                return false
+            }
+        },
+        // 用户在 MV 选择面板中点击某个候选
+        async playMvCandidate(mv) {
+            this.showMvSearchPicker = false
+            await this.playMv(mv.id, mv.name)
+        },
+        // 自动模式（旧调用入口）：先本地，找不到再线上
+        async playMvAuto() {
+            const ok = await this.playLocalMv()
+            if (ok) return
+            await this.playOnlineMv()
         },
         addToRecent(song) {
             const index = this.recentSongs.findIndex(s => s.id === song.id)

@@ -299,9 +299,45 @@ const handleLyricClick = (time) => {
     playerStore.seek(time)
 }
 
+const showMvMenu = ref(false)
+
 const handlePlayMv = () => {
+    showMvMenu.value = !showMvMenu.value
+}
+
+const playLocalMv = () => {
+    showMvMenu.value = false
     playerStore.playLocalMv()
 }
+
+const playOnlineMv = () => {
+    showMvMenu.value = false
+    playerStore.playOnlineMv()
+}
+
+const playMvCandidate = (mv) => {
+    playerStore.playMvCandidate(mv)
+}
+
+const closeMvMenu = () => {
+    showMvMenu.value = false
+}
+
+const formatPlayCount = (n) => {
+    if (!n) return ''
+    if (n >= 100000000) return (n / 100000000).toFixed(1) + '亿'
+    if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+    return String(n)
+}
+
+// 点击外部关闭 MV 下拉
+watch(showMvMenu, (val) => {
+    if (val) {
+        setTimeout(() => {
+            document.addEventListener('click', closeMvMenu, { once: true })
+        }, 0)
+    }
+})
 
 const handleDownload = async () => {
     if (playerStore.currentSong.url) {
@@ -550,9 +586,23 @@ onMounted(() => {
       <div class="right-lyrics" v-show="!showCommentPanel">
         <div class="lyric-controls no-drag">
             <div class="group icon-group">
-                <div class="icon-with-label action-item mv-btn" title="播放MV" @click="handlePlayMv">
-                   <Film :size="18" />
-                   <span class="icon-text">MV</span>
+                <div class="mv-dropdown-wrap">
+                    <div class="icon-with-label action-item mv-btn" title="播放MV" @click="handlePlayMv">
+                        <Film :size="18" />
+                        <span class="icon-text">MV</span>
+                    </div>
+                    <div v-if="showMvMenu" class="mv-dropdown-menu" @click.stop>
+                        <div class="mv-menu-item" @click="playLocalMv">
+                            <Film :size="14" />
+                            <span>本地 MV</span>
+                            <small>从歌曲同目录/mv 文件夹匹配</small>
+                        </div>
+                        <div class="mv-menu-item" @click="playOnlineMv">
+                            <Film :size="14" />
+                            <span>线上 MV</span>
+                            <small>用网易云 MV API 按歌名匹配</small>
+                        </div>
+                    </div>
                 </div>
                 <div class="icon-with-label action-item en-btn" :class="{ active: showEnglishAnalysis }" title="英文解析" @click="toggleEnglishAnalysis">
                    <BookOpen :size="18" />
@@ -670,15 +720,41 @@ onMounted(() => {
     </div>
 
     <div class="visualizer-container">
-        <div 
-            v-for="(bar, i) in rhythmBars" 
-            :key="i" 
-            class="v-bar" 
-            :style="{ 
+        <div
+            v-for="(bar, i) in rhythmBars"
+            :key="i"
+            class="v-bar"
+            :style="{
                 height: bar.height + 'px',
                 opacity: bar.opacity
             }"
         ></div>
+    </div>
+
+    <!-- MV 候选选择面板（线上搜索返回多个候选时弹出） -->
+    <div v-if="playerStore.showMvSearchPicker" class="mv-picker-overlay" @click.self="playerStore.showMvSearchPicker = false">
+        <div class="mv-picker-modal">
+            <div class="mv-picker-header">
+                <h3>选择线上 MV</h3>
+                <X :size="18" class="clickable" @click="playerStore.showMvSearchPicker = false" />
+            </div>
+            <div class="mv-picker-body">
+                <div
+                    v-for="mv in playerStore.mvSearchCandidates"
+                    :key="mv.id"
+                    class="mv-candidate-item"
+                    @click="playMvCandidate(mv)"
+                >
+                    <img v-if="mv.cover" :src="mv.cover" class="mv-cover" loading="lazy" />
+                    <div v-else class="mv-cover placeholder"><Film :size="20" /></div>
+                    <div class="mv-info">
+                        <div class="mv-name">{{ mv.name }}</div>
+                        <div class="mv-artist">{{ mv.artistName }}</div>
+                    </div>
+                    <span v-if="mv.playCount" class="mv-plays">{{ formatPlayCount(mv.playCount) }}</span>
+                </div>
+            </div>
+        </div>
     </div>
   </div>
 </template>
@@ -1032,6 +1108,167 @@ onMounted(() => {
 .lyric-controls .mv-btn {
     width: 48px;
     height: 48px;
+}
+
+/* MV 下拉菜单 */
+.mv-dropdown-wrap {
+    position: relative;
+    display: inline-block;
+}
+
+.mv-dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-top: 8px;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+    padding: 6px 0;
+    min-width: 220px;
+    z-index: 100;
+    animation: mvMenuFade 0.15s ease;
+}
+
+@keyframes mvMenuFade {
+    from { opacity: 0; transform: translateX(-50%) translateY(-4px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.mv-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    cursor: pointer;
+    color: #333;
+    transition: background 0.12s;
+}
+
+.mv-menu-item span {
+    font-size: 13px;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+.mv-menu-item small {
+    font-size: 10px;
+    color: #999;
+    flex: 1;
+    text-align: right;
+}
+
+.mv-menu-item:hover {
+    background: #f5f5f5;
+    color: var(--primary-color);
+}
+
+/* MV 候选选择面板 */
+.mv-picker-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 15000;
+    backdrop-filter: blur(4px);
+}
+
+.mv-picker-modal {
+    background: #fff;
+    border-radius: 14px;
+    width: min(480px, 92vw);
+    max-height: 80vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.mv-picker-header {
+    padding: 16px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.mv-picker-header h3 {
+    margin: 0;
+    font-size: 16px;
+    color: #1a1a2e;
+}
+
+.mv-picker-header .clickable {
+    color: #999;
+    cursor: pointer;
+}
+
+.mv-picker-header .clickable:hover {
+    color: #333;
+}
+
+.mv-picker-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+}
+
+.mv-candidate-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 20px;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+
+.mv-candidate-item:hover {
+    background: #f5f5f5;
+}
+
+.mv-cover {
+    width: 80px;
+    height: 45px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: #f0f0f0;
+    flex-shrink: 0;
+}
+
+.mv-cover.placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ccc;
+}
+
+.mv-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.mv-name {
+    font-size: 14px;
+    color: #1a1a2e;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mv-artist {
+    font-size: 12px;
+    color: #999;
+    margin-top: 2px;
+}
+
+.mv-plays {
+    font-size: 11px;
+    color: #bbb;
+    flex-shrink: 0;
 }
 
 .lyric-controls .en-btn {

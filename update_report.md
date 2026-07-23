@@ -1,5 +1,54 @@
 # 茗韵时光音乐播放器 - 更新与优化报告
 
+## 🎉 重大更新 v1.9.0 — 统一下载中心 + B站高画质解析 + 多项体验优化
+
+### 📦 统一下载中心（新增）
+
+- 新增「下载」专区，统一管理音乐/影视/动漫/MV/视频的所有下载任务
+- 下载速度/进度/详情/链接实时显示，支持取消/重试/移除/状态筛选
+- 下载历史持久化到磁盘（userData/download-history.json），重启不丢失
+- aria2c + ffmpeg 打包进程序（resources/），无需外部依赖
+- 128 路并发分片下载 + 自定义 HTTP Agent（maxSockets: Infinity），不限速满带宽
+- 下载链接详情可复制，自定义下载链接自动获取文件名
+- 下载完成显示平均速度，进度条 CSS 修复防止溢出
+
+### 🎬 B站视频解析 + 登录提升画质
+
+- 新增 B站视频解析（view API 获取 cid → playurl API 获取直链）
+- B站二维码扫码登录，Cookie 持久化（30 天），登录状态栏显示头像/昵称/大会员
+- 登录后请求 DASH 格式（fnval=16），解锁 4K/1080P+ 高画质
+- DASH 音视频分离流下载时自动用 ffmpeg 流复制合并（极快，有声）
+- webRequest 为 B站 CDN（bilivideo.com）和图片 CDN（hdslb.com）注入 Referer
+- 播放器内下载也自动合并音频（currentMvAudioUrl 透传）
+
+### 🎵 MV / 影视 / 动漫专区下载
+
+- MV 影视 动漫专区均提供下载入口，统一接入下载中心
+- 歌曲详情页 MV 按钮改成本地/线上：本地无 MV 时自动用网易云 MV API 按歌名匹配
+- 修复 MV 播放时名称显示问题（currentMvTitle 优先）
+- 本地视频新增链接/直播流/网址解析三个 Tab
+- 网址解析支持任何格式视频（mp4/webm/avi/mkv/mov 等 21 种扩展名）
+- 影视专区默认使用神马电影源
+
+### 🔧 下载引擎修复与优化
+
+- 修复进度条满屏绿色（CSS absolute 定位）
+- 修复 ffmpeg 退出码 1（去掉强制 aac_adtstoasc，首次 -c copy）
+- 修复 ffmpeg "Option not found"（-nostdin → stdio:ignore，-headers → -user_agent/-referer）
+- 修复 ffmpeg "Protocol not found"（精简版不支持 HTTPS，降级到分片下载+concat）
+- 修复下载专区打开保存路径失败（preload 暴露 openPath）
+- 修复秒提示下载完成（初始 0% 进度事件 + started 监听）
+- 修复 "视频下载完成" 文案（改为"下载完成"）
+- 修复 1 B/s 速度显示（追踪 receivedBytes 计算真实字节/秒）
+- 修复 headers split bug（对象统一转字符串格式）
+- 修复 361B 下载慢（aria2c 日志误判，改 axios 直下载分片）
+
+### 🔒 安全修复
+
+- 清除 EnglishAnalysis.vue 中硬编码的 DeepSeek/Mimo API key（改为空默认值，用户自行输入）
+
+---
+
 ## 🎉 重大更新 v1.8.0 — 新增「动漫」与「影视」模块
 
 本次版本为重大功能更新，在原有音乐播放器基础上新增了**完整的动漫观看**和**影视播放**能力，让茗韵时光从单一音乐播放器升级为多媒体娱乐中心。

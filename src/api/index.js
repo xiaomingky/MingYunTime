@@ -130,7 +130,7 @@ export const animeSources = () => animeBridge().invoke('anime:sources')
 export const animeHome = (source) => animeBridge().invoke('anime:home', { source })
 export const animeSearch = (source, keyword) => animeBridge().invoke('anime:search', { source, keyword })
 export const animeDetail = (source, id) => animeBridge().invoke('anime:detail', { source, id })
-export const animeParsePlayUrl = (source, episodeUrl) => animeBridge().invoke('anime:parse-playurl', { source, episodeUrl })
+export const animeParsePlayUrl = (source, episodeUrl, scheme = 1) => animeBridge().invoke('anime:parse-playurl', { source, episodeUrl, scheme })
 export const animeMetaSearch = (title) => animeBridge().invoke('anime:meta:search', { title })
 export const animeMetaRelated = (bgmId) => animeBridge().invoke('anime:meta:related', { bgmId })
 
@@ -140,5 +140,35 @@ export const movieHome = (source) => animeBridge().invoke('movie:home', { source
 export const movieSearch = (source, keyword) => animeBridge().invoke('movie:search', { source, keyword })
 export const movieDetail = (source, id) => animeBridge().invoke('movie:detail', { source, id })
 export const movieParsePlayUrl = (source, episodeUrl) => animeBridge().invoke('movie:parse-playurl', { source, episodeUrl })
+
+// ---------- 视频下载 / MV 搜索（通过 Electron IPC） ----------
+export const downloadVideo = (params) => animeBridge().downloadVideo(params)
+export const cancelVideoDownload = (downloadId) => animeBridge().cancelVideoDownload(downloadId)
+export const parseVideoUrl = (url) => animeBridge().parseVideoUrl(url)
+// B站登录（二维码扫码，获取 Cookie 提升画质）
+export const biliLoginQr = () => animeBridge().biliLoginQr()
+export const biliLoginCheck = (qrcodeKey) => animeBridge().biliLoginCheck(qrcodeKey)
+export const biliLoginStatus = () => animeBridge().biliLoginStatus()
+export const biliLogout = () => animeBridge().biliLogout()
+export const onVideoDownloadProgress = (cb) => animeBridge().onVideoDownloadProgress(cb)
+export const onVideoDownloadStarted = (cb) => animeBridge().onVideoDownloadStarted(cb)
+export const onVideoDownloadDone = (cb) => animeBridge().onVideoDownloadDone(cb)
+export const onVideoDownloadError = (cb) => animeBridge().onVideoDownloadError(cb)
+
+// ---------- 统一下载管理器（新） ----------
+// category: 'music' | 'movie' | 'anime' | 'mv' | 'video'
+export const downloadStart = (params) => animeBridge().downloadStart(params)
+export const downloadCancel = (downloadId) => animeBridge().downloadCancel(downloadId)
+export const downloadList = () => animeBridge().downloadList()
+export const downloadRemove = (downloadId) => animeBridge().downloadRemove(downloadId)
+export const downloadClear = (status) => animeBridge().downloadClear(status)
+export const downloadRetry = (downloadId) => animeBridge().downloadRetry(downloadId)
+export const onDownloadStarted = (cb) => animeBridge().onDownloadStarted(cb)
+export const onDownloadProgress = (cb) => animeBridge().onDownloadProgress(cb)
+export const onDownloadDone = (cb) => animeBridge().onDownloadDone(cb)
+export const onDownloadError = (cb) => animeBridge().onDownloadError(cb)
+
+// 网易云 MV 搜索（按歌名匹配，返回 [{id, name, artistName, duration, cover, playCount}]）
+export const ncmMvSearch = (keyword) => animeBridge().ncmMvSearch(keyword)
 
 export default request

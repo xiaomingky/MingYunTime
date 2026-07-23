@@ -6,7 +6,7 @@ import { useMessageStore } from '../store/message'
 import { useAnimeStore } from '../store/anime'
 import { useSearchHistoryStore } from '../store/searchHistory'
 import SearchSuggest from '../components/SearchSuggest.vue'
-import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock, RefreshCw } from 'lucide-vue-next'
+import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock, RefreshCw, Heart, Trash2, X } from 'lucide-vue-next'
 import './anime-common.css'
 
 const router = useRouter()
@@ -136,7 +136,27 @@ const categories = [
 ]
 
 const goToCategory = (cat) => {
-    router.push({ path: '/anime/recommend', query: { type: cat } })
+    // 改为本地搜索（不再跳转推荐页）
+    keyword.value = cat
+    handleSearch()
+}
+
+// ===== 我的收藏面板（首页线路一旁） =====
+const showFavPanel = ref(false)
+const favorites = computed(() => animeStore.favorites)
+const toggleFavPanel = () => {
+    showFavPanel.value = !showFavPanel.value
+}
+const closeFavPanel = () => {
+    showFavPanel.value = false
+}
+const removeFav = (item) => {
+    animeStore.removeFavorite(item.source, item.id)
+    messageStore.success('已取消收藏')
+}
+const openFavDetail = (item) => {
+    showFavPanel.value = false
+    router.push(`/anime/${item.source || currentSource.value}/${item.id}`)
 }
 
 // ===== 数据加载 =====
@@ -179,7 +199,12 @@ const handleSearch = async () => {
         messageStore.warning('请输入搜索关键词')
         return
     }
-    searchHistoryStore.addHistory('anime', keyword.value)
+    // 从详情页"相关推荐"跳转过来的搜索（URL 带 from=related），不覆盖 sessionStorage
+    // 这样用户从详情页返回时，仍能恢复"主动搜索"的状态，而不是"最新搜索"
+    const isFromRelated = router.currentRoute.value.query.from === 'related'
+    if (!isFromRelated) {
+        searchHistoryStore.addHistory('anime', keyword.value)
+    }
     showSearchSuggest.value = false
     searchLoading.value = true
     searchMode.value = true
@@ -191,14 +216,17 @@ const handleSearch = async () => {
             if (searchResultsRaw.value.length === 0) {
                 messageStore.warning('未找到相关动漫')
             }
-            // 保存搜索状态到 sessionStorage，返回时恢复
-            sessionStorage.setItem('anime_search_state', JSON.stringify({
-                keyword: keyword.value,
-                source: currentSource.value,
-                results: searchResultsRaw.value,
-                page: currentPage.value,
-                ts: Date.now()
-            }))
+            // 仅在用户主动搜索时保存状态到 sessionStorage
+            // 从"相关推荐"跳转过来的搜索不保存，避免覆盖用户原搜索状态
+            if (!isFromRelated) {
+                sessionStorage.setItem('anime_search_state', JSON.stringify({
+                    keyword: keyword.value,
+                    source: currentSource.value,
+                    results: searchResultsRaw.value,
+                    page: currentPage.value,
+                    ts: Date.now()
+                }))
+            }
         } else {
             messageStore.error(res?.message || '搜索失败')
         }
@@ -240,6 +268,14 @@ const exitSearch = () => {
 const onSelectSuggest = (kw) => {
     keyword.value = kw
     handleSearch()
+}
+
+// "您可能再找"实时搜索结果点击：anime → 跳转到动漫详情页
+const onSelectItem = (item) => {
+    showSearchSuggest.value = false
+    if (item?.type === 'anime' && item.id) {
+        router.push(`/anime/${item.source || 'yhf'}/${item.id}`)
+    }
 }
 
 // 搜索框 focus/blur：保存 timer 句柄，避免竞态导致下拉框刚显示就被隐藏
@@ -307,6 +343,19 @@ onUnmounted(() => {
                     {{ s.label }}
                 </button>
             </div>
+            <!-- 我的收藏按钮（线路一旁） -->
+            <div class="fav-entry">
+                <button
+                    class="fav-toggle-btn"
+                    :class="{ active: showFavPanel }"
+                    @click="toggleFavPanel"
+                    title="我的收藏"
+                >
+                    <Heart :size="16" :fill="showFavPanel ? 'currentColor' : 'none'" />
+                    <span>我的收藏</span>
+                    <span v-if="favorites.length > 0" class="fav-badge">{{ favorites.length }}</span>
+                </button>
+            </div>
             <button
                 class="refresh-btn"
                 @click="refreshCurrent"
@@ -317,6 +366,51 @@ onUnmounted(() => {
                 <span>{{ refreshing ? '刷新中' : '刷新' }}</span>
             </button>
         </div>
+
+        <!-- 我的收藏面板（侧滑） -->
+        <transition name="fav-slide">
+            <div v-if="showFavPanel" class="fav-panel">
+                <div class="fav-panel-header">
+                    <h3>
+                        <Heart :size="18" :fill="'currentColor'" /> 我的收藏
+                        <span class="fav-count">{{ favorites.length }}</span>
+                    </h3>
+                    <button class="fav-close" @click="closeFavPanel" title="关闭">
+                        <X :size="18" />
+                    </button>
+                </div>
+                <div v-if="favorites.length === 0" class="fav-empty">
+                    <Heart :size="48" />
+                    <p>还没有收藏动漫</p>
+                    <small>在详情页点击收藏即可</small>
+                </div>
+                <div v-else class="fav-list">
+                    <div
+                        v-for="item in favorites"
+                        :key="`fav-${item.source}-${item.id}`"
+                        class="fav-item"
+                        @click="openFavDetail(item)"
+                    >
+                        <div class="fav-cover">
+                            <img
+                                v-if="item.cover"
+                                :src="item.cover"
+                                referrerpolicy="no-referrer"
+                                @error="$event.target.style.display='none'"
+                            />
+                            <div v-else class="fav-cover-placeholder"><Film :size="20" /></div>
+                        </div>
+                        <div class="fav-info">
+                            <div class="fav-title" :title="item.title">{{ item.title }}</div>
+                            <div class="fav-date">收藏于 {{ new Date(item.addedAt).toLocaleDateString() }}</div>
+                        </div>
+                        <button class="fav-remove" @click.stop="removeFav(item)" title="取消收藏">
+                            <Trash2 :size="14" />
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </transition>
 
         <!-- 搜索栏 -->
         <div class="search-bar">
@@ -333,6 +427,7 @@ onUnmounted(() => {
                 :query="keyword"
                 :visible="showSearchSuggest"
                 @select="onSelectSuggest"
+                @select-item="onSelectItem"
             />
             <button class="search-btn" @click="handleSearch" :disabled="searchLoading">
                 <Loader2 v-if="searchLoading" :size="14" class="spin" />
@@ -567,12 +662,6 @@ onUnmounted(() => {
                 </div>
             </section>
 
-            <!-- 推荐入口 -->
-            <div class="recommend-entry" @click="router.push('/anime/recommend')">
-                <Sparkles :size="20" />
-                <span>查看更多推荐</span>
-                <ChevronRight :size="16" />
-            </div>
         </template>
     </div>
 </template>
@@ -1063,25 +1152,197 @@ onUnmounted(() => {
     white-space: nowrap;
 }
 
-/* 推荐入口 */
-.recommend-entry {
+/* ===== 我的收藏按钮（线路一旁） ===== */
+.fav-entry {
+    margin-left: auto;
+    margin-right: 8px;
+}
+.fav-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: 1px solid rgba(194, 12, 12, .25);
+    background: rgba(194, 12, 12, .06);
+    color: #c20c0c;
+    font-size: 13px;
+    border-radius: 18px;
+    cursor: pointer;
+    transition: all .2s;
+    position: relative;
+}
+.fav-toggle-btn:hover {
+    background: rgba(194, 12, 12, .12);
+    border-color: #c20c0c;
+    transform: translateY(-1px);
+}
+.fav-toggle-btn.active {
+    background: #c20c0c;
+    color: #fff;
+    border-color: #c20c0c;
+}
+.fav-badge {
+    background: #c20c0c;
+    color: #fff;
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    min-width: 18px;
+    text-align: center;
+    margin-left: 2px;
+}
+.fav-toggle-btn.active .fav-badge {
+    background: #fff;
+    color: #c20c0c;
+}
+
+/* ===== 收藏面板（侧滑） ===== */
+.fav-panel {
+    position: fixed;
+    top: 60px;
+    right: 0;
+    bottom: 80px;
+    width: 320px;
+    background: #fff;
+    box-shadow: -8px 0 32px rgba(0, 0, 0, .12);
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid #eee;
+}
+.fav-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid #f0f0f0;
+    flex-shrink: 0;
+}
+.fav-panel-header h3 {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #c20c0c;
+}
+.fav-count {
+    background: rgba(194, 12, 12, .1);
+    color: #c20c0c;
+    font-size: 11px;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+}
+.fav-close {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    color: #999;
+    border-radius: 50%;
+    cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 14px;
-    background: #fff;
-    border-radius: 8px;
-    color: #c20c0c;
-    cursor: pointer;
-    transition: all 0.2s;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
-    margin-bottom: 20px;
+    transition: all .15s;
 }
+.fav-close:hover { background: #f5f5f5; color: #c20c0c; }
 
-.recommend-entry:hover {
-    background: #c20c0c;
-    color: #fff;
+.fav-empty {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: #ccc;
+    text-align: center;
+}
+.fav-empty p { margin: 0; font-size: 14px; color: #999; }
+.fav-empty small { font-size: 12px; color: #bbb; }
+
+.fav-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+.fav-list::-webkit-scrollbar { width: 6px; }
+.fav-list::-webkit-scrollbar-thumb { background: #eee; border-radius: 3px; }
+.fav-list::-webkit-scrollbar-thumb:hover { background: #c20c0c; }
+
+.fav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background .15s;
+}
+.fav-item:hover { background: rgba(194, 12, 12, .06); }
+.fav-cover {
+    width: 44px;
+    height: 60px;
+    border-radius: 4px;
+    overflow: hidden;
+    background: #f5f5f5;
+    flex-shrink: 0;
+}
+.fav-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.fav-cover-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: #ccc;
+}
+.fav-info {
+    flex: 1;
+    min-width: 0;
+}
+.fav-title {
+    font-size: 13px;
+    font-weight: 500;
+    color: #333;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-bottom: 4px;
+}
+.fav-date {
+    font-size: 11px;
+    color: #999;
+}
+.fav-remove {
+    width: 26px;
+    height: 26px;
+    border: none;
+    background: transparent;
+    color: #bbb;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all .15s;
+    flex-shrink: 0;
+}
+.fav-remove:hover { background: rgba(194, 12, 12, .1); color: #c20c0c; }
+
+/* 面板侧滑过渡 */
+.fav-slide-enter-active, .fav-slide-leave-active {
+    transition: transform .25s cubic-bezier(0.4, 0, 0.2, 1), opacity .25s;
+}
+.fav-slide-enter-from, .fav-slide-leave-to {
+    transform: translateX(100%);
+    opacity: 0;
 }
 
 /* 骨架屏 */

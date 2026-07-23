@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { movieHome, movieSearch } from '../api'
+import { movieHome, movieSearch, movieSources } from '../api'
 import { useMessageStore } from '../store/message'
 import { useSearchHistoryStore } from '../store/searchHistory'
 import SearchSuggest from '../components/SearchSuggest.vue'
@@ -32,10 +32,19 @@ async function refreshCurrent() {
 }
 
 // ===== 源配置 =====
-const sources = [
-    { id: 'smdyu', label: '神马电影', desc: '主源·资源全' }
-]
+const sources = ref([])
 const currentSource = ref('smdyu')
+async function loadSources() {
+    try {
+        const res = await movieSources()
+        if (res?.success && res.data) {
+            sources.value = Object.values(res.data)
+            if (sources.value.length && !sources.value.find(s => s.id === currentSource.value)) {
+                currentSource.value = sources.value[0].id
+            }
+        }
+    } catch (e) { /* 降级用默认源 */ }
+}
 
 // ===== 数据 =====
 const homeData = ref({ latest: [], hot: [], ranking: [] })
@@ -196,7 +205,7 @@ function restoreSearchState() {
             return false
         }
         keyword.value = state.keyword || ''
-        currentSource.value = state.source || 'smdyu'
+        currentSource.value = state.source || currentSource.value
         searchResultsRaw.value = state.results || []
         currentPage.value = state.page || 1
         searchMode.value = true
@@ -207,6 +216,13 @@ function restoreSearchState() {
 const onSelectSuggest = (kw) => {
     keyword.value = kw
     handleSearch()
+}
+// "您可能再找"实时搜索结果点击：movie → 跳转到影视详情页
+const onSelectItem = (item) => {
+    showSearchSuggest.value = false
+    if (item?.type === 'movie' && item.id) {
+        router.push(`/movie/${item.source || 'smdyu'}/${item.id}`)
+    }
 }
 const onSearchFocus = () => {
     if (blurTimer) { clearTimeout(blurTimer); blurTimer = null }
@@ -242,7 +258,8 @@ const exitSearch = () => {
 
 import { useRoute } from 'vue-router'
 const route = useRoute()
-onMounted(() => {
+onMounted(async () => {
+    await loadSources()
     // 路由 query.kw 自动搜索（从分类导航进入）
     if (route.query.kw) {
         keyword.value = route.query.kw
@@ -302,6 +319,7 @@ onUnmounted(() => { stopCarousel() })
                 :query="keyword"
                 :visible="showSearchSuggest"
                 @select="onSelectSuggest"
+                @select-item="onSelectItem"
             />
             <button class="search-btn" @click="handleSearch" :disabled="searchLoading">
                 <Loader2 v-if="searchLoading" :size="14" class="spin" />

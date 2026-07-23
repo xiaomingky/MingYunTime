@@ -1,12 +1,12 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { movieDetail, movieParsePlayUrl } from '../api'
+import { movieDetail, movieParsePlayUrl, downloadVideo } from '../api'
 import { useMessageStore } from '../store/message'
 import BiliPlayer from '../components/BiliPlayer.vue'
 import PlayDisclaimer from '../components/PlayDisclaimer.vue'
 import {
-    ChevronLeft, Loader2, Film, RefreshCw
+    ChevronLeft, Loader2, Film, RefreshCw, Download
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -157,6 +157,54 @@ onMounted(() => { loadDetail() })
 onBeforeUnmount(() => {
     playUrl.value = ''
 })
+
+// ===== 下载当前剧集 =====
+const downloadingEp = ref(false)
+const handleDownloadEpisode = async () => {
+    if (!currentEpisode.value) {
+        messageStore.warning('请先选择要下载的集数')
+        return
+    }
+    if (!playUrl.value) {
+        messageStore.warning('当前无播放地址，无法下载')
+        return
+    }
+    if (playType.value !== 'm3u8') {
+        messageStore.warning('当前为嵌入播放模式，无直链可下载。请切换到直链源（如 360资源/非凡资源）后再下载')
+        return
+    }
+    if (downloadingEp.value) {
+        messageStore.info('正在下载中，请查看右下角下载列表')
+        return
+    }
+    downloadingEp.value = true
+    try {
+        const epTitle = currentEpisode.value.title || '第1集'
+        const name = `${detail.value?.title || '影视'} - ${epTitle}`
+        // 从播放地址推导 Referer，避免 CDN 403
+        let headers = ''
+        try {
+            const u = new URL(playUrl.value)
+            headers = `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36\r\nReferer: ${u.origin}/\r\n`
+        } catch (e) { /* 非 URL，用默认 */ }
+        const result = await downloadVideo({
+            url: playUrl.value,
+            name,
+            type: 'm3u8',
+            headers,
+            category: 'movie'
+        })
+        if (result?.success) {
+            messageStore.success(`已开始下载：${name}（进度见右下角）`, 3000)
+        } else if (!result?.canceled) {
+            messageStore.error('下载失败：' + (result?.error || '未知错误'))
+        }
+    } catch (e) {
+        messageStore.error('下载失败：' + (e.message || e))
+    } finally {
+        downloadingEp.value = false
+    }
+}
 </script>
 
 <template>
@@ -254,6 +302,17 @@ onBeforeUnmount(() => {
 
                     <div class="episodes-header">
                         <span class="ep-title">选集 ({{ episodes.length }})</span>
+                        <button
+                            class="ep-download-btn"
+                            :class="{ active: downloadingEp }"
+                            :disabled="!currentEpisode || playType !== 'm3u8'"
+                            :title="!currentEpisode ? '请先选择集数' : (playType !== 'm3u8' ? '当前源无直链，无法下载' : '下载当前集')"
+                            @click="handleDownloadEpisode"
+                        >
+                            <Loader2 v-if="downloadingEp" :size="14" class="spin" />
+                            <Download v-else :size="14" />
+                            <span>下载当前集</span>
+                        </button>
                     </div>
 
                     <div v-if="episodes.length === 0" class="ep-empty">暂无集数</div>

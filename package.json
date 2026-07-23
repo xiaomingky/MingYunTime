@@ -1,6 +1,6 @@
 {
   "name": "music-player",
-  "version": "1.8.4",
+  "version": "1.9.0",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -28,6 +28,7 @@
     "flac-metadata": "^0.1.1",
     "flv.js": "^1.6.2",
     "hls.js": "^1.6.16",
+    "iconv-lite": "^0.6.3",
     "jss": "^10.10.0",
     "jss-preset-default": "^10.10.0",
     "lucide-vue-next": "^0.446.0",
@@ -60,7 +61,8 @@
       "package.json"
     ],
     "extraResources": [
-      "font/**"
+      "font/**",
+      "resources/**"
     ],
     "win": {
       "icon": "build/icon.png",
@@ -74,11 +76,7 @@
       ]
     },
     "artifactName": "${productName} Setup ${version}.${ext}",
-    "publish": {
-      "provider": "github",
-      "owner": "xiaomingky",
-      "repo": "MingYunTime"
-    },
+    "publish": null,
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,

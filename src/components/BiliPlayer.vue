@@ -4,6 +4,7 @@
 // 自定义控制条：进度条(带缓冲+预览) / 音量 / 全屏 / 分辨率 / 快捷键 / 自动隐藏
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Hls from 'hls.js'
+import flvjs from 'flv.js'
 import {
     Play, Pause, Volume2, Volume1, VolumeX,
     Maximize, Minimize, Loader2, Film, RefreshCw, SkipBack, SkipForward, Repeat
@@ -11,7 +12,7 @@ import {
 
 const props = defineProps({
     src: { type: String, default: '' },
-    playType: { type: String, default: 'm3u8' }, // m3u8 | direct
+    playType: { type: String, default: 'm3u8' }, // m3u8 | direct | flv | live
     badge: { type: String, default: '' },
     autoplay: { type: Boolean, default: true },
     hasPrev: { type: Boolean, default: false },
@@ -61,6 +62,27 @@ const hoverTime = ref(null)
 const hoverPercent = ref(0)
 
 let hls = null
+let flvPlayer = null
+
+// 是否直播流（无 duration / 实时）
+const isLive = computed(() => {
+    if (props.playType === 'live') return true
+    if (!props.src) return false
+    // m3u8 with #EXT-X-PLAYLIST-TYPE:EVENT/VOID 且无 ENDLIST 视为直播
+    return false
+})
+
+function destroyFlv() {
+    if (flvPlayer) {
+        try {
+            flvPlayer.pause()
+            flvPlayer.unload()
+            flvPlayer.detachMediaElement()
+            flvPlayer.destroy()
+        } catch (e) {}
+        flvPlayer = null
+    }
+}
 
 // ===== 计算属性 =====
 const playedPercent = computed(() => duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0)
@@ -371,12 +393,13 @@ function onKeydown(e) {
     showControls()
 }
 
-// ===== HLS 加载 =====
+// ===== HLS / FLV 加载 =====
 function destroyHls() {
     if (hls) {
         try { hls.destroy() } catch (e) {}
         hls = null
     }
+    destroyFlv()
     const v = videoEl.value
     if (v) {
         try { v.pause(); v.removeAttribute('src'); v.load() } catch (e) {}
@@ -393,13 +416,43 @@ function loadSource(url) {
     loading.value = true
     v.loop = isLooping.value
 
+    // FLV 流（flv.js）
+    if (props.playType === 'flv' || /\.flv(\?|$)/i.test(url)) {
+        if (flvjs.isSupported()) {
+            flvPlayer = flvjs.createPlayer({
+                type: 'flv',
+                url: url,
+                isLive: props.playType === 'live' || props.playType === 'flv' && /live|stream/i.test(url)
+            }, {
+                enableWorker: true,
+                enableStashBuffer: false,
+                stashInitialSize: 128,
+                lazyLoad: false,
+                autoCleanupSourceBuffer: true
+            })
+            flvPlayer.attachMediaElement(v)
+            flvPlayer.on(flvjs.Events.ERROR, (errType, errDetail) => {
+                playerError.value = 'FLV 播放失败：' + (errDetail || errType)
+                loading.value = false
+                emit('error', playerError.value)
+            })
+            flvPlayer.load()
+            if (props.autoplay) v.play().then(() => { loading.value = false }).catch(() => { loading.value = false })
+            return
+        }
+        playerError.value = '当前环境不支持 FLV 播放（需 flv.js）'
+        loading.value = false
+        emit('error', playerError.value)
+        return
+    }
+
     // 原生 HLS（Safari）
     if (v.canPlayType('application/vnd.apple.mpegurl') && /\.m3u8/i.test(url)) {
         v.src = url
         v.play().then(() => { loading.value = false }).catch(() => { loading.value = false })
         return
     }
-    // 直链非 m3u8
+    // 直链非 m3u8（mp4/webm 等）
     if (!/\.m3u8/i.test(url)) {
         v.src = url
         v.play().then(() => { loading.value = false }).catch(() => { loading.value = false })
