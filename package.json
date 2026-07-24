@@ -1,6 +1,6 @@
 {
   "name": "music-player",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -32,6 +32,7 @@
     "jss": "^10.10.0",
     "jss-preset-default": "^10.10.0",
     "lucide-vue-next": "^0.446.0",
+    "mpegts.js": "^1.8.0",
     "music-metadata": "^11.12.3",
     "node-id3": "^0.2.9",
     "pinia": "^3.0.4",

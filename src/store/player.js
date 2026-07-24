@@ -35,6 +35,7 @@ export const usePlayerStore = defineStore('player', {
         currentMvUrl: '',
         currentMvTitle: '', // MV 实际标题（解决播放时显示歌曲名的问题）
         currentMvAudioUrl: '', // DASH 音视频分离时的音频地址（下载时合并用）
+        currentMvPlayType: '', // 播放类型提示：m3u8/flv/live/direct，优先于 URL 后缀判断
         mvSearchCandidates: [], // 网易云 MV 搜索结果（供 UI 选择）
         showMvSearchPicker: false, // 是否显示 MV 选择弹层
         showDesktopLyrics: localStorage.getItem('show_desktop_lyrics') === 'true',
@@ -1122,7 +1123,7 @@ export const usePlayerStore = defineStore('player', {
             useMessageStore().info('本地未找到匹配的MV。提示：将视频文件放在歌曲同目录下，或在歌曲目录下创建 mv 文件夹，视频文件名需与歌曲名一致；或点击"线上"用网易云 MV API 匹配')
             return false
         },
-        // 线上：用网易云 MV 搜索 API 按歌名匹配
+        // 线上：用网易云 MV 搜索 API 按歌名+作者匹配
         // 返回 true 表示已开始播放或弹出了选择面板
         async playOnlineMv() {
             if (!this.currentSong.name) return false
@@ -1137,29 +1138,46 @@ export const usePlayerStore = defineStore('player', {
                     useMessageStore().warning('网易云未搜索到该歌曲的 MV')
                     return false
                 }
-                // 按歌名相似度排序，挑出最匹配的
-                const songName = (this.currentSong.name || '').toLowerCase()
-                const artistName = (this.currentSong.artist || this.currentSong.ar?.[0]?.name || '').toLowerCase()
+                // 按歌名+作者相似度排序，挑出最匹配的
+                const songName = (this.currentSong.name || '').toLowerCase().trim()
+                // 当前歌曲的作者可能用 / 连接多个歌手，拆分成数组用于匹配
+                const artistRaw = this.currentSong.artist || this.currentSong.ar?.[0]?.name || ''
+                const artistNames = artistRaw.split('/').map(s => s.toLowerCase().trim()).filter(Boolean)
                 const scored = res.mvs.map(m => {
-                    const n = (m.name || '').toLowerCase()
+                    const n = (m.name || '').toLowerCase().trim()
+                    const mvArtist = (m.artistName || '').toLowerCase().trim()
                     let score = 0
+                    // 歌名匹配
                     if (n === songName) score += 3
                     else if (n.includes(songName) || songName.includes(n)) score += 2
                     else score += 1
-                    if (artistName && (m.artistName || '').toLowerCase().includes(artistName)) score += 1
+                    // 作者匹配：检查 MV 作者是否包含当前歌曲的任意一个歌手
+                    // （之前方向反了：用 m.artistName.includes(artistRaw) 导致多歌手永远匹配失败）
+                    let artistMatched = false
+                    if (artistNames.length && mvArtist) {
+                        artistMatched = artistNames.some(a => mvArtist.includes(a) || a.includes(mvArtist))
+                    }
+                    if (artistMatched) score += 3  // 作者匹配权重与歌名相同，确保作者匹配的 MV 明显领先
                     if (m.playCount) score += Math.min(0.5, m.playCount / 1000000)
-                    return { ...m, _score: score }
+                    return { ...m, _score: score, _artistMatched: artistMatched }
                 })
                 scored.sort((a, b) => b._score - a._score)
 
-                // 只有一个候选 或 最高分明显领先：直接播放
-                if (scored.length === 1 || scored[0]._score > scored[1]?._score) {
-                    const best = scored[0]
+                const best = scored[0]
+                const second = scored[1]
+                // 只有一个候选，或最高分作者匹配且明显领先：直接播放
+                // 如果最高分作者不匹配，说明可能是同名不同人的歌，弹选择面板让用户确认
+                if (scored.length === 1) {
                     await this.playMv(best.id, best.name)
                     useMessageStore().success(`正在播放线上 MV：${best.name}`, 2500)
                     return true
                 }
-                // 多个候选分接近：弹选择面板
+                if (best._artistMatched && best._score > (second?._score || 0)) {
+                    await this.playMv(best.id, best.name)
+                    useMessageStore().success(`正在播放线上 MV：${best.name} - ${best.artistName}`, 2500)
+                    return true
+                }
+                // 多个候选分接近 或 最高分作者不匹配：弹选择面板
                 this.mvSearchCandidates = scored.slice(0, 6)
                 this.showMvSearchPicker = true
                 return true

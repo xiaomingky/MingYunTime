@@ -143,20 +143,47 @@ function createWindow() {
     // 接入统一下载管理器
     setDownloadManagerWindow(win)
 
-    // 为 B站 CDN 请求注入 Referer（B站视频流需要 Referer: https://www.bilibili.com/ 才能访问）
+    // 为 B站/虎牙/斗鱼/Twitch CDN 请求注入 Referer（各平台 CDN 有防盗链）
+    // 注意：session.webRequest.onBeforeSendHeaders 多次注册会互相覆盖，必须合并到一次注册中
     session.defaultSession.webRequest.onBeforeSendHeaders(
-        { urls: ['https://*.bilivideo.com/*', 'http://*.bilivideo.com/*', 'https://*.bilivideo.cn/*', 'http://*.bilivideo.cn/*'] },
+        {
+            urls: [
+                'https://*.bilivideo.com/*', 'http://*.bilivideo.com/*',
+                'https://*.bilivideo.cn/*', 'http://*.bilivideo.cn/*',
+                'https://*.hdslb.com/*', 'http://*.hdslb.com/*',
+                // Twitch CDN 域名（usher/playlist/hls）— Twitch CDN 防盗链较宽松，但仍注入 Origin/Referer 以防万一
+                'https://*.ttvnw.net/*', 'http://*.ttvnw.net/*',
+                'https://*.hls.ttvnw.net/*', 'http://*.hls.ttvnw.net/*',
+                // 虎牙 CDN 域名（flv.huya.com / hls.huya.com）
+                'https://*.flv.huya.com/*', 'http://*.flv.huya.com/*',
+                'https://*.hls.huya.com/*', 'http://*.hls.huya.com/*',
+                // 斗鱼 CDN 域名（douyucdn / douyuscdn / hdslb）
+                'https://*.douyucdn.com/*', 'http://*.douyucdn.com/*',
+                'https://*.douyuscdn.com/*', 'http://*.douyuscdn.com/*',
+                'https://*.douyucdn2.com/*', 'http://*.douyucdn2.com/*'
+            ]
+        },
         (details, callback) => {
-            details.requestHeaders['Referer'] = 'https://www.bilibili.com/'
-            details.requestHeaders['User-Agent'] = PARSE_UA
-            callback({ requestHeaders: details.requestHeaders })
-        }
-    )
-    // 为 B站图片 CDN 注入 Referer（头像等图片有防盗链，需要 Referer: https://www.bilibili.com/）
-    session.defaultSession.webRequest.onBeforeSendHeaders(
-        { urls: ['https://*.hdslb.com/*', 'http://*.hdslb.com/*'] },
-        (details, callback) => {
-            details.requestHeaders['Referer'] = 'https://www.bilibili.com/'
+            const u = details.url
+            if (/bilivideo\.(com|cn)|hdslb\.com/i.test(u)) {
+                details.requestHeaders['Referer'] = 'https://www.bilibili.com/'
+                if (/bilivideo\.(com|cn)/i.test(u)) {
+                    details.requestHeaders['User-Agent'] = PARSE_UA
+                }
+            } else if (/ttvnw\.net/i.test(u)) {
+                // Twitch CDN：注入 Origin 和 Referer
+                details.requestHeaders['Origin'] = 'https://www.twitch.tv'
+                details.requestHeaders['Referer'] = 'https://www.twitch.tv/'
+                details.requestHeaders['User-Agent'] = PARSE_UA
+            } else if (/huya\.com/i.test(u)) {
+                // 虎牙 CDN：注入 Referer
+                details.requestHeaders['Referer'] = 'https://www.huya.com/'
+                details.requestHeaders['User-Agent'] = PARSE_UA
+            } else if (/douyu(cdn|scdn)?2?\.com/i.test(u)) {
+                // 斗鱼 CDN：注入 Referer
+                details.requestHeaders['Referer'] = 'https://www.douyu.com/'
+                details.requestHeaders['User-Agent'] = PARSE_UA
+            }
             callback({ requestHeaders: details.requestHeaders })
         }
     )
@@ -702,6 +729,505 @@ ipcMain.handle('video-download-cancel', async (_, { downloadId }) => {
 // 返回 { success, streams: [{url, type, title}], pageUrl }
 const PARSE_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
+// ===== B站直播解析 =====
+// 输入直播间地址（live.bilibili.com/xxx），调用官方 API 获取直播流（flv/hls）
+async function parseBilibiliLive(target, addStream) {
+    let roomId = ''
+    // 提取房间号：live.bilibili.com/1883358196 或带参数
+    const m = target.match(/live\.bilibili\.com\/(\d+)/i)
+    if (m) roomId = m[1]
+    if (!roomId) return null
+    try {
+        const biliCookies = loadBiliCookie()
+        const headers = { 'User-Agent': PARSE_UA, 'Referer': 'https://live.bilibili.com/' }
+        if (biliCookies && biliCookies.SESSDATA) headers['Cookie'] = biliCookieString(biliCookies)
+        // 获取房间真实 ID + 直播流
+        const api = `https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo?room_id=${roomId}&protocol=0,1&format=0,1,2&codec=0,1&qn=10000&platform=web&ptype=16`
+        const res = await axios.get(api, { headers, timeout: 15000, validateStatus: () => true })
+        if (res.status !== 200 || res.data?.code !== 0) return null
+        const playurl = res.data?.data?.playurl_info?.playurl
+        if (!playurl?.stream) return null
+        const title = res.data?.data?.room_info?.title || `B站直播 ${roomId}`
+        let added = 0
+        for (const stream of playurl.stream) {
+            const proto = stream.protocol_name  // http_hls / http_flv
+            for (const fmt of (stream.format || [])) {
+                for (const codec of (fmt.codec || [])) {
+                    // url_list 是完整地址（flv 直链）
+                    for (const u of (codec.url_list || [])) {
+                        if (!u) continue
+                        const type = /hls|ts|m3u8/i.test(proto) || /\.m3u8/i.test(u) ? 'm3u8'
+                            : (/flv/i.test(proto) || /\.flv/i.test(u) ? 'flv' : 'live')
+                        addStream(u, type, `${title} (${proto}/${fmt.format_name}/${codec.codec_name})`)
+                        added++
+                    }
+                    // base_url + url_info 拼接（HLS 的 base_url 是 .m3u8 相对路径）
+                    if (codec.base_url && codec.url_info?.length) {
+                        const info = codec.url_info[0]
+                        const fullUrl = (info.host || '') + codec.base_url + (info.extra || '')
+                        if (/^https?:\/\//.test(fullUrl)) {
+                            const type = /\.m3u8/i.test(codec.base_url) ? 'm3u8'
+                                : (/\.flv/i.test(codec.base_url) ? 'flv' : 'live')
+                            addStream(fullUrl, type, `${title} (${proto}/${fmt.format_name}/${codec.codec_name})`)
+                            added++
+                        }
+                    }
+                }
+            }
+        }
+        return added > 0 ? { title } : null
+    } catch (e) {
+        return null
+    }
+}
+
+// ===== 快手视频解析 =====
+// 快手短视频页面 SSR 包含 window.__APOLLO_STATE__，实际格式为：
+//   window.__APOLLO_STATE__={...};(function(){...}());</script>
+// 注意结尾不是直接 </script>，需要更宽松的正则；当前页面 __APOLLO_STATE__ 仅含 UI 配置，
+// 视频数据需由前端 JS 动态拉取。所以同时尝试：
+//   1) HTML SSR 提取（兼容老版本页面）
+//   2) 隐藏 BrowserWindow 渲染后从 DOM/网络请求抓取视频地址（兼容新版页面）
+async function parseKuaishou(target, addStream) {
+    let title = ''
+    let added = 0
+    try {
+        const res = await axios.get(target, {
+            headers: {
+                'User-Agent': PARSE_UA,
+                'Referer': 'https://www.kuaishou.com/',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9'
+            },
+            responseType: 'text',
+            timeout: 15000,
+            validateStatus: () => true,
+            maxRedirects: 5
+        })
+        const html = res.data || ''
+        if (html) {
+            const tm = html.match(/<title>([^<]*)<\/title>/i)
+            if (tm) title = tm[1].replace(/ - 快手.*$/, '').trim()
+            // 提取 __APOLLO_STATE__：兼容 `;(function(){...}());</script>` 结尾
+            let apollo = null
+            const m1 = html.match(/window\.__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\})\s*;/)
+            if (m1) {
+                try { apollo = JSON.parse(m1[1]) } catch (e) {}
+            }
+            // 兜底：用括号平衡匹配
+            if (!apollo) {
+                const idx = html.indexOf('__APOLLO_STATE__')
+                if (idx >= 0) {
+                    const start = html.indexOf('{', idx)
+                    if (start > 0) {
+                        let depth = 0, inStr = false, esc = false, quote = '', end = -1
+                        for (let i = start; i < html.length; i++) {
+                            const c = html[i]
+                            if (esc) { esc = false; continue }
+                            if (inStr) {
+                                if (c === '\\') esc = true
+                                else if (c === quote) inStr = false
+                            } else {
+                                if (c === '"' || c === "'" || c === '`') { inStr = true; quote = c }
+                                else if (c === '{') depth++
+                                else if (c === '}') { depth--; if (depth === 0) { end = i; break } }
+                            }
+                        }
+                        if (end > 0) {
+                            try { apollo = JSON.parse(html.slice(start, end + 1)) } catch (e) {}
+                        }
+                    }
+                }
+            }
+            // 提取 __INITIAL_STATE__
+            let initState = null
+            const m2 = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\})\s*;/)
+            if (m2) {
+                try { initState = JSON.parse(m2[1]) } catch (e) {}
+            }
+            const tryAdd = (obj, depth) => {
+                if (!obj || typeof obj !== 'object' || depth > 8) return
+                if (typeof obj.url === 'string' && /^https?:\/\/.+/.test(obj.url) && /\.(mp4|m3u8|flv)(\?|$|#)/i.test(obj.url)) {
+                    const u = obj.url.replace(/\\\//g, '/')
+                    // 排除快手 UI 资源图片
+                    if (!/\.png|\.jpg|\.svg|\.webp/i.test(u)) {
+                        const type = /\.m3u8/i.test(u) ? 'm3u8' : (/\.flv/i.test(u) ? 'flv' : 'mp4')
+                        addStream(u, type, title)
+                        added++
+                    }
+                }
+                if (typeof obj.mainMvUrls === 'object' && Array.isArray(obj.mainMvUrls)) {
+                    for (const item of obj.mainMvUrls) {
+                        if (item?.url) tryAdd(item, depth + 1)
+                    }
+                }
+                if (typeof obj.playUrl === 'string' && /^https?:\/\//.test(obj.playUrl)) tryAdd({ url: obj.playUrl }, depth + 1)
+                if (typeof obj.photoUrl === 'string' && /^https?:\/\//.test(obj.photoUrl)) tryAdd({ url: obj.photoUrl }, depth + 1)
+                for (const k of Object.keys(obj)) {
+                    if (['url', 'mainMvUrls', 'playUrl', 'photoUrl'].includes(k)) continue
+                    const v = obj[k]
+                    if (v && typeof v === 'object') tryAdd(v, depth + 1)
+                }
+            }
+            if (apollo) tryAdd(apollo, 0)
+            if (initState) tryAdd(initState, 0)
+            // 兜底：正则提取 mp4/m3u8 直链（排除 UI 资源）
+            if (added === 0) {
+                const vm = html.match(/"(https?:\/\/[^"]*(?:kwai|kwaixia|gifshow|ksv|kscube|kslive)[^"]*\.(?:mp4|m3u8|flv)[^"]*)"/i)
+                if (vm) { addStream(vm[1].replace(/\\\//g, '/'), /\.m3u8/i.test(vm[1]) ? 'm3u8' : 'mp4', title); added++ }
+            }
+        }
+    } catch (e) {}
+
+    // SSR 没抓到 → 用隐藏 BrowserWindow 渲染后抓取
+    if (added === 0) {
+        const renderResult = await parseByHiddenWindow(target, 'kuaishou')
+        if (renderResult?.title && !title) title = renderResult.title
+        for (const s of (renderResult?.streams || [])) {
+            addStream(s.url, s.type, title || renderResult.title)
+            added++
+        }
+    }
+    return added > 0 ? { title } : null
+}
+
+// ===== 抖音视频解析 =====
+// 抖音页面已全面 JS 渲染，HTML 中无 _ROUTER_DATA/RENDER_DATA 等任何 SSR 视频数据。
+// 官方 detail API 需要 X-Bogus/a_bogus 签名（算法复杂且经常变动），纯 Node 难以稳定实现。
+// 因此 SSR 提取失败后，直接走隐藏 BrowserWindow 渲染方案（让 Chromium 完整执行 JS 后抓取 video src）。
+async function parseDouyin(target, addStream) {
+    let title = ''
+    let added = 0
+    try {
+        // 先跟随短链接跳转，拿到真实 URL（提取 aweme_id 并获取页面标题）
+        const res = await axios.get(target, {
+            headers: {
+                'User-Agent': PARSE_UA,
+                'Referer': 'https://www.douyin.com/',
+                'Cookie': 'msToken=abcdef0123456789; ttwid=1',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'zh-CN,zh;q=0.9'
+            },
+            responseType: 'text',
+            timeout: 15000,
+            validateStatus: () => true,
+            maxRedirects: 10
+        })
+        const html = res.data || ''
+        if (html) {
+            const tm = html.match(/<title>([^<]*)<\/title>/i)
+            if (tm) title = tm[1].replace(/ - 抖音.*$/, '').replace(/【.*?】/g, '').trim()
+            // 兼容旧版页面：尝试 _ROUTER_DATA / RENDER_DATA
+            let routerData = null
+            const m1 = html.match(/<script[^>]*id="_ROUTER_DATA"[^>]*>([\s\S]*?)<\/script>/i)
+            if (m1) {
+                try { routerData = JSON.parse(m1[1].trim()) } catch (e) {}
+            }
+            if (!routerData) {
+                const m2 = html.match(/<script[^>]*id="RENDER_DATA"[^>]*>([\s\S]*?)<\/script>/i)
+                if (m2) {
+                    try { routerData = JSON.parse(decodeURIComponent(m2[1].trim())) } catch (e) {}
+                }
+            }
+            const tryAdd = (obj, depth) => {
+                if (!obj || typeof obj !== 'object' || depth > 8) return
+                if (typeof obj.url === 'string' && /^https?:\/\/.+/.test(obj.url) && /\.(mp4|m3u8|flv)(\?|$|#)/i.test(obj.url)) {
+                    const u = obj.url.replace(/\\\//g, '/')
+                    const type = /\.m3u8/i.test(u) ? 'm3u8' : (/\.flv/i.test(u) ? 'flv' : 'mp4')
+                    addStream(u, type, title)
+                    added++
+                }
+                if (Array.isArray(obj.url_list)) {
+                    for (const u of obj.url_list) {
+                        if (typeof u === 'string' && /^https?:\/\//.test(u)) tryAdd({ url: u }, depth + 1)
+                    }
+                }
+                if (typeof obj.play_addr === 'object') tryAdd(obj.play_addr, depth + 1)
+                if (typeof obj.playApi === 'string' && /^https?:\/\//.test(obj.playApi)) tryAdd({ url: obj.playApi }, depth + 1)
+                for (const k of Object.keys(obj)) {
+                    if (['url', 'url_list', 'play_addr', 'playApi'].includes(k)) continue
+                    const v = obj[k]
+                    if (v && typeof v === 'object') tryAdd(v, depth + 1)
+                }
+            }
+            if (routerData) tryAdd(routerData, 0)
+            // 兜底：正则提取直链
+            if (added === 0) {
+                const vm = html.match(/"(https?:\/\/[^"]*(?:douyinvod|douyin\.com|bytecdn|bytedance|ixigua)[^"]*\.(?:mp4|m3u8)[^"]*)"/i)
+                if (vm) { addStream(vm[1].replace(/\\\//g, '/'), 'mp4', title); added++ }
+                if (added === 0) {
+                    const vm2 = html.match(/"(https?:\/\/[^"]+\.mp4[^"]*)"/i)
+                    if (vm2) { addStream(vm2[1].replace(/\\\//g, '/'), 'mp4', title); added++ }
+                }
+            }
+        }
+    } catch (e) {}
+
+    // SSR 没抓到 → 用隐藏 BrowserWindow 渲染后抓取（这是抖音唯一可靠的解析路径）
+    if (added === 0) {
+        const renderResult = await parseByHiddenWindow(target, 'douyin')
+        if (renderResult?.title && !title) title = renderResult.title
+        for (const s of (renderResult?.streams || [])) {
+            addStream(s.url, s.type, title || renderResult.title)
+            added++
+        }
+    }
+    return added > 0 ? { title } : null
+}
+
+// ===== 基于 BrowserWindow 的渲染解析（通用）=====
+// 用隐藏窗口加载页面，等 JS 完整渲染后从 <video> DOM 元素和网络请求中提取视频地址。
+// 适用于抖音、快手等完全 JS 渲染的页面，绕过 X-Bogus 签名问题。
+//
+// 核心策略（解决"抓到红包广告"问题）：
+//   1. 网络层：只收集来自已知视频 CDN 域名的请求（douyinvod/bytecdn/kwaixia 等），
+//      广告通常来自不同域名，直接被过滤
+//   2. DOM 层：优先选择页面中尺寸最大的 <video> 元素（主视频远大于广告），
+//      跳过 blob: URL（MSE 流无法直接用）
+//   3. 自动播放：静音播放视频以触发视频流网络请求
+//   4. 排序：DOM 主视频 > CDN 网络请求 > 全局对象 > 性能接口
+async function parseByHiddenWindow(target, source) {
+    return new Promise((resolve) => {
+        let bw = null
+        let settled = false
+        const networkUrls = []  // 监听到的视频流 URL（按域名过滤，有序）
+
+        // 已知视频 CDN 域名正则（只收集这些域名的请求，排除广告）
+        const cdnPattern = source === 'douyin'
+            ? /douyinvod\.com|bytecdn\.cn|bytedance\.com|ixigua\.com|byteimg\.com|douyinstatic/i
+            : /kwaixia\.com|kwai\.com|gifshow\.com|kwimgs\.com|kwaicdn\.com|kscube\.com|ksapisrc\.com/i
+
+        const finish = (result) => {
+            if (settled) return
+            settled = true
+            try { if (bw) { bw.destroy(); bw = null } } catch (e) {}
+            resolve(result)
+        }
+        // 超时保护：35 秒
+        const timer = setTimeout(() => {
+            finish({ streams: [], title: '', timeout: true })
+        }, 35000)
+
+        try {
+            bw = new BrowserWindow({
+                width: 1280, height: 800,
+                show: false,
+                frame: false,
+                webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                    sandbox: false,
+                    webSecurity: false,
+                    images: false,
+                    // 允许自动播放，这样页面加载后视频会自动开始播放，触发视频流请求
+                    autoplayPolicy: 'no-user-gesture-required',
+                    // 使用独立 partition，避免覆盖主窗口 defaultSession 的 webRequest 处理器
+                    partition: 'temp-parser'
+                }
+            })
+
+            // === 网络请求监听：只收集来自已知 CDN 域名的视频流 ===
+            // 用 onBeforeRequest + URL filter 粗筛，listener 中再用 cdnPattern 精筛
+            bw.webContents.session.webRequest.onBeforeRequest(
+                { urls: ['*://*/*.mp4*', '*://*/*.m3u8*', '*://*/*.flv*'] },
+                (details, cb) => {
+                    const u = details.url
+                    // 只收集来自已知视频 CDN 域名的请求，排除广告
+                    if (u && cdnPattern.test(u)) {
+                        networkUrls.push(u)
+                    }
+                    cb({})
+                }
+            )
+
+            // === 注入 Referer（针对抖音/快手 CDN）===
+            const refererHost = source === 'douyin' ? 'https://www.douyin.com/' : 'https://www.kuaishou.com/'
+            bw.webContents.session.webRequest.onBeforeSendHeaders((details, cb) => {
+                const u = details.url
+                if (cdnPattern.test(u) || /douyin\.com|iesdouyin\.com|kuaishou\.com/i.test(u)) {
+                    details.requestHeaders['Referer'] = refererHost
+                    details.requestHeaders['User-Agent'] = PARSE_UA
+                }
+                cb({ requestHeaders: details.requestHeaders })
+            })
+
+            bw.webContents.on('did-finish-load', () => {
+                // 自动静音播放视频，触发视频流网络请求
+                bw.webContents.executeJavaScript(`
+                    try {
+                        const videos = document.querySelectorAll('video');
+                        for (const v of videos) {
+                            v.muted = true;
+                            v.play().catch(() => {});
+                        }
+                        // 尝试点击播放按钮（抖音/快手播放器）
+                        const playBtns = document.querySelectorAll('[class*="play-btn"], [class*="PlayBtn"], [class*="xgplayer-start"], [class*="start-play"]');
+                        for (const btn of playBtns) {
+                            try { btn.click(); } catch (e) {}
+                        }
+                    } catch (e) {}
+                `).catch(() => {})
+
+                // 等待 SPA 渲染完成（多轮检查，每轮 1.5 秒，最多 18 秒）
+                let attempts = 0
+                const maxAttempts = 12
+                const checkInterval = setInterval(async () => {
+                    attempts++
+                    try {
+                        const result = await bw.webContents.executeJavaScript(`
+                            (function() {
+                                const out = { streams: [], title: document.title || '' };
+
+                                // 1. 从 <video> 元素抓取 —— 只选主视频（尺寸最大的）
+                                const videos = document.querySelectorAll('video');
+                                let mainVideoSrc = '';
+                                let mainVideoSize = 0;
+                                for (const v of videos) {
+                                    const src = v.src || v.currentSrc || '';
+                                    // 跳过 blob: URL（MSE 流，无法直接用）
+                                    if (!src || src.startsWith('blob:')) continue;
+                                    if (!/^https?:\\/\\//.test(src)) continue;
+                                    // 计算视频元素尺寸，选最大的（主视频远大于广告）
+                                    const rect = v.getBoundingClientRect();
+                                    const size = rect.width * rect.height;
+                                    // 优先选择正在播放的、尺寸最大的视频
+                                    if (size > mainVideoSize || (!v.paused && size >= mainVideoSize)) {
+                                        mainVideoSize = size;
+                                        mainVideoSrc = src;
+                                    }
+                                }
+                                if (mainVideoSrc) {
+                                    out.streams.push({
+                                        url: mainVideoSrc,
+                                        type: /\\.m3u8/i.test(mainVideoSrc) ? 'm3u8' : (/\\.flv/i.test(mainVideoSrc) ? 'flv' : 'mp4'),
+                                        source: 'dom'
+                                    });
+                                }
+
+                                // 2. 抖音专用：从全局对象抓取 play_addr（深度遍历）
+                                try {
+                                    const objs = [];
+                                    if (window._ROUTER_DATA) objs.push(window._ROUTER_DATA);
+                                    if (window.__INITIAL_STATE__) objs.push(window.__INITIAL_STATE__);
+                                    if (window.__NEXT_DATA__) objs.push(window.__NEXT_DATA__);
+                                    const seen = new Set();
+                                    const walk = (o, d) => {
+                                        if (!o || typeof o !== 'object' || d > 6 || seen.has(o)) return;
+                                        seen.add(o);
+                                        if (Array.isArray(o.url_list)) {
+                                            for (const u of o.url_list) {
+                                                if (typeof u === 'string' && /^https?:\\/\\//.test(u)) {
+                                                    out.streams.push({
+                                                        url: u.replace(/\\\\\\//g, '/'),
+                                                        type: /\\.m3u8/i.test(u) ? 'm3u8' : 'mp4',
+                                                        source: 'global'
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        if (typeof o.playApi === 'string' && /^https?:\\/\\//.test(o.playApi)) {
+                                            out.streams.push({ url: o.playApi, type: 'mp4', source: 'global' });
+                                        }
+                                        for (const k in o) {
+                                            try { walk(o[k], d + 1); } catch (e) {}
+                                        }
+                                    };
+                                    objs.forEach(o => walk(o, 0));
+                                } catch (e) {}
+
+                                // 3. 快手专用：从 __APOLLO_STATE__ 抓取
+                                try {
+                                    if (window.__APOLLO_STATE__) {
+                                        const seen = new Set();
+                                        const walk = (o, d) => {
+                                            if (!o || typeof o !== 'object' || d > 6 || seen.has(o)) return;
+                                            seen.add(o);
+                                            if (typeof o.url === 'string' && /^https?:\\/\\//.test(o.url) && /\\.(mp4|m3u8|flv)(\\?|$|#)/i.test(o.url)) {
+                                                out.streams.push({
+                                                    url: o.url.replace(/\\\\\\//g, '/'),
+                                                    type: /\\.m3u8/i.test(o.url) ? 'm3u8' : 'mp4',
+                                                    source: 'global'
+                                                });
+                                            }
+                                            if (typeof o.photoUrl === 'string' && /^https?:\\/\\//.test(o.photoUrl)) {
+                                                out.streams.push({ url: o.photoUrl, type: 'mp4', source: 'global' });
+                                            }
+                                            if (typeof o.playUrl === 'string' && /^https?:\\/\\//.test(o.playUrl)) {
+                                                out.streams.push({ url: o.playUrl, type: 'mp4', source: 'global' });
+                                            }
+                                            for (const k in o) {
+                                                try { walk(o[k], d + 1); } catch (e) {}
+                                            }
+                                        };
+                                        walk(window.__APOLLO_STATE__, 0);
+                                    }
+                                } catch (e) {}
+
+                                // 去重
+                                const seen = new Set();
+                                out.streams = out.streams.filter(s => {
+                                    if (seen.has(s.url)) return false;
+                                    seen.add(s.url);
+                                    return true;
+                                });
+                                return out;
+                            })()
+                        `)
+
+                        // 合并网络请求中捕获的 URL（已按 CDN 域名过滤）
+                        for (const u of networkUrls) {
+                            if (!result.streams.find(s => s.url === u)) {
+                                result.streams.push({
+                                    url: u,
+                                    type: /\.m3u8/i.test(u) ? 'm3u8' : (/\.flv/i.test(u) ? 'flv' : 'mp4'),
+                                    source: 'network'
+                                })
+                            }
+                        }
+
+                        // === 最终过滤：只保留来自已知 CDN 域名的 URL ===
+                        // 这一步确保 DOM/全局对象抓取的 URL 也经过 CDN 域名过滤，排除广告
+                        result.streams = result.streams.filter(s => cdnPattern.test(s.url))
+
+                        // === 排序：DOM 主视频优先 > 网络请求 > 全局对象 ===
+                        const priority = { dom: 0, network: 1, global: 2 }
+                        result.streams.sort((a, b) => {
+                            const pa = priority[a.source] ?? 9
+                            const pb = priority[b.source] ?? 9
+                            if (pa !== pb) return pa - pb
+                            // 同来源按 URL 长度降序（主视频 URL 通常更长，包含更多参数）
+                            return b.url.length - a.url.length
+                        })
+
+                        if (result.streams.length > 0 || attempts >= maxAttempts) {
+                            clearInterval(checkInterval)
+                            clearTimeout(timer)
+                            // 清理 source 字段
+                            result.streams = result.streams.map(s => ({ url: s.url, type: s.type }))
+                            finish(result)
+                        }
+                    } catch (e) {
+                        // executeJavaScript 失败：可能页面正在跳转，等下一轮
+                    }
+                }, 1500)
+            })
+
+            bw.webContents.on('did-fail-load', (_, errorCode, errorDescription) => {
+                if (errorCode !== -3 && errorCode !== 0) {  // -3 是中断，0 是成功
+                    clearTimeout(timer)
+                    finish({ streams: [], title: '', error: errorDescription || `load failed (${errorCode})` })
+                }
+            })
+
+            // 加载目标 URL
+            bw.loadURL(target, { userAgent: PARSE_UA })
+        } catch (e) {
+            clearTimeout(timer)
+            finish({ streams: [], title: '', error: e.message })
+        }
+    })
+}
+
 // ===== B站专用解析 =====
 // 从 URL 提取 BV 号（支持 bilibili.com/video/BVxxx、b23.tv 短链、av 号）
 async function extractBvid(target) {
@@ -847,6 +1373,504 @@ async function parseBilibili(target, addStream) {
     return addedAny ? { title: pageTitle } : null
 }
 
+// ===== B站番剧/电影解析 =====
+// 番剧/电影 URL 格式：
+//   https://www.bilibili.com/bangumi/play/ep737427/   (ep_id)
+//   https://www.bilibili.com/bangumi/play/ss12956/    (season_id)
+// 走 /pgc/ API 域名，与普通视频 /x/ 不同；返回字段为 result（普通视频是 data）
+// 提取番剧 ep_id 或 season_id（含 b23.tv 短链跳转）
+async function extractBangumiId(target) {
+    let m = target.match(/\/bangumi\/play\/ep(\d+)/i)
+    if (m) return { epId: m[1] }
+    m = target.match(/\/bangumi\/play\/ss(\d+)/i)
+    if (m) return { seasonId: m[1] }
+    // b23.tv 短链：跟随重定向获取最终 URL
+    if (/b23\.tv/i.test(target)) {
+        try {
+            let current = target
+            for (let i = 0; i < 5; i++) {
+                const r = await axios.get(current, { maxRedirects: 0, validateStatus: () => true, timeout: 10000, headers: { 'User-Agent': PARSE_UA } })
+                if (r.status >= 300 && r.status < 400 && r.headers.location) {
+                    current = r.headers.location
+                    const em = current.match(/\/bangumi\/play\/ep(\d+)/i)
+                    if (em) return { epId: em[1] }
+                    const sm = current.match(/\/bangumi\/play\/ss(\d+)/i)
+                    if (sm) return { seasonId: sm[1] }
+                } else { break }
+            }
+        } catch (e) {}
+    }
+    return null
+}
+
+// 调用 B站番剧 API 解析视频流
+async function parseBilibiliBangumi(target, addStream) {
+    const idInfo = await extractBangumiId(target)
+    if (!idInfo) return null
+
+    const biliCookies = loadBiliCookie()
+    const isLoggedIn = !!(biliCookies && biliCookies.SESSDATA)
+    const biliHeaders = { 'User-Agent': PARSE_UA, 'Referer': 'https://www.bilibili.com/' }
+    if (isLoggedIn) biliHeaders['Cookie'] = biliCookieString(biliCookies)
+
+    // 1. 获取 season 信息和剧集列表
+    let seasonData
+    try {
+        const params = idInfo.epId ? { ep_id: idInfo.epId } : { season_id: idInfo.seasonId }
+        const r = await axios.get('https://api.bilibili.com/pgc/view/web/season', {
+            params, headers: biliHeaders, timeout: 15000, validateStatus: () => true
+        })
+        if (r.data?.code !== 0) return null
+        seasonData = r.data.result
+    } catch (e) { return null }
+
+    const title = seasonData.title || 'B站番剧'
+    const episodes = seasonData.episodes || []
+    if (episodes.length === 0) return null
+
+    // 找到目标 ep（如果是 ep_id 则直接匹配，否则用第一个）
+    let targetEp = null
+    if (idInfo.epId) {
+        targetEp = episodes.find(e => String(e.id) === idInfo.epId)
+    }
+    if (!targetEp) targetEp = episodes[0]
+
+    const qualityMap = { 127: '8K', 126: '杜比视界', 125: 'HDR', 120: '4K', 116: '1080P60', 112: '1080P高码率', 80: '1080P', 74: '720P60', 64: '720P', 32: '480P', 16: '360P', 6: '240P' }
+    const loggedInfo = isLoggedIn ? '（已登录）' : '（未登录·仅低画质）'
+    const epTitle = `${title} 第${targetEp.title}话${targetEp.long_title ? ' ' + targetEp.long_title : ''}`.trim()
+    let addedAny = false
+
+    // === 1. 登录后优先尝试 DASH 格式（fnval=16），获取高画质（音视频分离）===
+    if (isLoggedIn) {
+        try {
+            const r = await axios.get('https://api.bilibili.com/pgc/player/web/playurl', {
+                params: { ep_id: targetEp.id, cid: targetEp.cid, qn: 127, fnval: 16, fourk: 1 },
+                headers: biliHeaders, timeout: 15000, validateStatus: () => true
+            })
+            if (r.data?.code === 0 && r.data.result?.dash) {
+                const dash = r.data.result.dash
+                const audios = (dash.audio || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                const bestAudio = audios[0]
+                const audioUrl = bestAudio ? (bestAudio.baseUrl || bestAudio.base_url) : ''
+                const videos = (dash.video || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                const seenQ = new Set()
+                videos.forEach(v => {
+                    if (seenQ.has(v.id)) return
+                    seenQ.add(v.id)
+                    const qLabel = qualityMap[v.id] || `${v.id}P`
+                    addStream(v.baseUrl || v.base_url, 'mp4', `${epTitle} [${qLabel} 高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
+                    addedAny = true
+                })
+            }
+        } catch (e) {}
+    }
+
+    // === 2. 请求 durl 格式（fnval=1），完整音视频流（有声，画质取决于登录状态）===
+    try {
+        const r = await axios.get('https://api.bilibili.com/pgc/player/web/playurl', {
+            params: { ep_id: targetEp.id, cid: targetEp.cid, qn: 127, fnval: 1, fourk: 1 },
+            headers: biliHeaders, timeout: 15000, validateStatus: () => true
+        })
+        if (r.data?.code === 0 && r.data.result?.durl) {
+            const durl = r.data.result.durl
+            const quality = r.data.result.quality
+            const qLabel = qualityMap[quality] || `${quality}P`
+            durl.forEach((d, i) => {
+                const partTitle = durl.length > 1
+                    ? `${epTitle} - 第${i + 1}段/共${durl.length}段 [${qLabel} 完整·有声]${loggedInfo}`
+                    : `${epTitle} [${qLabel} 完整·有声]${loggedInfo}`
+                addStream(d.url, 'mp4', partTitle, { bili: true })
+            })
+            addedAny = true
+        }
+    } catch (e) {}
+
+    // === 3. 降级：尝试不同清晰度的 durl ===
+    if (!addedAny) {
+        for (const qn of [80, 64, 32, 16]) {
+            try {
+                const r = await axios.get('https://api.bilibili.com/pgc/player/web/playurl', {
+                    params: { ep_id: targetEp.id, cid: targetEp.cid, qn, fnval: 1, fourk: 0 },
+                    headers: biliHeaders, timeout: 15000, validateStatus: () => true
+                })
+                if (r.data?.code === 0 && r.data.result?.durl) {
+                    const durl = r.data.result.durl
+                    const quality = r.data.result.quality
+                    const qLabel = qualityMap[quality] || `${quality}P`
+                    durl.forEach((d, i) => {
+                        const partTitle = durl.length > 1
+                            ? `${epTitle} - 第${i + 1}段/共${durl.length}段 [${qLabel}]${loggedInfo}`
+                            : `${epTitle} [${qLabel}]${loggedInfo}`
+                        addStream(d.url, 'mp4', partTitle, { bili: true })
+                    })
+                    addedAny = true
+                    break
+                }
+            } catch (e) {}
+        }
+    }
+
+    return addedAny ? { title: epTitle } : null
+}
+
+// ===== Twitch 直播流解析 =====
+// Twitch 直播使用 HLS (m3u8) 格式，但需要 token+sig 才能访问 usher.ttvnw.net
+// 解析流程：
+//   1. 从 URL 提取频道名（twitch.tv/blastpremier → blastpremier）
+//   2. 通过 GraphQL API 获取 streamPlaybackAccessToken（token + signature）
+//   3. 构造 usher.ttvnw.net/api/channel/hls/{channel}.m3u8 URL 获取主播放列表
+//   4. 主播放列表包含多个变体流（不同分辨率），每个变体流是独立的 m3u8
+// 关键：使用 playerType="embed"（嵌入式播放器）获取 token，不插入前贴片广告
+// Twitch 网页版公开 Client-ID（非机密，所有浏览器请求都用这个）
+const TWITCH_CLIENT_ID = 'kimne78kx3ncx6brgo4mv6wki5h1ko'
+
+async function parseTwitch(target, addStream) {
+    // 1. 提取频道名
+    let channel = ''
+    let m = target.match(/twitch\.tv\/([A-Za-z0-9_]+)/i)
+    if (m) channel = m[1]
+    if (!channel) return null
+    // 排除 Twitch 的特殊路径
+    if (['directory', 'following', 'downloads', 'jobs', 'turbo', 'p', 'clips', 'videos', 'search'].includes(channel.toLowerCase())) {
+        return null
+    }
+
+    // 2. 通过 GraphQL 获取 streamPlaybackAccessToken
+    // 使用 playerType="embed"（嵌入式播放器），不插入前贴片广告
+    // 同时尝试 "embed" 和 "site" 两个 playerType，embed 优先（无广告）
+    let token = '', sig = ''
+    for (const playerType of ['embed', 'site']) {
+        try {
+            const r = await axios.post('https://gql.twitch.tv/gql', {
+                operationName: 'PlaybackAccessToken_Template',
+                query: `query PlaybackAccessToken_Template($login: String!, $isLive: Boolean!, $vodID: ID!, $isVod: Boolean!, $playerType: String!) {
+                    streamPlaybackAccessToken(channelName: $login, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isLive) {
+                        value signature
+                    }
+                    videoPlaybackAccessToken(id: $vodID, params: {platform: "web", playerBackend: "mediaplayer", playerType: $playerType}) @include(if: $isVod) {
+                        value signature
+                    }
+                }`,
+                variables: {
+                    isLive: true,
+                    login: channel,
+                    isVod: false,
+                    vodID: '',
+                    playerType: playerType
+                }
+            }, {
+                headers: {
+                    'User-Agent': PARSE_UA,
+                    'Client-ID': TWITCH_CLIENT_ID,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 15000, validateStatus: () => true
+            })
+            const data = r.data?.data?.streamPlaybackAccessToken
+            if (data?.value && data?.signature) {
+                token = data.value
+                sig = data.signature
+                break  // 成功获取，跳出循环
+            }
+        } catch (e) {}
+    }
+    if (!token || !sig) return null
+
+    // 3. 构造 usher.ttvnw.net HLS 主播放列表 URL
+    const p = Math.floor(Math.random() * 999999)
+    const hlsUrl = `https://usher.ttvnw.net/api/channel/hls/${channel}.m3u8?player=twitchweb&token=${encodeURIComponent(token)}&sig=${sig}&allow_source=true&allow_audio_only=true&p=${p}&supported_codecs=avc1&fast_bread=true`
+
+    // 4. 获取主播放列表，解析变体流
+    let mainM3u8 = ''
+    try {
+        const r = await axios.get(hlsUrl, {
+            headers: { 'User-Agent': PARSE_UA },
+            timeout: 15000, validateStatus: () => true
+        })
+        if (r.status !== 200 || !r.data) return null
+        mainM3u8 = r.data
+    } catch (e) { return null }
+
+    // 解析 #EXT-X-STREAM-INF 行 + 下一行的 URL
+    const variants = []
+    const lines = mainM3u8.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        if (line.startsWith('#EXT-X-STREAM-INF:')) {
+            const url = (lines[i + 1] || '').trim()
+            if (!url) continue
+            // 提取分辨率和码率
+            const resMatch = line.match(/RESOLUTION=([^,]+)/)
+            const bwMatch = line.match(/BANDWIDTH=(\d+)/)
+            const nameMatch = line.match(/NAME="([^"]+)"/)
+            const codecsMatch = line.match(/CODECS="([^"]+)"/)
+            const resolution = resMatch ? resMatch[1] : ''
+            const bandwidth = bwMatch ? parseInt(bwMatch[1], 10) : 0
+            const name = nameMatch ? nameMatch[1] : ''
+            const codecs = codecsMatch ? codecsMatch[1] : ''
+            variants.push({ url, resolution, bandwidth, name, codecs })
+        }
+    }
+
+    if (variants.length === 0) return null
+
+    // 按码率降序排序（高画质优先）
+    variants.sort((a, b) => b.bandwidth - a.bandwidth)
+
+    // 解析分辨率生成清晰度标签
+    const makeLabel = (v) => {
+        let label = v.name || ''
+        if (v.resolution) {
+            // 1920x1080 → 1080P
+            const h = v.resolution.split('x')[1]
+            if (h) label = label || `${h}P`
+        }
+        if (!label && v.bandwidth) {
+            label = `${Math.round(v.bandwidth / 1000)}kbps`
+        }
+        return label || '未知'
+    }
+
+    const title = `Twitch - ${channel}`
+    for (const v of variants) {
+        const label = makeLabel(v)
+        const type = 'm3u8'
+        const desc = `${title} [${label} 直播]${v.codecs ? ' ' + v.codecs : ''}`
+        addStream(v.url, type, desc)
+    }
+
+    return { title }
+}
+
+// ===== 虎牙直播流解析 =====
+// 虎牙直播页面内嵌 stream: [{ gameLiveInfo, gameStreamInfoList }]
+// 每个 gameStreamInfo 含 sFlvUrl/sStreamName/sFlvAntiCode/sHlsUrl/sHlsAntiCode
+// 直接拼接即可得到 FLV 和 HLS 直播流地址（无需签名计算）
+async function parseHuya(target, addStream) {
+    // 1. 提取房间号（支持 huya.com/123 或 huya.com/xxx）
+    let m = target.match(/huya\.com\/([A-Za-z0-9_]+)/i)
+    if (!m) return null
+    const room = m[1]
+
+    // 2. 获取页面 HTML
+    let html = ''
+    try {
+        const r = await axios.get(`https://www.huya.com/${room}`, {
+            headers: { 'User-Agent': PARSE_UA, 'Referer': 'https://www.huya.com/' },
+            timeout: 15000, validateStatus: () => true
+        })
+        html = r.data || ''
+    } catch (e) { return null }
+    if (!html) return null
+
+    // 3. 用括号平衡匹配提取 stream: [...]
+    const idx = html.indexOf('stream:')
+    if (idx < 0) return null
+    const startArr = html.indexOf('[', idx)
+    if (startArr < 0) return null
+    let depth = 0, inStr = false, esc = false, quote = '', end = -1
+    for (let i = startArr; i < html.length; i++) {
+        const c = html[i]
+        if (esc) { esc = false; continue }
+        if (inStr) {
+            if (c === '\\') esc = true
+            else if (c === quote) inStr = false
+        } else {
+            if (c === '"' || c === "'") { inStr = true; quote = c }
+            else if (c === '[') depth++
+            else if (c === ']') { depth--; if (depth === 0) { end = i; break } }
+        }
+    }
+    if (end < 0) return null
+
+    let streams
+    try { streams = JSON.parse(html.slice(startArr, end + 1)) } catch (e) { return null }
+    if (!streams || streams.length === 0) return null
+
+    // 4. 提取标题
+    const gameLiveInfo = streams[0].gameLiveInfo || {}
+    let title = gameLiveInfo.nick || gameLiveInfo.roomName || `虎牙 - ${room}`
+    if (gameLiveInfo.gameFullName) title += ` - ${gameLiveInfo.gameFullName}`
+
+    // 5. 遍历 gameStreamInfoList 构造直播流 URL
+    const streamInfoList = streams[0].gameStreamInfoList || []
+    if (streamInfoList.length === 0) return null
+
+    let addedAny = false
+    // CDN 优先级：HS(华为)优先（测试中只有 HS 节点 HLS 返回 200，AL/TX 返回 403）
+    // 然后 TX(腾讯) > AL(阿里) > BD
+    const cdnPriority = { HS: 0, TX: 1, AL: 2, BD: 3, HW: 4, HX: 5 }
+    streamInfoList.sort((a, b) => (cdnPriority[a.sCdnType] ?? 9) - (cdnPriority[b.sCdnType] ?? 9))
+
+    // 优先返回所有 HLS 直播流（HLS 直播流更稳定，hls.js 会自动刷新 playlist 获取新分片）
+    for (const info of streamInfoList) {
+        const cdn = info.sCdnType || '?'
+        const streamName = info.sStreamName
+        if (!streamName) continue
+
+        // HLS 直播流（优先返回，直播流 hls.js 会自动刷新 playlist）
+        if (info.sHlsUrl && info.sHlsAntiCode) {
+            const hlsUrl = `${info.sHlsUrl}/${streamName}.${info.sHlsUrlSuffix || 'm3u8'}?${info.sHlsAntiCode}`
+            addStream(hlsUrl, 'm3u8', `${title} [HLS ${cdn}节点 直播]`)
+            addedAny = true
+        }
+    }
+    // FLV 作为备选（延迟更低但浏览器播放稳定性不如 HLS）
+    for (const info of streamInfoList) {
+        const cdn = info.sCdnType || '?'
+        const streamName = info.sStreamName
+        if (!streamName) continue
+        if (info.sFlvUrl && info.sFlvAntiCode) {
+            const flvUrl = `${info.sFlvUrl}/${streamName}.${info.sFlvUrlSuffix || 'flv'}?${info.sFlvAntiCode}`
+            addStream(flvUrl, 'flv', `${title} [FLV ${cdn}节点 直播]`)
+            addedAny = true
+        }
+    }
+
+    return addedAny ? { title } : null
+}
+
+// ===== 斗鱼直播流解析 =====
+// 斗鱼改版后签名函数从 ub98484234 改为 web-encrypt-57bbddd0.js 中的混淆代码
+// 新 API 端点：/lapi/live/getH5PlayV1/{roomId}（不再是 getH5Play）
+// 纯 Node 无法实现新签名算法，方案：
+//   用隐藏 BrowserWindow 加载页面，让 Chromium 执行加密 JS
+//   拦截视频流网络请求（FLV/HLS），直接提取 URL
+async function parseDouyu(target, addStream) {
+    // 1. 提取房间号
+    let m = target.match(/douyu\.com\/([A-Za-z0-9_]+)/i)
+    if (!m) return null
+    const room = m[1]
+    // 排除特殊路径
+    if (['directory', 'following', 'search', 'topic', 'fishsmall'].includes(room.toLowerCase())) {
+        return null
+    }
+
+    // 2. 用隐藏窗口加载页面，拦截视频流请求
+    return new Promise((resolve) => {
+        let bw = null
+        let settled = false
+        const networkUrls = []  // 拦截到的视频流 URL
+
+        // 斗鱼视频 CDN 域名
+        const douyuCdnPattern = /douyucdn|douyuscdn|douyucdn2|akm|tct|wsd|hwcdn|jscdn|txcdn/i
+
+        const finish = (result) => {
+            if (settled) return
+            settled = true
+            try { if (bw) { bw.destroy(); bw = null } } catch (e) {}
+            resolve(result)
+        }
+        const timer = setTimeout(() => {
+            // 超时后返回已收集的流
+            if (networkUrls.length > 0) {
+                let addedAny = false
+                for (const u of networkUrls) {
+                    const type = /\.m3u8/i.test(u) ? 'm3u8' : ( /\.flv/i.test(u) ? 'flv' : 'mp4')
+                    addStream(u, type, `斗鱼 - ${room} [${type.toUpperCase()} 直播]`)
+                    addedAny = true
+                }
+                finish(addedAny ? { title: `斗鱼 - ${room}` } : null)
+            } else {
+                finish(null)
+            }
+        }, 25000)
+
+        try {
+            bw = new BrowserWindow({
+                width: 1280, height: 800, show: false, frame: false,
+                webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                    sandbox: false,
+                    webSecurity: false,
+                    images: false,
+                    autoplayPolicy: 'no-user-gesture-required',
+                    partition: 'temp-parser'
+                }
+            })
+
+            // 拦截视频流请求（FLV/HLS/MP4）
+            bw.webContents.session.webRequest.onBeforeRequest(
+                { urls: ['*://*/*.flv*', '*://*/*.m3u8*', '*://*/*.mp4*'] },
+                (details, cb) => {
+                    const u = details.url
+                    // 只收集斗鱼 CDN 域名的请求
+                    if (u && douyuCdnPattern.test(u)) {
+                        // 去重
+                        if (!networkUrls.includes(u)) {
+                            networkUrls.push(u)
+                        }
+                    }
+                    cb({})
+                }
+            )
+
+            // 注入 Referer
+            bw.webContents.session.webRequest.onBeforeSendHeaders((details, cb) => {
+                const u = details.url
+                if (douyuCdnPattern.test(u) || /douyu\.com/i.test(u)) {
+                    details.requestHeaders['Referer'] = `https://www.douyu.com/${room}`
+                    details.requestHeaders['User-Agent'] = PARSE_UA
+                }
+                cb({ requestHeaders: details.requestHeaders })
+            })
+
+            bw.webContents.on('did-finish-load', () => {
+                // 自动静音播放视频，触发视频流请求
+                bw.webContents.executeJavaScript(`
+                    try {
+                        const videos = document.querySelectorAll('video');
+                        for (const v of videos) {
+                            v.muted = true;
+                            v.play().catch(() => {});
+                        }
+                        // 点击播放按钮
+                        const playBtns = document.querySelectorAll('[class*="play"], [class*="Play"], [class*="start"]');
+                        for (const btn of playBtns) {
+                            try { btn.click(); } catch (e) {}
+                        }
+                    } catch (e) {}
+                `).catch(() => {})
+
+                // 多轮检查：每 2 秒检查一次，看是否已拦截到视频流
+                let attempts = 0
+                const maxAttempts = 10
+                const checkInterval = setInterval(() => {
+                    attempts++
+                    if (networkUrls.length > 0) {
+                        // 已拦截到视频流，立即返回
+                        clearInterval(checkInterval)
+                        clearTimeout(timer)
+                        let addedAny = false
+                        for (const u of networkUrls) {
+                            const type = /\.m3u8/i.test(u) ? 'm3u8' : ( /\.flv/i.test(u) ? 'flv' : 'mp4')
+                            addStream(u, type, `斗鱼 - ${room} [${type.toUpperCase()} 直播]`)
+                            addedAny = true
+                        }
+                        finish(addedAny ? { title: `斗鱼 - ${room}` } : null)
+                    } else if (attempts >= maxAttempts) {
+                        clearInterval(checkInterval)
+                        // 超时检查，让 timer 处理
+                    }
+                }, 2000)
+            })
+
+            bw.webContents.on('did-fail-load', (_, errorCode) => {
+                if (errorCode !== -3 && errorCode !== 0) {
+                    clearTimeout(timer)
+                    finish(null)
+                }
+            })
+
+            bw.loadURL(`https://www.douyu.com/${room}`, { userAgent: PARSE_UA })
+        } catch (e) {
+            clearTimeout(timer)
+            finish(null)
+        }
+    })
+}
+
 // ===== B站登录（二维码扫码，获取 Cookie 提升画质） =====
 const BILI_COOKIE_FILE = () => path.join(app.getPath('userData'), 'bilibili-cookie.json')
 
@@ -989,12 +2013,84 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             found.set(clean, item)
         }
 
-        // === B站专用解析 ===
+        // === 虎牙直播解析 ===
+        if (/huya\.com/i.test(target)) {
+            const hyResult = await parseHuya(target, addStream)
+            if (hyResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: hyResult.title || '', pageUrl: target, isLive: true }
+            }
+            return { success: false, message: '未能解析虎牙直播流（可能未开播或房间号无效）', pageUrl: target }
+        }
+
+        // === 斗鱼直播解析 ===
+        if (/douyu\.com/i.test(target) && !/v\.douyu\.com/i.test(target)) {
+            const dyResult = await parseDouyu(target, addStream)
+            if (dyResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: dyResult.title || '', pageUrl: target, isLive: true }
+            }
+            return { success: false, message: '未能解析斗鱼直播流（可能未开播或房间号无效）', pageUrl: target }
+        }
+
+        // === Twitch 直播解析 ===
+        if (/twitch\.tv/i.test(target)) {
+            const twResult = await parseTwitch(target, addStream)
+            if (twResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: twResult.title || '', pageUrl: target, isLive: true }
+            }
+            return { success: false, message: '未能解析 Twitch 直播流（可能未开播或频道名无效）', pageUrl: target }
+        }
+
+        // === B站解析（区分视频 / 直播 / 番剧/电影）===
         if (/bilibili\.com|b23\.tv/i.test(target)) {
+            // 直播间：live.bilibili.com/xxx
+            if (/live\.bilibili\.com\/\d+/i.test(target)) {
+                const liveResult = await parseBilibiliLive(target, addStream)
+                if (liveResult) {
+                    const streams = Array.from(found.values())
+                    return { success: true, streams, pageTitle: liveResult.title || '', pageUrl: target }
+                }
+                return { success: false, message: '未能解析 B站直播间（可能未开播或需登录）', pageUrl: target }
+            }
+            // 番剧/电影：bangumi/play/epXXX 或 ssXXX
+            if (/\/bangumi\/play\//i.test(target) || /b23\.tv/i.test(target)) {
+                const bgmResult = await parseBilibiliBangumi(target, addStream)
+                if (bgmResult) {
+                    const streams = Array.from(found.values())
+                    return { success: true, streams, pageTitle: bgmResult.title || '', pageUrl: target }
+                }
+                // b23.tv 短链既可能指向番剧也可能指向普通视频，番剧解析失败时继续走普通视频分支
+                if (!/\/bangumi\/play\//i.test(target)) {
+                    // fall through 到普通视频解析
+                } else {
+                    return { success: false, message: '未能解析 B站番剧（可能需要登录、区域限制或为付费内容）', pageUrl: target }
+                }
+            }
+            // 普通视频
             const biliResult = await parseBilibili(target, addStream)
             if (biliResult) {
                 const streams = Array.from(found.values())
                 return { success: true, streams, pageTitle: biliResult.title || '', pageUrl: target }
+            }
+        }
+
+        // === 快手视频解析 ===
+        if (/kuaishou\.com/i.test(target)) {
+            const ksResult = await parseKuaishou(target, addStream)
+            if (ksResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: ksResult.title || '', pageUrl: target }
+            }
+        }
+
+        // === 抖音视频解析 ===
+        if (/douyin\.com|iesdouyin\.com/i.test(target)) {
+            const dyResult = await parseDouyin(target, addStream)
+            if (dyResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: dyResult.title || '', pageUrl: target }
             }
         }
 
@@ -1049,6 +2145,47 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
                 try { src = new URL(target).origin + src } catch (e) { continue }
             }
             if (/player|dplayer|url=|\.m3u8/i.test(src)) addStream(src, 'iframe', '')
+        }
+
+        // 5. 嵌入式 JSON 深度提取（__INITIAL_STATE__/__NUXT__/__APP_DATA__/__PRELOADED_STATE__ 等）
+        //    递归遍历 JSON 树，提取所有视频直链（覆盖微博/西瓜/小红书等 SSR 站点）
+        const jsonVarPatterns = [
+            /window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/,
+            /window\.__NUXT__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/,
+            /window\.__APP_DATA__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/,
+            /window\.__PRELOADED_STATE__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/,
+            /window\.__NEXT_DATA__\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/,
+            /window\._SSR_DATA_\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/
+        ]
+        const scanVideoUrls = (obj, depth) => {
+            if (!obj || typeof obj !== 'object' || depth > 7) return
+            if (typeof obj.url === 'string' && /^https?:\/\/.+/.test(obj.url) && /\.(mp4|m3u8|flv|ts|webm)(\?|$|#)/i.test(obj.url)) {
+                const u = obj.url.replace(/\\\//g, '/')
+                const type = /\.m3u8/i.test(u) ? 'm3u8' : (/\.flv/i.test(u) ? 'flv' : 'mp4')
+                addStream(u, type, '')
+            }
+            if (Array.isArray(obj.url_list)) {
+                for (const u of obj.url_list) {
+                    if (typeof u === 'string' && /^https?:\/\/.+/.test(u) && /\.(mp4|m3u8|flv|ts|webm)(\?|$|#)/i.test(u)) {
+                        const clean = u.replace(/\\\//g, '/')
+                        const type = /\.m3u8/i.test(clean) ? 'm3u8' : (/\.flv/i.test(clean) ? 'flv' : 'mp4')
+                        addStream(clean, type, '')
+                    }
+                }
+            }
+            if (typeof obj.playUrl === 'string' && /^https?:\/\/.+/.test(obj.playUrl) && /\.(mp4|m3u8|flv)(\?|$|#)/i.test(obj.playUrl)) {
+                addStream(obj.playUrl.replace(/\\\//g, '/'), /\.m3u8/i.test(obj.playUrl) ? 'm3u8' : 'mp4', '')
+            }
+            for (const k of Object.keys(obj)) {
+                const v = obj[k]
+                if (v && typeof v === 'object') scanVideoUrls(v, depth + 1)
+            }
+        }
+        for (const pat of jsonVarPatterns) {
+            const jm = html.match(pat)
+            if (jm) {
+                try { scanVideoUrls(JSON.parse(jm[1]), 0) } catch (e) {}
+            }
         }
 
         const streams = Array.from(found.values())

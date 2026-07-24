@@ -189,6 +189,12 @@ const playParsedStream = (s) => {
     playerStore.currentMvId = null
     playerStore.currentMvTitle = name
     playerStore.currentMvAudioUrl = s.audioUrl || ''  // DASH 流的音频地址，供播放器内下载时合并
+    // 根据解析流类型设置播放提示（m3u8/flv/live/direct）
+    const st = s.type || ''
+    if (st === 'flv' || /\.flv(\?|$|#)/i.test(s.url)) playerStore.currentMvPlayType = 'flv'
+    else if (st === 'm3u8' || /\.m3u8(\?|$|#)/i.test(s.url)) playerStore.currentMvPlayType = 'm3u8'
+    else if (st === 'live' || /live|stream/i.test(s.url)) playerStore.currentMvPlayType = 'live'
+    else playerStore.currentMvPlayType = 'direct'
     playerStore.showMvPlayer = true
     if (playerStore.isPlaying) {
         playerStore.audio.pause()
@@ -273,6 +279,8 @@ const detectType = (url, hint) => {
     if (/\.m3u8(\?|$|#)/i.test(url)) return 'm3u8'
     // 支持任何视频格式：mp4/webm/avi/mkv/mov/wmv/m4v/ts 等
     if (/\.(mp4|webm|avi|mkv|mov|wmv|m4v|ts|mpg|mpeg|mpe|3gp|asf|f4v|ogv|mts|m2ts|vob|rm|rmvb)(\?|$|#)/i.test(url)) return 'mp4'
+    // 含直播关键词且无明确视频扩展名，视为直播流
+    if (/live|stream|rtmp|rtsp/i.test(url)) return 'live'
     // 默认按 m3u8 处理（直播常见）
     return 'm3u8'
 }
@@ -288,6 +296,7 @@ const playTypeForBili = (s) => {
     const t = detectType(s.url, s.type)
     if (t === 'flv') return 'flv'
     if (t === 'm3u8') return 'm3u8'
+    if (t === 'live') return 'live'
     return 'direct'
 }
 
@@ -304,6 +313,8 @@ const playVideo = (video) => {
     playerStore.currentMvUrl = video.url
     playerStore.currentMvId = null
     playerStore.currentMvTitle = video.name
+    playerStore.currentMvAudioUrl = ''
+    playerStore.currentMvPlayType = ''  // 本地视频走 direct
     playerStore.showMvPlayer = true
     if (playerStore.isPlaying) {
         playerStore.audio.pause()
@@ -325,6 +336,9 @@ const playStream = (s) => {
     playerStore.currentMvUrl = s.url
     playerStore.currentMvId = null
     playerStore.currentMvTitle = s.name + (isStreamLive(s) ? ' [LIVE]' : '')
+    playerStore.currentMvAudioUrl = ''
+    // 设置播放类型提示，解决直播流无 .m3u8/.flv 后缀时播放失败
+    playerStore.currentMvPlayType = playTypeForBili(s)
     playerStore.showMvPlayer = true
     if (playerStore.isPlaying) {
         playerStore.audio.pause()

@@ -1,23 +1,49 @@
+# 依赖
 node_modules/
+
+# 构建产物
 dist/
 dist-electron/
 release/
-release_*/
-.github-temp/
-.claude/
+release2/
+release_1.6.8/
+release_new/
+release_v170/
+release_v171/
+
+# 敏感文件
 token
-*.log
+*.env
+.env
+
+# 系统文件
 .DS_Store
 Thumbs.db
-.env
-.env.*
-!.env.example
 
-# Mobile build artifacts
-mobile/www/
-mobile/android/.gradle/
-mobile/android/build/
-mobile/android/app/build/
-mobile/android/captures/
-mobile/android/local.properties
-mobile/*.apk
+# 编辑器
+.vscode/
+.idea/
+.claude/
+.trae/
+*.swp
+*.swo
+
+# 日志
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 临时文件
+.release-notes.md
+.tmp_*.html
+_*.html
+kg_tail.txt
+kg_temp.py
+release_body.json
+update_report.md
+QQ*.png
+
+github/
+
+.commit-msg.txt

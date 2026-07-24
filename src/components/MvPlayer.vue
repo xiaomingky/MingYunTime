@@ -19,12 +19,16 @@ const displayTitle = computed(() => {
     return playerStore.currentMvTitle || playerStore.currentSong?.name || '视频'
 })
 
-// 根据 URL 自动判断 BiliPlayer 的 playType
+// 根据 URL 自动判断 BiliPlayer 的 playType（优先使用 playerStore 的显式提示）
 const biliPlayType = computed(() => {
+    // 显式类型优先（直播流等无标准后缀的场景）
+    if (playerStore.currentMvPlayType) return playerStore.currentMvPlayType
     const url = playerStore.currentMvUrl || ''
     if (/\.flv(\?|$)/i.test(url)) return 'flv'
     if (/\.m3u8(\?|$)/i.test(url)) return 'm3u8'
     if (url.startsWith('local-file://') || url.startsWith('file://')) return 'direct'
+    // 无扩展名但含 live/stream 关键词视为直播
+    if (/live|stream|rtmp/i.test(url) && !/\.(mp4|webm|mkv|avi|mov)(\?|$)/i.test(url)) return 'live'
     return 'direct'
 })
 
@@ -38,6 +42,7 @@ const close = () => {
     playerStore.currentMvId = null
     playerStore.currentMvTitle = ''
     playerStore.currentMvAudioUrl = ''
+    playerStore.currentMvPlayType = ''
 }
 
 // 下载当前 MV
@@ -185,6 +190,7 @@ watch(() => playerStore.showMvPlayer, (val) => {
         <BiliPlayer
           :src="playerStore.currentMvUrl"
           :playType="biliPlayType"
+          :audioUrl="playerStore.currentMvAudioUrl"
           :autoplay="true"
         />
       </div>

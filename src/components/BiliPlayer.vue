@@ -4,7 +4,7 @@
 // 自定义控制条：进度条(带缓冲+预览) / 音量 / 全屏 / 分辨率 / 快捷键 / 自动隐藏
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Hls from 'hls.js'
-import flvjs from 'flv.js'
+import mpegts from 'mpegts.js'
 import {
     Play, Pause, Volume2, Volume1, VolumeX,
     Maximize, Minimize, Loader2, Film, RefreshCw, SkipBack, SkipForward, Repeat
@@ -13,6 +13,8 @@ import {
 const props = defineProps({
     src: { type: String, default: '' },
     playType: { type: String, default: 'm3u8' }, // m3u8 | direct | flv | live
+    // DASH 音视频分离时的音频地址（B站高画质流是纯视频，需同步播放音频）
+    audioUrl: { type: String, default: '' },
     badge: { type: String, default: '' },
     autoplay: { type: Boolean, default: true },
     hasPrev: { type: Boolean, default: false },
@@ -63,6 +65,8 @@ const hoverPercent = ref(0)
 
 let hls = null
 let flvPlayer = null
+// DASH 流的独立音频元素（B站高画质流：视频和音频分离）
+let dashAudioEl = null
 
 // 是否直播流（无 duration / 实时）
 const isLive = computed(() => {
@@ -400,12 +404,34 @@ function destroyHls() {
         hls = null
     }
     destroyFlv()
+    destroyDashAudio()
     const v = videoEl.value
     if (v) {
         try { v.pause(); v.removeAttribute('src'); v.load() } catch (e) {}
     }
     levels.value = []
     currentLevel.value = -1
+}
+
+// ===== DASH 音频销毁 =====
+function destroyDashAudio() {
+    if (dashAudioEl) {
+        const v = videoEl.value
+        const h = dashAudioEl._syncHandlers
+        if (v && h) {
+            v.removeEventListener('play', h.syncPlay)
+            v.removeEventListener('pause', h.syncPause)
+            v.removeEventListener('seeked', h.syncSeek)
+            v.removeEventListener('seeking', h.syncSeek)
+            v.removeEventListener('volumechange', h.syncVolume)
+            v.removeEventListener('ratechange', h.syncRate)
+            v.removeEventListener('timeupdate', h.syncDrift)
+            v.removeEventListener('waiting', h.syncPause)
+            v.removeEventListener('playing', h.syncPlay)
+        }
+        try { dashAudioEl.pause(); dashAudioEl.src = ''; dashAudioEl.load() } catch (e) {}
+        dashAudioEl = null
+    }
 }
 
 function loadSource(url) {
@@ -416,31 +442,103 @@ function loadSource(url) {
     loading.value = true
     v.loop = isLooping.value
 
-    // FLV 流（flv.js）
+    // FLV 流（mpegts.js — flv.js 的升级版，支持 H.265 + 修复 streaming bug）
     if (props.playType === 'flv' || /\.flv(\?|$)/i.test(url)) {
-        if (flvjs.isSupported()) {
-            flvPlayer = flvjs.createPlayer({
+        if (mpegts.isSupported()) {
+            const isLiveStream = props.playType === 'live' || (props.playType === 'flv' && /live|stream/i.test(url))
+            flvPlayer = mpegts.createPlayer({
                 type: 'flv',
                 url: url,
-                isLive: props.playType === 'live' || props.playType === 'flv' && /live|stream/i.test(url)
+                isLive: isLiveStream,
+                cors: true,
+                hasAudio: true,
+                hasVideo: true
             }, {
                 enableWorker: true,
-                enableStashBuffer: false,
-                stashInitialSize: 128,
+                // 直播流必须启用 stashBuffer，否则缓冲不足导致一直卡在解析
+                enableStashBuffer: true,
+                stashInitialSize: isLiveStream ? 1024 : 256,
+                autoCleanupSourceBuffer: true,
+                autoCleanupMaxBackwardDuration: 10,
+                autoCleanupMinBackwardDuration: 5,
+                liveBufferLatencyChasing: isLiveStream,
+                liveBufferLatencyMaxLatency: 3,
+                liveBufferLatencyMinRemain: 1,
+                liveSync: isLiveStream,
                 lazyLoad: false,
-                autoCleanupSourceBuffer: true
+                fixAudioTimestampGap: true,
+                // 网络重试
+                fetchOptions: { mode: 'cors' },
+                // 修复部分直播流 seek 越界
+                rangeLoadZeroStart: isLiveStream,
+                // mpegts.js 特有：重用重定向后的 URL（避免重复重定向）
+                reuseRedirectedURL: true
             })
             flvPlayer.attachMediaElement(v)
-            flvPlayer.on(flvjs.Events.ERROR, (errType, errDetail) => {
+            let flvReady = false
+            let flvLoadFailed = false
+            // 加载超时检测：12 秒未就绪则报错，避免一直卡在"解析中"
+            const flvLoadTimer = setTimeout(() => {
+                if (!flvReady && !flvLoadFailed) {
+                    flvLoadFailed = true
+                    playerError.value = 'FLV 直播流连接超时（12秒未收到数据），可能是不支持的编码（H.265）或 CDN 防盗链'
+                    loading.value = false
+                    emit('error', playerError.value)
+                    try { flvPlayer.pause() } catch (e) {}
+                }
+            }, 12000)
+            flvPlayer.on(mpegts.Events.ERROR, (errType, errDetail) => {
+                if (flvLoadTimer) clearTimeout(flvLoadTimer)
+                flvLoadFailed = true
+                // 直播流网络错误自动重连一次
+                if (isLiveStream && errType === mpegts.ErrorTypes.NETWORK_ERROR && !flvPlayer._retried) {
+                    flvPlayer._retried = true
+                    try {
+                        flvPlayer.pause()
+                        flvPlayer.unload()
+                        setTimeout(() => { try { flvPlayer.load(); flvPlayer.play().catch(() => {}) } catch (e) {} }, 1000)
+                        return
+                    } catch (e) {}
+                }
                 playerError.value = 'FLV 播放失败：' + (errDetail || errType)
                 loading.value = false
                 emit('error', playerError.value)
             })
+            flvPlayer.on(mpegts.Events.LOADING_COMPLETE, () => {
+                if (flvLoadTimer) clearTimeout(flvLoadTimer)
+                // 直播流收到 LOADING_COMPLETE 表示流已结束
+                if (isLiveStream) {
+                    loading.value = false
+                    playerError.value = '直播流已结束'
+                    emit('error', playerError.value)
+                }
+            })
+            flvPlayer.on(mpegts.Events.MEDIA_INFO, (info) => {
+                if (flvLoadTimer) clearTimeout(flvLoadTimer)
+                flvReady = true
+                loading.value = false
+                // 检测编码：如果是 H.265/HEVC，提示用户（mpegts.js 解复用 H.265，但 Chromium MSE 可能不支持解码）
+                if (info?.videoCodec && /hevc|h265|265/i.test(info.videoCodec)) {
+                    console.warn('[FLV] 检测到 H.265 编码，当前 Chromium 可能不支持 MSE H.265 解码')
+                }
+            })
+            // 兜底：监听 video 元数据加载完成
+            const onMeta = () => {
+                if (flvLoadTimer) clearTimeout(flvLoadTimer)
+                flvReady = true
+                loading.value = false
+                v.removeEventListener('loadedmetadata', onMeta)
+            }
+            v.addEventListener('loadedmetadata', onMeta)
             flvPlayer.load()
-            if (props.autoplay) v.play().then(() => { loading.value = false }).catch(() => { loading.value = false })
+            if (props.autoplay) {
+                v.play().then(() => { loading.value = false }).catch(() => { loading.value = false })
+            } else {
+                loading.value = false
+            }
             return
         }
-        playerError.value = '当前环境不支持 FLV 播放（需 flv.js）'
+        playerError.value = '当前环境不支持 FLV 播放（需 MSE 支持）'
         loading.value = false
         emit('error', playerError.value)
         return
@@ -506,6 +604,56 @@ function loadSource(url) {
         loading.value = false
         emit('error', playerError.value)
     }
+
+    // ===== DASH 音视频分离流：初始化独立音频元素并同步播放 =====
+    // B站高画质流（fnval=16）返回的 mp4 只有视频，音频需单独播放并同步
+    initDashAudio()
+}
+
+// ===== DASH 音频初始化与同步 =====
+function initDashAudio() {
+    destroyDashAudio()
+    if (!props.audioUrl) return  // 非 DASH 流无需音频
+    const v = videoEl.value
+    if (!v) return
+    dashAudioEl = new Audio()
+    // 不设 crossOrigin：B站 CDN 不一定支持 CORS，webSecurity:false 已允许跨域
+    dashAudioEl.src = props.audioUrl
+    dashAudioEl.load()
+    // 音量与主视频同步
+    dashAudioEl.volume = v.volume
+    dashAudioEl.muted = v.muted
+
+    // === 同步策略：以视频为准，音频跟随 ===
+    // 视频播放/暂停时音频跟随
+    const syncPlay = () => { if (dashAudioEl) { dashAudioEl.play().catch(() => {}) } }
+    const syncPause = () => { if (dashAudioEl) dashAudioEl.pause() }
+    // 视频seek时音频跟随
+    const syncSeek = () => { if (dashAudioEl) { try { dashAudioEl.currentTime = v.currentTime } catch (e) {} } }
+    // 音量/静音同步
+    const syncVolume = () => { if (dashAudioEl) { dashAudioEl.volume = v.volume; dashAudioEl.muted = v.muted } }
+    // 倍速同步
+    const syncRate = () => { if (dashAudioEl) dashAudioEl.playbackRate = v.playbackRate }
+    // 缓冲对齐：音频比视频超前太多时拉回
+    const syncDrift = () => {
+        if (!dashAudioEl) return
+        const drift = dashAudioEl.currentTime - v.currentTime
+        if (Math.abs(drift) > 0.3) {
+            try { dashAudioEl.currentTime = v.currentTime } catch (e) {}
+        }
+    }
+
+    v.addEventListener('play', syncPlay)
+    v.addEventListener('pause', syncPause)
+    v.addEventListener('seeked', syncSeek)
+    v.addEventListener('seeking', syncSeek)
+    v.addEventListener('volumechange', syncVolume)
+    v.addEventListener('ratechange', syncRate)
+    v.addEventListener('timeupdate', syncDrift)
+    v.addEventListener('waiting', syncPause)
+    v.addEventListener('playing', syncPlay)
+    // 保存引用以便销毁时移除监听
+    dashAudioEl._syncHandlers = { syncPlay, syncPause, syncSeek, syncVolume, syncRate, syncDrift }
 }
 
 // 监听 src 变化
@@ -750,6 +898,7 @@ defineExpose({ videoEl })
     position: relative;
     width: 100%;
     aspect-ratio: 16/9;
+    max-height: 100%;
     background: #000;
     overflow: hidden;
     cursor: pointer;
@@ -760,6 +909,7 @@ defineExpose({ videoEl })
 .bili-video {
     width: 100%;
     height: 100%;
+    max-height: 100%;
     display: block;
     background: #000;
     object-fit: contain;

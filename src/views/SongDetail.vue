@@ -48,6 +48,10 @@ const toggleEnglishAnalysis = () => {
 // 切换歌曲时关闭解析面板
 watch(() => playerStore.currentSong.id, () => {
     showEnglishAnalysis.value = false
+    // 切歌时立即重置歌词滚动到开头，避免显示上一首的滚动位置
+    if (lyricContainer.value) {
+        lyricContainer.value.scrollTo({ top: 0, behavior: 'auto' })
+    }
 })
 
 const toggleGifCover = () => {
@@ -255,7 +259,7 @@ const blurClassMap = computed(() => {
 
 // 气泡等待动画已移除（用户要求取消）
 
-const scrollToCenter = async (index) => {
+const scrollToCenter = async (index, instant = false) => {
   await nextTick()
   if (!lyricContainer.value) return
   const lines = lyricContainer.value.querySelectorAll('.lyric-line')
@@ -271,7 +275,7 @@ const scrollToCenter = async (index) => {
 
   lyricContainer.value.scrollTo({
     top: currentScroll + offset,
-    behavior: 'smooth'
+    behavior: instant ? 'auto' : 'smooth'
   })
 }
 
@@ -292,6 +296,18 @@ watch(currentLyricIndex, (newIndex, oldIndex) => {
   if (newIndex >= 0) {
     scrollToCenter(newIndex)
   }
+})
+
+// 歌词变化时（切歌加载新歌词）立即定位到当前行（通常为第一行），无动画
+watch(displayLyrics, () => {
+    if (lyricContainer.value) {
+        lyricContainer.value.scrollTo({ top: 0, behavior: 'auto' })
+    }
+    nextTick(() => {
+        if (currentLyricIndex.value >= 0) {
+            scrollToCenter(currentLyricIndex.value, true)
+        }
+    })
 })
 
 const handleLyricClick = (time) => {
@@ -1424,7 +1440,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 50vh 0;
+  padding: 30vh 0 50vh;
 }
 
 .lyric-line {
