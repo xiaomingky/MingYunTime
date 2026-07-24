@@ -38,6 +38,19 @@ process.env.APP_ROOT = path.join(__dirname, '..')
 
 // 设置正式名称，确保对话框标题正确
 app.name = '茗韵时光'
+// Windows 系统级应用识别：任务栏、开始菜单、跳转列表、Alt+Tab、文件关联"打开方式"都依赖此 ID
+// 必须在 app.whenReady() 之前调用，且与 package.json build.appId 保持一致
+if (process.platform === 'win32') {
+    app.setAppUserModelId('com.music.player')
+}
+
+// 单例锁：确保只有一个实例运行，后续启动会触发 second-instance 事件
+// 这是"打开方式"功能正常工作的前提（否则会启动新进程而不是传给已运行的实例）
+const gotTheLock = app.requestSingleInstanceLock()
+if (!gotTheLock) {
+    // 已有实例运行，直接退出当前进程
+    app.quit()
+}
 
 export const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 export const MAIN_DIST = path.join(process.env.APP_ROOT, 'dist-electron')
@@ -51,6 +64,8 @@ const AUDIO_EXTENSIONS = [
     '.opus', '.wv', '.tta', '.dsf', '.dff', '.mp2', '.ac3', '.amr', '.aiff',
     '.au', '.ra', '.ram', '.mpc', '.mka', '.weba'
 ]
+// 支持的本地视频格式（与 scanVideoFiles 内的 videoExts 保持一致）
+const VIDEO_EXTENSIONS = ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.wmv', '.m4v', '.ts']
 
 let win
 let tray = null
@@ -103,6 +118,7 @@ function createWindow() {
         minWidth: 1022,
         minHeight: 720,
         frame: false,
+        title: '茗韵时光', // 系统级窗口标题（任务栏 tooltip、Alt+Tab 等）
         backgroundColor: '#ffffff', // Win7 下防止透明窗口闪烁
         icon: path.join(process.env.VITE_PUBLIC, 'icon.png'), // 设置图标
         webPreferences: {
@@ -2432,9 +2448,73 @@ app.whenReady().then(() => {
 
     createWindow()
     createTray()
+
+    // === 系统级文件关联：处理通过"打开方式"启动时传入的音频文件 ===
+    // 启动时检查命令行参数是否包含音频文件路径
+    const openArg = findAudioArgFromArgv(process.argv)
+    if (openArg) {
+        // 延迟发送，等渲染进程加载完毕
+        setTimeout(() => sendOpenFile(openArg), 1500)
+    }
+
+    // 程序已运行时，再次通过"打开方式"打开文件会触发 second-instance
+    app.on('second-instance', (event, argv) => {
+        const arg = findAudioArgFromArgv(argv)
+        if (arg) {
+            // 显示主窗口并发送文件路径
+            if (win) {
+                if (win.isMinimized()) win.restore()
+                win.show()
+                win.focus()
+                sendOpenFile(arg)
+            }
+        } else {
+            // 没有文件参数：仅显示主窗口
+            if (win) {
+                if (win.isMinimized()) win.restore()
+                win.show()
+                win.focus()
+            }
+        }
+    })
+
     // 启动后 5 秒检测更新
     setTimeout(checkForUpdates, 5000)
 })
+
+// 从命令行参数中提取音视频文件路径（过滤掉 electron 自身和 flag 参数）
+function findAudioArgFromArgv(argv) {
+    if (!argv || !argv.length) return null
+    for (let i = 1; i < argv.length; i++) {
+        const arg = argv[i]
+        if (!arg || arg.startsWith('-') || arg.startsWith('--')) continue
+        // 跳过 electron 可执行文件本身和 main.js
+        if (/electron\.exe$/i.test(arg)) continue
+        if (/main\.js$/i.test(arg)) continue
+        // 检查是否为受支持的音频或视频文件
+        const ext = path.extname(arg).toLowerCase()
+        if (AUDIO_EXTENSIONS.includes(ext) || VIDEO_EXTENSIONS.includes(ext)) return arg
+    }
+    return null
+}
+
+// 发送文件路径到渲染进程进行播放（自动区分音视频）
+async function sendOpenFile(filePath) {
+    if (!win || win.isDestroyed()) return
+    try {
+        const ext = path.extname(filePath).toLowerCase()
+        const isVideo = VIDEO_EXTENSIONS.includes(ext)
+        // 扫描文件元数据，构造 song/video 对象（与对应 dialog 返回结构一致）
+        const items = isVideo ? await scanVideoFiles(filePath) : await scanAudioFiles(filePath)
+        if (items && items.length > 0) {
+            // 视频走 'open-video-file' 事件，音频走 'open-audio-file'
+            const channel = isVideo ? 'open-video-file' : 'open-audio-file'
+            win.webContents.send(channel, items[0])
+        }
+    } catch (e) {
+        console.error('sendOpenFile error:', e)
+    }
+}
 
 ipcMain.on('window-minimize-to-tray', () => {
     win?.hide()

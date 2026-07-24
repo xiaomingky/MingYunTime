@@ -164,6 +164,22 @@ onMounted(() => {
         else if (cmd === 'togglePlay') playerStore.togglePlay()
     })
 
+    // 系统级"打开方式"：通过文件关联启动时接收音频文件并播放
+    b.on('open-audio-file', (event, song) => {
+        if (song && song.url) {
+            // 加入本地曲库并立即播放
+            playerStore.addLocalSongs([song])
+            playerStore.playSong(song)
+        }
+    })
+
+    // 系统级"打开方式"：通过文件关联启动时接收视频文件并播放
+    b.on('open-video-file', (event, video) => {
+        if (video && video.url) {
+            playerStore.playVideoFile(video)
+        }
+    })
+
     b.on('request-lyric-sync', () => {
         playerStore.updateDesktopLyricsState()
     })

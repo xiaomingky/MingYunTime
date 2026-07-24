@@ -1089,6 +1089,20 @@ export const usePlayerStore = defineStore('player', {
                 useMessageStore().error('播放视频失败')
             }
         },
+        // 直接播放指定的本地/在线视频文件（用于系统"打开方式"功能）
+        playVideoFile(video) {
+            if (!video || !video.url) return
+            // 暂停音乐
+            if (this.isPlaying && this.audio) {
+                this.audio.pause()
+                this.isPlaying = false
+            }
+            this.currentMvUrl = video.url
+            this.currentMvId = null
+            this.currentMvTitle = video.name || '本地视频'
+            this.currentMvPlayType = 'direct'
+            this.showMvPlayer = true
+        },
         // 仅播放本地 MV（mode='local'）；找不到时返回 false，不自动回退到线上
         async playLocalMv() {
             if (!this.currentSong.name) return

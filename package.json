@@ -65,6 +65,116 @@
       "font/**",
       "resources/**"
     ],
+    "fileAssociations": [
+      {
+        "ext": "mp3",
+        "name": "MP3 音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "flac",
+        "name": "FLAC 无损音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "wav",
+        "name": "WAV 音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "ogg",
+        "name": "OGG 音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "m4a",
+        "name": "M4A 音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "ape",
+        "name": "APE 无损音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "aac",
+        "name": "AAC 音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "wma",
+        "name": "WMA 音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "opus",
+        "name": "OPUS 音频",
+        "description": "茗韵时光音频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "mp4",
+        "name": "MP4 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "mkv",
+        "name": "MKV 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "webm",
+        "name": "WEBM 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "avi",
+        "name": "AVI 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "mov",
+        "name": "MOV 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "flv",
+        "name": "FLV 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "wmv",
+        "name": "WMV 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "m4v",
+        "name": "M4V 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      },
+      {
+        "ext": "ts",
+        "name": "TS 视频",
+        "description": "茗韵时光视频文件",
+        "role": "Viewer"
+      }
+    ],
     "win": {
       "icon": "build/icon.png",
       "target": [
