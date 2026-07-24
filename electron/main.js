@@ -469,7 +469,9 @@ async function scanVideoFiles(filePath) {
             url: `local-file:///${encodedPath}`,
             size: stats.size,
             duration: duration,
-            format: ext.replace('.', '').toUpperCase()
+            format: ext.replace('.', '').toUpperCase(),
+            // 封面：复用 song-cover 协议，支持内嵌封面 + 同目录同名图片
+            al: { name: '本地视频', picUrl: `song-cover:///${encodedPath}` }
         }]
     }
     return []
@@ -2509,7 +2511,9 @@ async function sendOpenFile(filePath) {
         if (items && items.length > 0) {
             // 视频走 'open-video-file' 事件，音频走 'open-audio-file'
             const channel = isVideo ? 'open-video-file' : 'open-audio-file'
-            win.webContents.send(channel, items[0])
+            // 按项目约定：IPC 通信必须用 JSON.parse(JSON.stringify()) 克隆对象，确保 structured cloning 兼容
+            const cloned = JSON.parse(JSON.stringify(items[0]))
+            win.webContents.send(channel, cloned)
         }
     } catch (e) {
         console.error('sendOpenFile error:', e)
