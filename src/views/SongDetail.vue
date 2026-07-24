@@ -70,8 +70,8 @@ const getCoverUrl = () => {
 }
 
 // Visualizer logic
-const rhythmBars = ref(Array.from({ length: 48 }, () => ({
-  height: 4,
+const rhythmBars = ref(Array.from({ length: 80 }, () => ({
+  height: 3,
   opacity: 0.5
 })))
 
@@ -151,20 +151,26 @@ const updateVisualizer = () => {
         if (data) {
           const bars = rhythmBars.value
           const len = bars.length
+          const half = Math.floor(len / 2)
           const dataLen = data.length
+          // 镜像对称采样：i 与 len-1-i 取同一频段，形成中间向两边起伏
+          // 直接用原始频谱值，不衰减，保持起伏夸张
           for (let i = 0; i < len; i++) {
-            const start = Math.floor(i * (dataLen / len))
+            const mirrorIdx = i < half ? i : len - 1 - i  // 0(两边) .. half-1(中间)
+            // 频段：两边取低频(0)、中间取中频(half-1) —— 低频通常更强，自然形成中间高两边低
+            const start = Math.floor(mirrorIdx * (dataLen / half / 2))
             const val = data[start] || 0
-            const targetHeight = Math.max(4, (val / 255) * 80 + 4)
-            bars[i].height += (targetHeight - bars[i].height) * 0.25
-            bars[i].opacity = 0.4 + (val / 255) * 0.6
+            // 不衰减，直接用原始值，起伏更夸张
+            const targetHeight = Math.max(3, (val / 255) * 76 + 3)
+            bars[i].height += (targetHeight - bars[i].height) * 0.32
+            bars[i].opacity = 0.45 + (val / 255) * 0.55
           }
         }
     }
   } else {
       rhythmBars.value.forEach(bar => {
-          bar.height = Math.max(4, bar.height * 0.8)
-          bar.opacity = Math.max(0.3, bar.opacity * 0.8)
+          bar.height = Math.max(3, bar.height * 0.85)
+          bar.opacity = Math.max(0.3, bar.opacity * 0.85)
       })
       // 暂停时也刷新一次 yrc 进度（停在当前位置）
       if (hasYrcLyrics.value) updateYrcWordProgress()
@@ -289,9 +295,10 @@ const toggleLyricMode = () => {
 watch(currentLyricIndex, (newIndex, oldIndex) => {
   if (oldIndex != null && oldIndex >= 0 && oldIndex !== newIndex) {
     leavingIndexes.value.add(oldIndex)
+    // 与 transition 时长（0.3s）匹配，避免过长的 leaving 状态
     setTimeout(() => {
       leavingIndexes.value.delete(oldIndex)
-    }, 700)
+    }, 320)
   }
   if (newIndex >= 0) {
     scrollToCenter(newIndex)
@@ -792,6 +799,11 @@ onMounted(() => {
   pointer-events: none;
 }
 
+/* 沉浸封面模式：完全不透明白底，bg-blur 自身调到朦胧深度 */
+.song-detail-overlay.is-cover-mode {
+  background-color: #fafafa;  /* 完全不透明，略带暖调 */
+}
+
 .song-detail-overlay.show {
   top: 0;
   transform: translateZ(0);
@@ -806,11 +818,12 @@ onMounted(() => {
   bottom: 0;
   background-size: cover;
   background-position: center;
-  filter: blur(40px) saturate(1.5); /* 降低blur提升老设备性能，增加饱和度让背景颜色跟随封面更明显 */
-  opacity: 0.35; /* 增加透明度让白色底色透出，形成柔和浅色背景，保证黑色文字可读性 */
-  z-index: -1; /* 必须是负数，否则会遮挡上方内容的点击事件 */
+  filter: blur(60px) saturate(1.8);  /* 大半径模糊 + 高饱和度，朦胧封面氛围 */
+  opacity: 0.5;  /* 适中不透明度：既能看清封面色调又不会太深 */
+  z-index: 0;  /* 在 overlay 内部作为底层背景 */
   transform: scale(1.5) translateZ(0); /* 开启硬件加速，加大缩放比例防止边缘漏底 */
   will-change: transform;
+  pointer-events: none;
 }
 
 .header {
@@ -1457,16 +1470,14 @@ onMounted(() => {
   box-sizing: border-box;
   transform-origin: center center;
   opacity: 0.55;
+  /* 只过渡 color/opacity 两个轻量属性，transform/filter 都不做过渡避免卡顿 */
   transition:
-    color 0.45s cubic-bezier(0.34, 1.56, 0.64, 1),
-    transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1),
-    filter 0.55s cubic-bezier(0.34, 1.56, 0.64, 1),
-    opacity 0.55s cubic-bezier(0.34, 1.56, 0.64, 1);
+    color 0.3s ease,
+    opacity 0.3s ease;
 }
 
-.lyric-line.active,
-.lyric-line.leaving {
-  will-change: transform, opacity;
+.lyric-line.active {
+  will-change: opacity;
 }
 
 .is-cover-mode .lyric-line {
@@ -1487,25 +1498,10 @@ onMounted(() => {
   color: #000 !important;
   font-weight: 700;
   opacity: 1;
-  animation: lyric-enter 0.55s cubic-bezier(0.4, 0, 0.2, 1) forwards;
-}
-
-@keyframes lyric-enter {
-  0% {
-    opacity: 0.2;
-    transform: translateY(24px) scale(0.94);
-    filter: blur(4px);
-  }
-  100% {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-    filter: blur(0);
-  }
 }
 
 .lyric-line.leaving {
-  opacity: 0.35 !important;
-  transform: none !important;
+  opacity: 0.35;
   pointer-events: none;
 }
 
@@ -1514,6 +1510,7 @@ onMounted(() => {
   animation: none;
 }
 
+/* blur 用瞬时切换（无 transition）避免 GPU 反复计算模糊 */
 .lyric-line.blur-1 {
   filter: blur(2px);
 }
@@ -1530,17 +1527,6 @@ onMounted(() => {
 .mode-classic .lyric-line.blur-2,
 .mode-classic .lyric-line.blur-far {
   filter: none !important;
-}
-
-@keyframes particle-scatter {
-  0% {
-    opacity: 1;
-    transform: translate(0, 0) rotate(0deg);
-  }
-  100% {
-    opacity: 0;
-    transform: translate(var(--tx), var(--ty)) rotate(var(--r));
-  }
 }
 
 @keyframes particle-scatter-word {
@@ -1608,11 +1594,7 @@ onMounted(() => {
 
 /* === 逐词歌词 (YRC) 风格 === */
 .yrc-line {
-    transition:
-        color 0.45s cubic-bezier(0.34, 1.56, 0.64, 1),
-        transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
-        filter 0.5s cubic-bezier(0.34, 1.56, 0.64, 1),
-        opacity 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    /* 继承 .lyric-line 的轻量 transition，不再重复定义 filter/回弹曲线 */
 }
 
 .yrc-text {
@@ -1673,8 +1655,7 @@ onMounted(() => {
 }
 
 .mode-classic .lyric-line.leaving {
-    opacity: 0.35 !important;
-    transform: none !important;
+    opacity: 0.35;
 }
 
 .mode-classic .lyric-line.leaving .lyric-char,
@@ -1847,21 +1828,36 @@ onMounted(() => {
   width: 0;
 }
 
-/* Visualizer Bars */
+/* Visualizer Bars —— 镜像对称式：中间高两边低，三色渐变，铺满整行 */
 .visualizer-container {
     height: 80px;
     display: flex;
     align-items: flex-end;
-    justify-content: center;
-    gap: 6px;
-    padding-bottom: 20px;
-    opacity: 0.8;
+    justify-content: space-between;  /* 两端贴边、整体铺满 */
+    gap: 2px;
+    padding: 0 24px 22px;
+    opacity: 0.95;
 }
 
 .v-bar {
-    width: 4px;
-    background: linear-gradient(to top, var(--primary-color), #ff6b6b);
-    border-radius: 3px;
+    flex: 1;
+    min-width: 2px;
+    max-width: 4px;  /* 细条更精致 */
+    min-height: 3px;
+    /* 三色渐变 + 顶部高光：深红→亮红→暖白 */
+    background:
+        linear-gradient(to top,
+            #8a0a0a 0%,
+            #c20c0c 30%,
+            #ff4d4d 70%,
+            #ffe5e5 100%);
+    border-radius: 2px 2px 0 0;  /* 顶部圆角、底部直角，像光柱立在地面上 */
+    transition: height 0.14s cubic-bezier(0.2, 0.8, 0.2, 1),
+                opacity 0.14s ease-out;
+    /* 主体投影 + 顶部内高光：营造立体感 */
+    box-shadow:
+        0 0 6px rgba(255, 77, 77, 0.4),
+        inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
 /* Responsive Adaptation */
@@ -1912,10 +1908,11 @@ onMounted(() => {
   }
   .visualizer-container {
       height: 60px;
-      gap: 3px;
+      gap: 2px;
+      padding: 0 12px 12px;
   }
   .v-bar {
-      width: 3px;
+      max-width: 4px;
   }
 }
 
