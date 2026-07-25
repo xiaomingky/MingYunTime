@@ -411,7 +411,8 @@ async function scanAudioFiles(filePath) {
                 path: filePath,
                 url: `local-file:///${encodedPath}`,
                 size: stats.size, dt: 0, duration: 0,
-                al: { name: '本地磁盘', picUrl: '' }
+                // 即使 music-metadata 失败，也走 song-cover 协议（由协议层尝试同目录封面图片查找）
+                al: { name: '本地磁盘', picUrl: `song-cover:///${encodedPath}` }
             }]
         }
     }
@@ -2407,7 +2408,7 @@ app.whenReady().then(() => {
             const hasStaticParam = urlStr.includes('?static=1')
             // 健壮解析：兼容 Chromium 对 song-cover:/// 规范化后的各种形式
             // 原始: song-cover:///C:/path/file.mp3  规范化后可能: song-cover://C:/path/file.mp3
-            let filePath = urlStr.replace(/^song-cover:\/+/i, '').replace(/\?static=1.*$/, '')
+            let filePath = urlStr.replace(/^song-cover:\/+/i, '').replace(/\?static=1.*$/, '').replace(/\?param=.*$/, '')
             filePath = decodeURIComponent(filePath)
 
             if (process.platform === 'win32') {
@@ -2475,10 +2476,14 @@ app.whenReady().then(() => {
                 }
             } catch (e) { }
 
-            // 默认兜底图 (通过 axios 请求)
-            const defaultUrl = 'https://p2.music.126.net/6y-U6QnSjd_5419m1B0R_g==/109951165034938831.jpg'
-            const response = await axios.get(defaultUrl, { responseType: 'arraybuffer' })
-            callback({ mimeType: 'image/jpeg', data: Buffer.from(response.data) })
+            // 最终兜底：使用应用内置 icon.png（避免依赖网络图片 404）
+            const iconPath = path.join(process.env.VITE_PUBLIC, 'icon.png')
+            if (fs.existsSync(iconPath)) {
+                return callback({ mimeType: 'image/png', data: fs.readFileSync(iconPath) })
+            }
+            // 超级兜底：1x1 透明像素
+            const transparentPixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+            callback({ mimeType: 'image/png', data: transparentPixel })
         } catch (e) {
             callback({ statusCode: 500 })
         }
