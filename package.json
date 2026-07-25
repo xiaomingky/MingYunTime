@@ -1,6 +1,6 @@
 {
-  "name": "music-player",
-  "version": "1.9.2",
+  "name": "MingYunTime",
+  "version": "1.9.3",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -50,7 +50,7 @@
     "vite-plugin-node-polyfills": "^0.27.0"
   },
   "build": {
-    "appId": "com.music.player",
+    "appId": "com.mingyuntime.app",
     "productName": "茗韵时光",
     "directories": {
       "output": "release"
@@ -193,7 +193,17 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "茗韵时光"
+      "shortcutName": "茗韵时光",
+      "installerHeader": "build/installer-header.bmp",
+      "installerSidebar": "build/installer-sidebar.bmp",
+      "installerIcon": "build/icon.ico",
+      "uninstallerSidebar": "build/installer-sidebar.bmp",
+      "uninstallerIcon": "build/icon.ico",
+      "include": "build/installer.nsh",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerLanguages": ["zh_CN"],
+      "displayLanguageSelector": false
     }
   }
 }

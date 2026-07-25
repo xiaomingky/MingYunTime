@@ -41,7 +41,7 @@ app.name = '茗韵时光'
 // Windows 系统级应用识别：任务栏、开始菜单、跳转列表、Alt+Tab、文件关联"打开方式"都依赖此 ID
 // 必须在 app.whenReady() 之前调用，且与 package.json build.appId 保持一致
 if (process.platform === 'win32') {
-    app.setAppUserModelId('com.music.player')
+    app.setAppUserModelId('com.mingyuntime.app')
 }
 
 // 单例锁：确保只有一个实例运行，后续启动会触发 second-instance 事件
@@ -2405,9 +2405,13 @@ app.whenReady().then(() => {
         try {
             const urlStr = request.url
             const hasStaticParam = urlStr.includes('?static=1')
-            let filePath = decodeURIComponent(urlStr.replace('song-cover:///', '').replace('?static=1', ''))
+            // 健壮解析：兼容 Chromium 对 song-cover:/// 规范化后的各种形式
+            // 原始: song-cover:///C:/path/file.mp3  规范化后可能: song-cover://C:/path/file.mp3
+            let filePath = urlStr.replace(/^song-cover:\/+/i, '').replace(/\?static=1.*$/, '')
+            filePath = decodeURIComponent(filePath)
 
             if (process.platform === 'win32') {
+                // 规范化路径（处理 / 转为 \），但 path.normalize 会把 / 转成 \，下面 fs 调用都兼容
                 filePath = path.normalize(filePath)
             }
 
@@ -2422,22 +2426,54 @@ app.whenReady().then(() => {
                     if (hasStaticParam && pic.format === 'image/gif') {
                         // 跳过GIF，继续查找其他图片
                     } else {
-                        return callback({ mimeType: pic.format, data: pic.data })
+                        // music-metadata 11.x 的 pic.data 是 Uint8Array，Electron registerBufferProtocol 需要 Buffer
+                        const buf = Buffer.isBuffer(pic.data) ? pic.data : Buffer.from(pic.data)
+                        return callback({ mimeType: pic.format, data: buf })
                     }
                 }
             } catch (e) { }
 
-            // 提取同目录图片 (gif > png > jpg > webp)
+            // 提取同目录图片（依次尝试：同名 → cover/folder/album/front → 目录内任意图片）
             const dir = path.dirname(filePath)
             const baseName = path.basename(filePath, path.extname(filePath))
             const exts = hasStaticParam ? ['.png', '.jpg', '.jpeg', '.webp'] : ['.gif', '.png', '.jpg', '.jpeg', '.webp']
+            const mimeOf = (ext) => ext === '.gif' ? 'image/gif' : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
+
+            // 1. 与音乐同名的图片（保留 GIF 动图优先级）
             for (const ext of exts) {
                 const imgPath = path.join(dir, baseName + ext)
                 if (fs.existsSync(imgPath)) {
-                    const mime = ext === '.gif' ? 'image/gif' : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
-                    return callback({ mimeType: mime, data: fs.readFileSync(imgPath) })
+                    return callback({ mimeType: mimeOf(ext), data: fs.readFileSync(imgPath) })
                 }
             }
+
+            // 2. 通用封面文件名（cover / folder / album / front）
+            const coverNames = hasStaticParam
+                ? ['cover', 'Cover', 'folder', 'Folder', 'album', 'Album', 'front', 'Front']
+                : ['cover', 'Cover', 'folder', 'Folder', 'album', 'Album', 'front', 'Front']
+            for (const cn of coverNames) {
+                for (const ext of exts) {
+                    const imgPath = path.join(dir, cn + ext)
+                    if (fs.existsSync(imgPath)) {
+                        return callback({ mimeType: mimeOf(ext), data: fs.readFileSync(imgPath) })
+                    }
+                }
+            }
+
+            // 3. 目录内任意图片文件（最后兜底）
+            try {
+                const files = fs.readdirSync(dir)
+                for (const f of files) {
+                    const ext = path.extname(f).toLowerCase()
+                    if (exts.includes(ext)) {
+                        const imgPath = path.join(dir, f)
+                        const stat = fs.statSync(imgPath)
+                        if (stat.isFile()) {
+                            return callback({ mimeType: mimeOf(ext), data: fs.readFileSync(imgPath) })
+                        }
+                    }
+                }
+            } catch (e) { }
 
             // 默认兜底图 (通过 axios 请求)
             const defaultUrl = 'https://p2.music.126.net/6y-U6QnSjd_5419m1B0R_g==/109951165034938831.jpg'
