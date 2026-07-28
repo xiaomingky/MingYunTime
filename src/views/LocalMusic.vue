@@ -50,51 +50,17 @@ const importFolder = async () => {
     }
 }
 
-const findLyrics = async (song) => {
-    const bridge = getBridge()
-    if (!bridge) return
-    try {
-        const searchRes = await cloudSearch(song.name)
-        const match = searchRes.result?.songs?.[0]
-        if (!match) { messageStore.info(`《${song.name}》未找到匹配的在线歌词`); return; }
-
-        const lyricRes = await getNewLyric(match.id)
-        const lrc = lyricRes.lrc?.lyric || ''
-        const tlrc = lyricRes.tlyric?.lyric || ''
-        const yrcRaw = lyricRes.yrc?.lyric || ''
-        const ytlrcRaw = lyricRes.ytlrc?.lyric || ''
-        
-        if (!lrc && !yrcRaw) { messageStore.info(`《${song.name}》暂无歌词文本`); return; }
-
-        let fullContent = tlrc ? `${lrc}\n---trans---\n${tlrc}` : lrc
-        if (yrcRaw) {
-            fullContent += `\n---yrc---\n${yrcRaw}`
-            if (ytlrcRaw) fullContent += `\n---ytlrc---\n${ytlrcRaw}`
+const findLyrics = (song) => {
+    // 触发 LyricSelector 弹窗（QQ + 酷狗 + 网易云兜底）
+    // 与播放本地歌曲时自动弹出的逻辑保持一致
+    const cleanArtist = String(song.artist || '').replace(/本地音乐|未知歌手|Unknown Artist/g, '').trim()
+    window.dispatchEvent(new CustomEvent('show-lyric-selector', {
+        detail: {
+            songName: song.name,
+            artist: cleanArtist,
+            songPath: song.path
         }
-
-        const saveRes = await bridge.saveLyric({
-            songPath: song.path,
-            lyricContent: fullContent
-        })
-
-        if (saveRes.success) {
-            // 如果当前正在播放这首歌，刷新播放器歌词
-            if (playerStore.currentSong.path === song.path) {
-                if (yrcRaw) {
-                    playerStore.parseYrcLyrics(yrcRaw, ytlrcRaw)
-                }
-                if (lrc) {
-                    playerStore.parseLyrics(lrc, tlrc)
-                }
-            }
-            messageStore.success(`《${song.name}》${yrcRaw ? '逐词歌词' : (tlrc ? '双语歌词' : '歌词')}获取成功`)
-        } else {
-            messageStore.error(`《${song.name}》保存歌词失败：${saveRes.error}`)
-        }
-    } catch (err) {
-        console.error('Find lyrics error:', err)
-        messageStore.error('搜索歌词出错')
-    }
+    }))
 }
 
 const fetchingCover = ref(new Map())

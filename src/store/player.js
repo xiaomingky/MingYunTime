@@ -25,6 +25,8 @@ export const usePlayerStore = defineStore('player', {
         showPlaylist: false,
         lyrics: [],
         yrcLyrics: null, // 逐词歌词数据: [{ time, duration, words: [{ startTime, duration, text }], ttext }]
+        lyricSource: '', // 当前歌词来源：'qq' | 'kugou' | 'netease' | 'local' | ''
+        lyricDisplayMode: localStorage.getItem('lyric_display_mode') || 'word', // 'word' 逐词 | 'line' 逐行
         ctx: null,
         analyser: null,
         source: null,
@@ -80,6 +82,7 @@ export const usePlayerStore = defineStore('player', {
     actions: {
         initAudio() {
             this.yrcLyrics = null // 重置逐词歌词
+            this.lyricSource = '' // 重置歌词来源
             if (this.audio) {
                 try { this.audio.pause(); this.audio.src = ''; this.audio.load() } catch (e) {}
                 this.audio = null
@@ -286,8 +289,9 @@ export const usePlayerStore = defineStore('player', {
             try {
                 let url = song.url
                 const isLocal = typeof song.id === 'string' && song.id.startsWith('local-')
+                const isCloud = typeof song.id === 'string' && song.id.startsWith('cloud-')
 
-                if (!url && !isLocal) {
+                if (!url && !isLocal && !isCloud) {
                     const res = await getSongUrl(song.id, this.quality)
                     const songData = res.data?.[0] || res?.[0]
                     url = songData?.url
@@ -351,40 +355,10 @@ export const usePlayerStore = defineStore('player', {
                     }
                 })
 
-                // 云音乐歌词：如果有 lyricUrl 直接拉取
-                if (song.lyricUrl) {
-                    try {
-                        const lyricRes = await fetch(song.lyricUrl)
-                        const lyricText = await lyricRes.text()
-                        if (lyricText) {
-                            if (lyricText.includes('---yrc---')) {
-                                const parts = lyricText.split('---yrc---')
-                                const lrcPart = parts[0].trim()
-                                let yrcPart = parts[1] || ''
-                                let ytlrcPart = ''
-                                if (yrcPart.includes('---ytlrc---')) {
-                                    const yrcParts = yrcPart.split('---ytlrc---')
-                                    yrcPart = yrcParts[0].trim()
-                                    ytlrcPart = yrcParts[1] ? yrcParts[1].trim() : ''
-                                } else { yrcPart = yrcPart.trim() }
-                                if (yrcPart) this.parseYrcLyrics(yrcPart, ytlrcPart)
-                                if (lrcPart) this.parseLyrics(lrcPart)
-                            } else {
-                                const wordByWord = this.parseWordByWordLyrics(lyricText)
-                                if (wordByWord) {
-                                    this.yrcLyrics = wordByWord.yrc
-                                    this.lyrics = wordByWord.lrc
-                                } else {
-                                    this.parseLyrics(lyricText)
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        console.error('Cloud lyric load failed:', e)
-                    }
-                }
-
-                // 获取歌词逻辑：本地检查 → 有则直接用 → 无则在线搜索
+                // 获取歌词逻辑：
+                // - 本地音乐：检查本地歌词文件 → 无YRC则弹窗选择歌词源
+                // - 云音乐：从云端 lyricUrl 拉取歌词 → 无YRC则弹窗选择歌词源（和本地同规格）
+                // - 线上歌曲：缓存 → QQ匹配 → 网易云回退
                 if (isLocal && song.path) {
                     const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
                     let hasLocalLyric = false
@@ -408,6 +382,7 @@ export const usePlayerStore = defineStore('player', {
                                 } else { yrcPart = yrcPart.trim() }
                                 if (yrcPart) { this.parseYrcLyrics(yrcPart, ytlrcPart); hasLocalYrc = true }
                                 if (lrcPart) this.parseLyrics(lrcPart)
+                                this.lyricSource = 'local'
                                 hasLocalLyric = true
                             } else {
                                 // 检测是否为本地逐字 LRC 格式
@@ -415,12 +390,14 @@ export const usePlayerStore = defineStore('player', {
                                 if (wordByWord) {
                                     this.yrcLyrics = wordByWord.yrc
                                     this.lyrics = wordByWord.lrc
+                                    this.lyricSource = 'local'
                                     hasLocalLyric = true
                                     hasLocalYrc = true
                                     useMessageStore().info(`使用本地逐字歌词:《${normalized.name}》`)
                                 } else {
                                     // 普通歌词，直接用
                                     this.parseLyrics(content)
+                                    this.lyricSource = 'local'
                                     hasLocalLyric = true
                                     useMessageStore().info(`使用本地歌词:《${normalized.name}》`)
                                 }
@@ -428,89 +405,71 @@ export const usePlayerStore = defineStore('player', {
                         }
                     }
 
-                    // 2. 本地有普通歌词但没有YRC → 在线搜索YRC（需开启自动获取）
-                    if (hasLocalLyric && !hasLocalYrc && this.autoFetchLyric) {
-                        try {
-                            const cleanArtist = String(normalized.artist).replace(/本地音乐|未知歌手|Unknown Artist/g, '').trim()
-                            const searchQuery = cleanArtist ? `${normalized.name} ${cleanArtist}` : normalized.name
-                            let sRes = await cloudSearch(searchQuery)
-                            let match = sRes.result?.songs?.[0]
-                            if (!match) {
-                                const strippedName = normalized.name.replace(/\(.*\)|\[.*\]|（.*）|【.*】/g, '').trim()
-                                if (strippedName && strippedName !== normalized.name) {
-                                    sRes = await cloudSearch(strippedName)
-                                    match = sRes.result?.songs?.[0]
-                                }
+                    // 2. 本地无 YRC 逐词歌词（只有普通歌词或完全无歌词）→ 触发多平台歌词选择弹窗
+                    // 本地歌曲都需要弹窗让用户选歌词（QQ + 酷狗 + 网易云兜底）
+                    if (!hasLocalYrc) {
+                        const cleanArtist = String(normalized.artist).replace(/本地音乐|未知歌手|Unknown Artist/g, '').trim()
+                        // 通过事件总线触发 LyricSelector 弹窗（QQ + 酷狗 + 网易云兜底）
+                        window.dispatchEvent(new CustomEvent('show-lyric-selector', {
+                            detail: {
+                                songName: normalized.name,
+                                artist: cleanArtist,
+                                songPath: song.path,
+                                duration: normalized.duration
                             }
-                            if (match) {
-                                const lResOnline = await getNewLyric(match.id)
-                                const yrcRaw = lResOnline.yrc?.lyric || ''
-                                if (yrcRaw) {
-                                    const ytlrcRaw = lResOnline.ytlrc?.lyric || ''
-                                    this.parseYrcLyrics(yrcRaw, ytlrcRaw)
-                                    // 保存YRC到本地
-                                    const lResReload = await bridge.loadLocalLyric(song.path)
-                                    let existingLrc = ''
-                                    if (lResReload.success) {
-                                        const c = lResReload.lyric || ''
-                                        existingLrc = c.includes('---yrc---') ? c.split('---yrc---')[0].trim() : c
-                                    }
-                                    let saveContent = existingLrc || ''
-                                    saveContent += `\n---yrc---\n${yrcRaw}`
-                                    if (ytlrcRaw) saveContent += `\n---ytlrc---\n${ytlrcRaw}`
-                                    bridge.saveLyric({ songPath: song.path, lyricContent: saveContent })
-                                    useMessageStore().success(`已自动匹配逐词歌词:《${normalized.name}》`)
-                                }
-                            }
-                        } catch (e) { /* 获取YRC失败不影响播放 */ }
+                        }))
                     }
-
-                    // 3. 本地完全没有歌词 → 在线搜索（需开启自动获取）
-                    if (!hasLocalLyric && this.autoFetchLyric) {
+                } else if (isCloud) {
+                    // 云音乐：和本地音乐同规格，只是歌词存储在云端（lyricUrl）
+                    // 1. 从云端 lyricUrl 拉取歌词
+                    let hasCloudYrc = false
+                    if (song.lyricUrl) {
                         try {
-                            const cleanArtist = String(normalized.artist).replace(/本地音乐|未知歌手|Unknown Artist/g, '').trim()
-                            const searchQuery = cleanArtist ? `${normalized.name} ${cleanArtist}` : normalized.name
-                            let sRes = await cloudSearch(searchQuery)
-                            let match = sRes.result?.songs?.[0]
-                            if (!match) {
-                                const strippedName = normalized.name.replace(/\(.*\)|\[.*\]|（.*）|【.*】/g, '').trim()
-                                if (strippedName && strippedName !== normalized.name) {
-                                    sRes = await cloudSearch(strippedName)
-                                    match = sRes.result?.songs?.[0]
-                                }
-                            }
-                            if (match) {
-                                const lResOnline = await getNewLyric(match.id)
-                                const yrcRaw = lResOnline.yrc?.lyric || ''
-                                const ytlrcRaw = lResOnline.ytlrc?.lyric || ''
-                                const lrc = lResOnline.lrc?.lyric || ''
-                                const tlrc = lResOnline.tlyric?.lyric || ''
-
-                                if (yrcRaw) {
-                                    this.parseYrcLyrics(yrcRaw, ytlrcRaw)
-                                    if (lrc) this.parseLyrics(lrc, tlrc)
+                            const lyricRes = await fetch(song.lyricUrl)
+                            const lyricText = await lyricRes.text()
+                            if (lyricText) {
+                                if (lyricText.includes('---yrc---')) {
+                                    const parts = lyricText.split('---yrc---')
+                                    const lrcPart = parts[0].trim()
+                                    let yrcPart = parts[1] || ''
+                                    let ytlrcPart = ''
+                                    if (yrcPart.includes('---ytlrc---')) {
+                                        const yrcParts = yrcPart.split('---ytlrc---')
+                                        yrcPart = yrcParts[0].trim()
+                                        ytlrcPart = yrcParts[1] ? yrcParts[1].trim() : ''
+                                    } else { yrcPart = yrcPart.trim() }
+                                    if (yrcPart) { this.parseYrcLyrics(yrcPart, ytlrcPart); hasCloudYrc = true }
+                                    if (lrcPart) this.parseLyrics(lrcPart)
+                                    this.lyricSource = 'cloud'
                                 } else {
-                                    this.yrcLyrics = null
-                                    this.parseLyrics(lrc, tlrc)
-                                }
-
-                                if (bridge && bridge.saveLyric && (lrc || yrcRaw)) {
-                                    let saveContent = tlrc ? `${lrc}\n---trans---\n${tlrc}` : lrc
-                                    if (yrcRaw) {
-                                        saveContent += `\n---yrc---\n${yrcRaw}`
-                                        if (ytlrcRaw) saveContent += `\n---ytlrc---\n${ytlrcRaw}`
+                                    const wordByWord = this.parseWordByWordLyrics(lyricText)
+                                    if (wordByWord) {
+                                        this.yrcLyrics = wordByWord.yrc
+                                        this.lyrics = wordByWord.lrc
+                                        hasCloudYrc = true
+                                        this.lyricSource = 'cloud'
+                                    } else {
+                                        this.parseLyrics(lyricText)
+                                        this.lyricSource = 'cloud'
                                     }
-                                    bridge.saveLyric({ songPath: song.path, lyricContent: saveContent })
-                                    useMessageStore().success(`已自动匹配${yrcRaw ? '逐词' : '普通'}歌词:《${normalized.name}》`)
                                 }
-                            } else {
-                                this.lyrics = []
-                                useMessageStore().info(`未找到在线歌词:《${normalized.name}》`)
                             }
                         } catch (e) {
-                            console.error('Auto lyric search failed:', e)
-                            this.lyrics = []
+                            console.error('Cloud lyric load failed:', e)
                         }
+                    }
+
+                    // 2. 云端无 YRC 歌词 → 弹窗选择歌词源（和本地音乐一样的规格，不保存到云端）
+                    if (!hasCloudYrc) {
+                        const cleanArtist = String(normalized.artist).replace(/本地音乐|未知歌手|Unknown Artist/g, '').trim()
+                        window.dispatchEvent(new CustomEvent('show-lyric-selector', {
+                            detail: {
+                                songName: normalized.name,
+                                artist: cleanArtist,
+                                songPath: '',
+                                duration: normalized.duration
+                            }
+                        }))
                     }
                 } else if (song.id) {
                     // 检查 Electron 本地文件缓存（优先级最高，支持离线）
@@ -590,53 +549,83 @@ export const usePlayerStore = defineStore('player', {
                         }
                     }
                     
-                    // 请求最新歌词（优先使用 /lyric/new 获取逐词歌词）
-                    getNewLyric(song.id).then(lRes => {
-                        const yrcRaw = lRes.yrc?.lyric || ''
-                        const ytlrcRaw = lRes.ytlrc?.lyric || ''
-                        const lrc = lRes.lrc?.lyric || ''
-                        const tlrc = lRes.tlyric?.lyric || ''
-                        
-                        if (yrcRaw) {
-                            // 有逐词歌词，解析 yrc
-                            this.parseYrcLyrics(yrcRaw, ytlrcRaw)
-                            // 同时也解析普通歌词作为 fallback
-                            if (lrc) this.parseLyrics(lrc, tlrc)
-                        } else if (lrc) {
-                            this.yrcLyrics = null
-                            this.parseLyrics(lrc, tlrc)
-                        }
-                        
-                        // 保存到 localStorage 缓存
-                        if (lrc || yrcRaw) {
-                            try {
-                                const lyricData = { lrc, tlrc, yrc: yrcRaw, ytlrc: ytlrcRaw, savedAt: Date.now(), songName: normalized.name }
-                                localStorage.setItem(cacheKey, JSON.stringify(lyricData))
-                            } catch (e) { /* ignore */ }
-                            
-                            // 保存到 Electron 本地文件（支持离线使用）
-                            if (bridge && bridge.saveOnlineLyric) {
-                                // 保存时也带上 yrc 数据
-                                let saveLrc = lrc
-                                let saveTlrc = tlrc
-                                if (yrcRaw) {
-                                    saveLrc = (tlrc ? `${lrc}\n---trans---\n${tlrc}` : lrc) + `\n---yrc---\n${yrcRaw}`
-                                    if (ytlrcRaw) saveLrc += `\n---ytlrc---\n${ytlrcRaw}`
-                                    saveTlrc = '' // 已经合并到 saveLrc 中
+                    // 线上歌曲：优先使用 QQ 歌词（匹配作者+歌名），不匹配则回退网易云
+                    ;(async () => {
+                        try {
+                            let yrcRaw = '', ytlrcRaw = '', lrc = '', tlrc = ''
+                            let usedQQ = false
+
+                            // 1. 尝试 QQ 歌词（匹配作者+歌名+时长，不一致则跳过）
+                            if (bridge && bridge.getQQLyric) {
+                                try {
+                                    const qqRes = await bridge.getQQLyric({
+                                        songName: normalized.name,
+                                        artist: normalized.artist,
+                                        duration: normalized.duration // 秒
+                                    })
+                                    if (qqRes && qqRes.matched && (qqRes.lrc || qqRes.yrc)) {
+                                        console.log(`--- [Lyric] 使用 QQ 音乐歌词: ${normalized.name}`)
+                                        yrcRaw = qqRes.yrc || ''
+                                        ytlrcRaw = qqRes.trans || ''
+                                        lrc = qqRes.lrc || ''
+                                        tlrc = qqRes.trans || ''
+                                        usedQQ = true
+                                        this.lyricSource = 'qq'
+                                    }
+                                } catch (e) {
+                                    console.error('QQ lyric fetch failed:', e)
                                 }
-                                bridge.saveOnlineLyric({
-                                    songId: String(song.id),
-                                    songName: normalized.name,
-                                    artist: normalized.artist,
-                                    lrc: saveLrc,
-                                    tlrc: saveTlrc
-                                }).catch(e => console.error('File lyric save error:', e))
                             }
+
+                            // 2. QQ 不匹配 → 回退网易云
+                            if (!usedQQ) {
+                                console.log(`--- [Lyric] QQ 未匹配，回退网易云: ${normalized.name}`)
+                                const lRes = await getNewLyric(song.id)
+                                yrcRaw = lRes.yrc?.lyric || ''
+                                ytlrcRaw = lRes.ytlrc?.lyric || ''
+                                lrc = lRes.lrc?.lyric || ''
+                                tlrc = lRes.tlyric?.lyric || ''
+                                this.lyricSource = 'netease'
+                            }
+
+                            // 3. 解析歌词
+                            if (yrcRaw) {
+                                this.parseYrcLyrics(yrcRaw, ytlrcRaw)
+                                if (lrc) this.parseLyrics(lrc, tlrc)
+                            } else if (lrc) {
+                                this.yrcLyrics = null
+                                this.parseLyrics(lrc, tlrc)
+                            }
+
+                            // 4. 保存到缓存（localStorage + Electron 本地文件）
+                            if (lrc || yrcRaw) {
+                                try {
+                                    const lyricData = { lrc, tlrc, yrc: yrcRaw, ytlrc: ytlrcRaw, savedAt: Date.now(), songName: normalized.name }
+                                    localStorage.setItem(cacheKey, JSON.stringify(lyricData))
+                                } catch (e) { /* ignore */ }
+
+                                if (bridge && bridge.saveOnlineLyric) {
+                                    let saveLrc = lrc
+                                    let saveTlrc = tlrc
+                                    if (yrcRaw) {
+                                        saveLrc = (tlrc ? `${lrc}\n---trans---\n${tlrc}` : lrc) + `\n---yrc---\n${yrcRaw}`
+                                        if (ytlrcRaw) saveLrc += `\n---ytlrc---\n${ytlrcRaw}`
+                                        saveTlrc = ''
+                                    }
+                                    bridge.saveOnlineLyric({
+                                        songId: String(song.id),
+                                        songName: normalized.name,
+                                        artist: normalized.artist,
+                                        lrc: saveLrc,
+                                        tlrc: saveTlrc
+                                    }).catch(e => console.error('File lyric save error:', e))
+                                }
+                            }
+                        } catch (err) {
+                            console.error('Lyrics error:', err)
+                            if (!this.lyrics.length) this.lyrics = []
                         }
-                    }).catch(err => {
-                        console.error('Lyrics error:', err)
-                        if (!this.lyrics.length) this.lyrics = []
-                    })
+                    })()
                 }
 
                 this.checkIfLiked(song.id)
@@ -813,6 +802,8 @@ export const usePlayerStore = defineStore('player', {
                     const matches = [...line.matchAll(pattern)]
                     if (matches.length > 0) {
                         let textContent = line.replace(pattern, '').trim()
+                        // 跳过 QQ/酷狗翻译中的 "//" 空行占位符
+                        if (textContent === '//') return
                         if (textContent) {
                             // 优化：处理单行内合并的双语歌词 (例如 "Original / Translation")
                             let tContent = ''
@@ -821,8 +812,8 @@ export const usePlayerStore = defineStore('player', {
                                 const parts = textContent.split(' / ')
                                 textContent = parts[0].trim()
                                 tContent = parts[1].trim()
-                            } else if (textContent.includes('/') && !tlrc && !textContent.startsWith('/')) {
-                                // 兼容没有空格的 /
+                            } else if (textContent.includes('/') && !tlrc && !textContent.startsWith('/') && !textContent.endsWith('//')) {
+                                // 兼容没有空格的 /，但排除 "//" 占位符
                                 const parts = textContent.split('/')
                                 textContent = parts[0].trim()
                                 tContent = parts[1].trim()
@@ -914,7 +905,9 @@ export const usePlayerStore = defineStore('player', {
                 const lineDurationMs = parseInt(lineHeaderMatch[2])
 
                 // 提取所有逐字: (wordStart,wordDuration,flag)text
-                const wordPattern = /\((\d+),(\d+),(\d+)\)([^(]*)/g
+                // 参考 LDDC yrc.py 的 _WORD_SPLIT_PATTERN：用负向预查保证 text 可包含 '(' 等字符，
+                // 只要不构成下一个时间戳 (\d+,\d+,\d+) 即可（如 "(Jay)" 的左括号）
+                const wordPattern = /\((\d+),(\d+),(\d+)\)((?:(?!\(\d+,\d+,\d+\)).)*)/g
                 const words = []
                 let m
                 while ((m = wordPattern.exec(line)) !== null) {
@@ -1277,6 +1270,10 @@ export const usePlayerStore = defineStore('player', {
         toggleBgMode() {
             this.bgMode = this.bgMode === 'cover' ? 'classic' : 'cover'
             localStorage.setItem('player_bg_mode', this.bgMode)
+        },
+        toggleLyricDisplayMode() {
+            this.lyricDisplayMode = this.lyricDisplayMode === 'word' ? 'line' : 'word'
+            localStorage.setItem('lyric_display_mode', this.lyricDisplayMode)
         },
         toggleDesktopLyrics() {
             this.showDesktopLyrics = !this.showDesktopLyrics

@@ -22,6 +22,8 @@ import './anime-meta.js'
 import './movie.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
 import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload } from './download-manager.js'
+// 多平台歌词搜索（QQ + 酷狗）—— 必须用静态 import，否则 vite 打包后 dist-electron 下找不到模块
+import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ } from './lyric-providers.js'
 
 // --- Win7 兼容性初始化 ---
 if (process.platform === 'win32') {
@@ -515,6 +517,33 @@ ipcMain.handle('load-local-lyric', async (_, songPath) => {
         }
         return { success: false, error: 'No local lyric file found' }
     } catch (err) { return { success: false, error: err.message } }
+})
+
+// 多平台歌词搜索（本地歌曲用）：QQ + 酷狗
+ipcMain.handle('search-multi-lyric', async (_, { songName, artist }) => {
+    try {
+        return await searchMultiPlatform(songName, artist)
+    } catch (err) {
+        return { qq: [], kugou: [], errors: { qq: err.message, kugou: err.message } }
+    }
+})
+
+// 按候选获取歌词（本地歌曲用户选中后调用）
+ipcMain.handle('fetch-lyric-by-candidate', async (_, candidate) => {
+    try {
+        return await fetchLyricByCandidate(candidate)
+    } catch (err) {
+        return { lrc: '', yrc: '', trans: '' }
+    }
+})
+
+// 线上歌曲用：QQ 音乐歌词获取（匹配作者+歌名+时长，不一致返回 matched:false）
+ipcMain.handle('get-qq-lyric', async (_, { songName, artist, duration }) => {
+    try {
+        return await searchAndFetchQQ(songName, artist, duration)
+    } catch (err) {
+        return { matched: false, error: err.message }
+    }
 })
 
 // 保存英文解析缓存（本地歌曲旁边存 .analysis.json）

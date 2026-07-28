@@ -18,6 +18,10 @@ const bridgeAPI = {
     openDirectoryDialog: () => ipcRenderer.invoke('open-directory-dialog'),
     saveLyric: (data) => ipcRenderer.invoke('save-lyric', data),
     loadLocalLyric: (songPath) => ipcRenderer.invoke('load-local-lyric', songPath),
+    // 多平台歌词搜索（QQ + 酷狗）
+    searchMultiLyric: ({ songName, artist }) => ipcRenderer.invoke('search-multi-lyric', { songName, artist }),
+    fetchLyricByCandidate: (candidate) => ipcRenderer.invoke('fetch-lyric-by-candidate', candidate),
+    getQQLyric: ({ songName, artist, duration }) => ipcRenderer.invoke('get-qq-lyric', { songName, artist, duration }),
     findLocalMv: (params) => ipcRenderer.invoke('find-local-mv', params),
     saveEnglishAnalysis: (data) => ipcRenderer.invoke('save-english-analysis', data),
     loadEnglishAnalysis: (songPath) => ipcRenderer.invoke('load-english-analysis', songPath),

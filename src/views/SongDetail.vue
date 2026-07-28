@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { usePlayerStore } from '../store/player'
-import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, BookOpen } from 'lucide-vue-next'
+import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, BookOpen, RefreshCw, Type } from 'lucide-vue-next'
 import EnglishAnalysis from '../components/EnglishAnalysis.vue'
 import { getCommentMusic } from '../api'
 import { useRouter } from 'vue-router'
@@ -76,16 +76,23 @@ const rhythmBars = ref(Array.from({ length: 80 }, () => ({
 })))
 
 // === 逐词歌词 (YRC) 支持 ===
+// 当用户切换到"逐行"模式时，强制使用普通 lyrics 渲染（不渲染 yrc-word）
 const hasYrcLyrics = computed(() => !!playerStore.yrcLyrics && playerStore.yrcLyrics.length > 0)
+const useYrcRender = computed(() => hasYrcLyrics.value && playerStore.lyricDisplayMode === 'word')
 
-// 显示用的歌词列表：优先 yrc，否则普通 lyrics
+// 显示用的歌词列表
+// - 逐词模式：用 yrcLyrics（含 words）
+// - 逐行模式：优先用普通 lyrics（覆盖更全），无则用 yrcLyrics 的行级 text
 const displayLyrics = computed(() => {
+    if (useYrcRender.value) return playerStore.yrcLyrics
+    if (playerStore.lyrics && playerStore.lyrics.length > 0) return playerStore.lyrics
     if (hasYrcLyrics.value) return playerStore.yrcLyrics
     return playerStore.lyrics
 })
 
 const getLineProgress = (index) => {
-    if (hasYrcLyrics.value) return 0 // yrc 模式下不使用行级进度
+    // 逐词渲染模式下不使用行级进度（由 yrc-word 接管）
+    if (useYrcRender.value) return 0
     if (index !== currentLyricIndex.value) return 0
     const line = playerStore.lyrics[index]
     const nextLine = playerStore.lyrics[index + 1]
@@ -104,25 +111,54 @@ const handleVisibilityChange = () => {
     isPageVisible.value = !document.hidden
 }
 
-// 逐词动画：只刷新当前高亮行内的 word，避免全量 DOM 遍历
+// 逐词动画：只刷新当前高亮行内的 word，缓存上次 progress 跳过未变化项
+// 性能要点：
+// 1. 已完成(progress=1)的 word 标记 data-done，后续帧直接跳过
+// 2. 未开始(progress=0)的 word 跳过，不写 DOM
+// 3. 正在进行的 word 缓存上次值，差值 < 0.008 视为无变化跳过
+// 4. 仅对当前激活行操作，避免全量遍历
 const updateYrcWordProgress = () => {
-    if (!hasYrcLyrics.value || !lyricContainer.value) return
+    if (!useYrcRender.value || !lyricContainer.value) return
     const nowMs = (playerStore.audio?.currentTime ?? playerStore.currentTime) * 1000
     const activeLine = lyricContainer.value.querySelector('.lyric-line.active .yrc-text')
     if (!activeLine) return
     const wordSpans = activeLine.querySelectorAll('.yrc-word')
     for (let i = 0; i < wordSpans.length; i++) {
         const el = wordSpans[i]
+        // 已完成的 word 直接跳过（progress 已是 1）
+        if (el.dataset.done === '1') continue
         const ws = parseFloat(el.dataset.ws) // word startTime ms
         const wd = parseFloat(el.dataset.wd) // word duration ms
         if (isNaN(ws) || isNaN(wd)) continue
         let progress = 0
         if (nowMs >= ws + wd) {
             progress = 1
+            el.dataset.done = '1' // 标记完成，后续帧跳过
         } else if (nowMs > ws && wd > 0) {
             progress = (nowMs - ws) / wd
+        } else {
+            // 未开始，跳过（保持 0）
+            continue
         }
+        // 缓存上次值，差值过小不更新（减少 DOM 写入）
+        const last = parseFloat(el.dataset.lastp)
+        if (!isNaN(last) && Math.abs(progress - last) < 0.008) continue
         el.style.setProperty('--wp', progress)
+        el.dataset.lastp = progress
+    }
+}
+
+// 切换激活行时重置该行 word 的缓存标记，让新行能正常推进
+const resetYrcLineCache = () => {
+    if (!lyricContainer.value) return
+    const activeLine = lyricContainer.value.querySelector('.lyric-line.active .yrc-text')
+    if (!activeLine) return
+    const wordSpans = activeLine.querySelectorAll('.yrc-word')
+    for (let i = 0; i < wordSpans.length; i++) {
+        const el = wordSpans[i]
+        el.dataset.done = ''
+        el.dataset.lastp = ''
+        el.style.setProperty('--wp', '0')
     }
 }
 
@@ -140,7 +176,7 @@ const updateVisualizer = () => {
   }
 
   // 逐词歌词动画更新（只刷新当前行）
-  if (hasYrcLyrics.value && playerStore.isPlaying) {
+  if (useYrcRender.value && playerStore.isPlaying) {
       updateYrcWordProgress()
   }
   
@@ -292,6 +328,30 @@ const toggleLyricMode = () => {
     }
 }
 
+// === 歌词源切换 ===
+const lyricSourceText = computed(() => {
+    const map = { qq: 'QQ音乐', kugou: '酷狗', netease: '网易云', local: '本地', '': '未加载' }
+    return map[playerStore.lyricSource] || '未加载'
+})
+
+// 切换歌词源：弹出 LyricSelector（本地和线上都弹窗）
+// 本地歌曲选后保存到 .lrc 文件；线上歌曲不保存（songPath 为空）
+const switchLyricSource = () => {
+    const song = playerStore.currentSong
+    const isLocal = typeof song.id === 'string' && song.id.startsWith('local-')
+    const cleanArtist = isLocal
+        ? String(song.artist || '').replace(/本地音乐|未知歌手|Unknown Artist/g, '').trim()
+        : String(song.artist || '').trim()
+    window.dispatchEvent(new CustomEvent('show-lyric-selector', {
+        detail: {
+            songName: song.name,
+            artist: cleanArtist,
+            songPath: isLocal ? song.path : '',
+            duration: song.duration || 0  // 秒，用于在弹窗中显示并高亮匹配项
+        }
+    }))
+}
+
 watch(currentLyricIndex, (newIndex, oldIndex) => {
   if (oldIndex != null && oldIndex >= 0 && oldIndex !== newIndex) {
     leavingIndexes.value.add(oldIndex)
@@ -302,6 +362,10 @@ watch(currentLyricIndex, (newIndex, oldIndex) => {
   }
   if (newIndex >= 0) {
     scrollToCenter(newIndex)
+  }
+  // 切换激活行时重置新行的 word 缓存，让逐字动画能从头推进
+  if (useYrcRender.value) {
+    nextTick(() => resetYrcLineCache())
   }
 })
 
@@ -640,6 +704,14 @@ onMounted(() => {
                    <span class="mode-label">{{ lyricMode === 'apple' ? 'A' : 'C' }}</span>
                    <span class="icon-text">{{ lyricMode === 'apple' ? '苹果' : '经典' }}</span>
                 </div>
+                <div class="icon-with-label action-item lyric-source-btn" :title="`当前: ${lyricSourceText}，点击切换歌词源`" @click="switchLyricSource">
+                   <RefreshCw :size="16" />
+                   <span class="icon-text">{{ lyricSourceText }}</span>
+                </div>
+                <div v-if="hasYrcLyrics" class="icon-with-label action-item lyric-display-mode-btn" :class="{ active: playerStore.lyricDisplayMode === 'word' }" :title="playerStore.lyricDisplayMode === 'word' ? '当前逐词，点击切换逐行' : '当前逐行，点击切换逐词'" @click="playerStore.toggleLyricDisplayMode()">
+                   <Type :size="16" />
+                   <span class="icon-text">{{ playerStore.lyricDisplayMode === 'word' ? '逐词' : '逐行' }}</span>
+                </div>
             </div>
             <div class="group">
                 <span class="label">桌面字体</span>
@@ -688,9 +760,9 @@ onMounted(() => {
                 @click="handleLyricClick(line.time)"
               >
                 <!-- 逐词歌词模式 -->
-                <div v-if="hasYrcLyrics && line.words" class="main-text yrc-text">
-                    <span 
-                        v-for="(word, wi) in line.words" 
+                <div v-if="useYrcRender && line.words" class="main-text yrc-text">
+                    <span
+                        v-for="(word, wi) in line.words"
                         :key="wi"
                         class="yrc-word"
                         :data-ws="word.startTime"
@@ -698,7 +770,7 @@ onMounted(() => {
                         style="--wp: 0"
                     >{{ word.text }}</span>
                 </div>
-                <!-- 普通歌词模式 -->
+                <!-- 普通歌词模式（含逐行模式） -->
                 <div
                     v-else
                     class="main-text"
@@ -1377,6 +1449,11 @@ onMounted(() => {
     font-size: 9px;
 }
 
+/* 歌词源切换按钮 */
+.lyric-source-btn .icon-text {
+    font-size: 10px;
+}
+
 /* 歌词变色开关 */
 .switch-track {
     width: 36px;
@@ -1611,6 +1688,10 @@ onMounted(() => {
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
+}
+
+/* 仅激活行的 word 启用 will-change，避免大量元素同时占用 GPU 合成层 */
+.lyric-line.active .yrc-word {
     will-change: background;
 }
 

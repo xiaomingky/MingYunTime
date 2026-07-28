@@ -14,6 +14,7 @@ import Toast from './components/Toast.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import EqPanel from './components/EqPanel.vue'
+import LyricSelector from './components/LyricSelector.vue'
 import { 
   Search, 
   ChevronLeft, 
@@ -527,6 +528,7 @@ const openGithub = () => {
     <Toast />
     <VideoDownloadToast />
     <ConfirmModal />
+    <LyricSelector />
     <UpdateDialog :visible="updateInfo.available" :version="updateInfo.version" :notes="updateInfo.notes" :downloadUrl="updateInfo.downloadUrl" @close="updateInfo.available = false" />
 
     <!-- 赞赏弹窗 -->
