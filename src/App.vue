@@ -127,27 +127,43 @@ const getBridge = () => {
   return b
 }
 
-// 自动监听播放状态改变并广播给桌面歌词窗口
+// 自动监听播放状态改变并广播给桌面歌词窗口（移除 deep，避免歌词数组深层遍历）
 watch(
-    [() => playerStore.isPlaying, () => playerStore.currentSong, () => playerStore.lyrics, () => playerStore.yrcLyrics],
+    () => playerStore.isPlaying,
     () => {
         if (playerStore.showDesktopLyrics) {
             playerStore.updateDesktopLyricsState()
         }
-    },
-    { deep: true }
+    }
 )
+// 歌词/歌曲变化时才通知桌面歌词（用引用对比，非 deep）
+watch(
+    [() => playerStore.currentSong.id, () => playerStore.lyrics, () => playerStore.yrcLyrics],
+    () => {
+        if (playerStore.showDesktopLyrics) {
+            playerStore.updateDesktopLyricsState()
+        }
+    }
+)
+
+// 持久化保存播放状态 — 精确订阅 4 个字段，避免 currentTime 高频更新触发全量写入
+let _persistTimer = null
+function persistPlayState() {
+    if (_persistTimer) return
+    _persistTimer = setTimeout(() => {
+        _persistTimer = null
+        localStorage.setItem('current_song', JSON.stringify(playerStore.currentSong))
+        localStorage.setItem('playlist', JSON.stringify(playerStore.playlist))
+        localStorage.setItem('current_index', playerStore.currentIndex)
+        localStorage.setItem('play_mode', playerStore.playMode)
+    }, 1000)
+}
+watch(() => playerStore.currentSong, persistPlayState)
+watch(() => playerStore.playlist, persistPlayState, { deep: false })
+watch([() => playerStore.currentIndex, () => playerStore.playMode], persistPlayState)
 
 onMounted(() => {
   playerStore.initAudio()
-
-  // 持久化保存播放状态 (当前歌曲、播放列表、播放模式等)
-  playerStore.$subscribe((mutation, state) => {
-      localStorage.setItem('current_song', JSON.stringify(state.currentSong))
-      localStorage.setItem('playlist', JSON.stringify(state.playlist))
-      localStorage.setItem('current_index', state.currentIndex)
-      localStorage.setItem('play_mode', state.playMode)
-  })
 
   userStore.fetchStatus().then(async () => {
       if (userStore.isLoggedIn && userStore.profile?.userId) {
@@ -197,6 +213,30 @@ onMounted(() => {
     if (playerStore.showDesktopLyrics) {
         b.send('toggle-desktop-lyrics', true)
     }
+
+    // 窗口隐藏时释放渲染进程非必要资源（降低后台内存）
+    // 注意：不暂停 Audio（用户可能在后台听歌），只释放可视化/图片缓存
+    b.on('window-hidden-release', () => {
+        try {
+            // 1. 通知 player store 释放频谱分析器等非必要资源
+            if (typeof playerStore.releaseVisualizerResources === 'function') {
+                playerStore.releaseVisualizerResources()
+            }
+            // 2. 触发 V8 GC（需 --expose-gc 标志，渲染进程也生效）
+            if (typeof window.gc === 'function') {
+                window.gc()
+            }
+        } catch (e) { /* 静默 */ }
+    })
+
+    // 窗口重新显示时恢复资源（重建 analyser）
+    b.on('window-shown-recover', () => {
+        try {
+            if (typeof playerStore.rebuildAudioGraph === 'function' && playerStore.audio) {
+                playerStore.rebuildAudioGraph()
+            }
+        } catch (e) { /* 静默 */ }
+    })
   }
 })
 

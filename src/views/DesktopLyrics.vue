@@ -64,39 +64,71 @@ const registerFonts = async () => {
     }
 }
 
+// 缓存 wordSpans DOM 引用，避免每帧 querySelectorAll
+let _cachedWordSpans = null
+let _cachedWordsKey = null
+function getWordSpans() {
+    // 用 currentWords 的引用作为 key，变化时重新查询
+    const key = currentWords.value
+    if (key !== _cachedWordsKey) {
+        _cachedWordsKey = key
+        _cachedWordSpans = null   // 重置，下次调用时重新查询
+    }
+    if (!_cachedWordSpans) {
+        _cachedWordSpans = document.querySelectorAll('.yrc-word')
+    }
+    return _cachedWordSpans
+}
+
 // 60fps 主循环：逐字高亮 + marquee滚动
+// 优化：当 !isPlaying && !marqueeState.active 时停止 RAF，避免空转耗 CPU
+const startRAF = () => {
+    if (animFrameId == null) {
+        lastFrameTime = performance.now()
+        animFrameId = requestAnimationFrame(updateYrcProgress)
+    }
+}
 const updateYrcProgress = () => {
     const now = performance.now()
     const delta = now - lastFrameTime
     lastFrameTime = now
-    
+
     if (isPlaying.value && currentWords.value && currentWords.value.length > 0) {
         currentMs.value += delta
-        
-        const wordSpans = document.querySelectorAll('.yrc-word')
-        wordSpans.forEach(el => {
+
+        const wordSpans = getWordSpans()
+        for (let i = 0; i < wordSpans.length; i++) {
+            const el = wordSpans[i]
+            // 已完成的 word 跳过（progress 已是 1）
+            if (el.dataset.done === '1') continue
             const ws = parseFloat(el.dataset.ws)
             const wd = parseFloat(el.dataset.wd)
-            if (!isNaN(ws) && !isNaN(wd)) {
-                let progress = 0
-                if (currentMs.value >= ws + wd) {
-                    progress = 1
-                } else if (currentMs.value > ws && wd > 0) {
-                    progress = (currentMs.value - ws) / wd
-                }
-                el.style.setProperty('--wp', progress)
+            if (isNaN(ws) || isNaN(wd)) continue
+            let progress = 0
+            if (currentMs.value >= ws + wd) {
+                progress = 1
+                el.dataset.done = '1'
+            } else if (currentMs.value > ws && wd > 0) {
+                progress = (currentMs.value - ws) / wd
+            } else {
+                continue    // 未开始，跳过
             }
-        })
+            // 差值过小不更新
+            const last = parseFloat(el.dataset.lastp)
+            if (!isNaN(last) && Math.abs(progress - last) < 0.008) continue
+            el.style.setProperty('--wp', progress)
+            el.dataset.lastp = progress
+        }
     } else {
         lastFrameTime = now
     }
-    
+
     // JS驱动的marquee滚动（与逐词进度同步）
     if (marqueeState.active && marqueeWrapRef.value) {
         const wrap = marqueeWrapRef.value
         const elapsed = (now - marqueeState.startTime) % (marqueeState.duration * 1000)
         const phase = elapsed / (marqueeState.duration * 1000)
-        
+
         let t = 0
         if (phase > 0.12 && phase < 0.88) {
             t = (phase - 0.12) / 0.76
@@ -104,10 +136,15 @@ const updateYrcProgress = () => {
         } else if (phase >= 0.88) {
             t = 1
         }
-        
+
         wrap.style.transform = `translateX(${t * marqueeState.amount}px)`
     }
-    
+
+    // 关键节能：既未播放也无 marquee 滚动任务时停止 RAF，等下次 startRAF 触发
+    if (!isPlaying.value && !marqueeState.active) {
+        animFrameId = null
+        return
+    }
     animFrameId = requestAnimationFrame(updateYrcProgress)
 }
 
@@ -136,7 +173,7 @@ const handleStateChange = (_, data) => {
     } else {
         currentWords.value = null
     }
-    
+
     // 歌词变化时触发切换动画 + 标记需要重新检测滚动
     if (lyricChanged) {
         lyricKeyCounter.value++
@@ -146,6 +183,9 @@ const handleStateChange = (_, data) => {
             lyricTransition.value = true
         }, 20)
     }
+
+    // 播放状态从暂停→播放时，若 RAF 已停止则重启（保证逐字动画继续）
+    if (data.isPlaying) startRAF()
 }
 
 const currentLyricRef = ref(null)
@@ -172,11 +212,13 @@ const checkMarquee = () => {
         if (contentWidth > containerWidth + 5 && contentWidth > 50) {
             const scrollAmount = -(contentWidth - containerWidth + 16)
             const duration = Math.max(5, Math.min(14, Math.abs(scrollAmount) / 22))
-            
+
             marqueeState.active = true
             marqueeState.amount = scrollAmount
             marqueeState.duration = duration
             marqueeState.startTime = performance.now()
+            // marquee 滚动需要 RAF 驱动，确保已启动
+            startRAF()
         } else {
             marqueeState.active = false
             wrap.style.transform = ''
@@ -184,11 +226,13 @@ const checkMarquee = () => {
     }, 200)
 }
 
+// 浅监听：currentLyric 是字符串（引用变化即触发），currentWords 是数组引用变化时触发
+// 移除 deep:true，避免每帧递归遍历 words 数组对象（handleStateChange 已整体替换引用）
 watch([currentLyric, currentWords], () => {
     if (needMarqueeCheck) {
         checkMarquee()
     }
-}, { deep: true, flush: 'post' })
+}, { flush: 'post' })
 
 // 鼠标追踪：精确检测是否在可交互区域上 → 控制穿透
 let ignoreMouseTimer = null
@@ -222,9 +266,8 @@ onMounted(() => {
     }
     // 全局 mousemove 追踪穿透状态
     document.addEventListener('mousemove', onMouseMove)
-    // 开启高亮插值轮询
-    lastFrameTime = performance.now()
-    animFrameId = requestAnimationFrame(updateYrcProgress)
+    // 开启高亮插值轮询（startRAF 会处理是否真正启动）
+    startRAF()
     
     // 首次加载触发淡入动画 + 滚动检测
     setTimeout(() => {
@@ -661,15 +704,27 @@ const close = () => {
 .yrc-word {
   display: inline-block;
   white-space: pre;
-  background: linear-gradient(to right, currentColor calc(var(--wp, 0) * 100%), rgba(0, 0, 0, 0.32) calc(var(--wp, 0) * 100%));
+  /* 用 background-position 移动固定渐变（GPU 合成层位移），
+     取代 calc(var(--wp) * 100%) 颜色断点（CPU 每帧重绘 background）
+     同时移除 transition: background —— 它会在每帧追赶新目标值，造成顿挫感 */
+  background-image: linear-gradient(to right,
+    currentColor 0%, currentColor 50%,
+    rgba(0, 0, 0, 0.32) 50%, rgba(0, 0, 0, 0.32) 100%);
+  background-size: 200% 100%;
+  background-position: calc(100% - var(--wp, 0) * 100%) 0;
+  background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  transition: background 0.05s linear;
 }
 
 .card-locked .yrc-word {
-  background: linear-gradient(to right, #ec4141 calc(var(--wp, 0) * 100%), #cccccc calc(var(--wp, 0) * 100%));
+  background-image: linear-gradient(to right,
+    #ec4141 0%, #ec4141 50%,
+    #cccccc 50%, #cccccc 100%);
+  background-size: 200% 100%;
+  background-position: calc(100% - var(--wp, 0) * 100%) 0;
+  background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;

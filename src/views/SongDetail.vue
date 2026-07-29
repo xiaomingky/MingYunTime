@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, BookOpen, RefreshCw, Type } from 'lucide-vue-next'
 import EnglishAnalysis from '../components/EnglishAnalysis.vue'
@@ -69,11 +69,20 @@ const getCoverUrl = () => {
     return picUrl
 }
 
-// Visualizer logic
-const rhythmBars = ref(Array.from({ length: 80 }, () => ({
+// Visualizer logic — 用 shallowRef 避免深层响应式追踪，直接 DOM 操作绕过 Vue 重渲染
+const rhythmBars = shallowRef(Array.from({ length: 80 }, () => ({
   height: 3,
   opacity: 0.5
 })))
+const visualizerContainer = ref(null)
+// 缓存 DOM 元素引用，避免每帧 querySelectorAll
+let _barEls = null
+function getBarEls() {
+    if (!_barEls && visualizerContainer.value) {
+        _barEls = visualizerContainer.value.querySelectorAll('.v-bar')
+    }
+    return _barEls
+}
 
 // === 逐词歌词 (YRC) 支持 ===
 // 当用户切换到"逐行"模式时，强制使用普通 lyrics 渲染（不渲染 yrc-word）
@@ -109,6 +118,10 @@ const isPageVisible = ref(!document.hidden)
 
 const handleVisibilityChange = () => {
     isPageVisible.value = !document.hidden
+    // 页面重新可见时，如果详情页打开且正在播放，重启 RAF
+    if (!document.hidden && playerStore.showSongDetail && !animationId) {
+        startVisualizer()
+    }
 }
 
 // 逐词动画：只刷新当前高亮行内的 word，缓存上次 progress 跳过未变化项
@@ -169,47 +182,68 @@ const updateVisualizer = () => {
     return
   }
 
-  // 页面不可见时空转，减少后台占用
+  // 页面不可见时完全停止 RAF，可见时由 visibilitychange 重新启动
   if (document.hidden) {
-    animationId = requestAnimationFrame(updateVisualizer)
+    animationId = null
     return
   }
 
   // 逐词歌词动画更新（只刷新当前行）
+  // YRC 逐字进度跟随 RAF 更新，但内部有差值<0.008 跳过机制，实际 DOM 写入很少
   if (useYrcRender.value && playerStore.isPlaying) {
       updateYrcWordProgress()
   }
-  
+
   if (playerStore.isPlaying) {
     frameCount++
-    if (frameCount % 3 === 0) {
+    // 频谱采样从 20fps(%3) 降到 12fps(%5)，视觉无感知差异但 CPU 显著降低
+    // 80 根 bar 的 DOM 写入是主要开销，降频后每秒少写 160 次 style 属性
+    if (frameCount % 5 === 0) {
         const data = playerStore.updateFrequencyData()
         if (data) {
           const bars = rhythmBars.value
           const len = bars.length
           const half = Math.floor(len / 2)
           const dataLen = data.length
+          const els = getBarEls()
           // 镜像对称采样：i 与 len-1-i 取同一频段，形成中间向两边起伏
-          // 直接用原始频谱值，不衰减，保持起伏夸张
+          // 插值系数从 0.32 提到 0.4，补偿低帧率下的跟手感
           for (let i = 0; i < len; i++) {
-            const mirrorIdx = i < half ? i : len - 1 - i  // 0(两边) .. half-1(中间)
-            // 频段：两边取低频(0)、中间取中频(half-1) —— 低频通常更强，自然形成中间高两边低
+            const mirrorIdx = i < half ? i : len - 1 - i
             const start = Math.floor(mirrorIdx * (dataLen / half / 2))
             const val = data[start] || 0
-            // 不衰减，直接用原始值，起伏更夸张
             const targetHeight = Math.max(3, (val / 255) * 76 + 3)
-            bars[i].height += (targetHeight - bars[i].height) * 0.32
+            bars[i].height += (targetHeight - bars[i].height) * 0.4
             bars[i].opacity = 0.45 + (val / 255) * 0.55
+            // 直接写 DOM，绕过 Vue 响应式重渲染
+            if (els && els[i]) {
+              els[i].style.height = bars[i].height + 'px'
+              els[i].style.opacity = bars[i].opacity
+            }
           }
         }
     }
   } else {
-      rhythmBars.value.forEach(bar => {
-          bar.height = Math.max(3, bar.height * 0.85)
-          bar.opacity = Math.max(0.3, bar.opacity * 0.85)
-      })
+      // 暂停时执行一次衰减后停止 RAF，避免空转
+      const bars = rhythmBars.value
+      const els = getBarEls()
+      let needStop = true
+      for (let i = 0; i < bars.length; i++) {
+          bars[i].height = Math.max(3, bars[i].height * 0.85)
+          bars[i].opacity = Math.max(0.3, bars[i].opacity * 0.85)
+          if (els && els[i]) {
+            els[i].style.height = bars[i].height + 'px'
+            els[i].style.opacity = bars[i].opacity
+          }
+          // 还有明显高度的 bar 继续衰减一帧
+          if (bars[i].height > 4) needStop = false
+      }
       // 暂停时也刷新一次 yrc 进度（停在当前位置）
       if (hasYrcLyrics.value) updateYrcWordProgress()
+      if (needStop) {
+          animationId = null
+          return
+      }
   }
   animationId = requestAnimationFrame(updateVisualizer)
 }
@@ -228,6 +262,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (animationId) cancelAnimationFrame(animationId)
   animationId = null
+  _barEls = null    // 清理 DOM 引用缓存
+  if (_leavingTimer) clearTimeout(_leavingTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
@@ -237,6 +273,13 @@ watch(() => playerStore.showSongDetail, (val) => {
   } else if (animationId) {
     cancelAnimationFrame(animationId)
     animationId = null
+  }
+})
+
+// 播放状态变化时：播放→重启 RAF（暂停时已停止），暂停→无需额外操作（RAF 自然衰减停止）
+watch(() => playerStore.isPlaying, (playing) => {
+  if (playing && playerStore.showSongDetail && !document.hidden && !animationId) {
+    startVisualizer()
   }
 })
 
@@ -352,11 +395,15 @@ const switchLyricSource = () => {
     }))
 }
 
+// leavingIndexes 定时器引用，组件卸载时清理
+let _leavingTimer = null
 watch(currentLyricIndex, (newIndex, oldIndex) => {
   if (oldIndex != null && oldIndex >= 0 && oldIndex !== newIndex) {
     leavingIndexes.value.add(oldIndex)
     // 与 transition 时长（0.3s）匹配，避免过长的 leaving 状态
-    setTimeout(() => {
+    if (_leavingTimer) clearTimeout(_leavingTimer)
+    _leavingTimer = setTimeout(() => {
+      _leavingTimer = null
       leavingIndexes.value.delete(oldIndex)
     }, 320)
   }
@@ -814,15 +861,11 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="visualizer-container">
+    <div class="visualizer-container" ref="visualizerContainer">
         <div
             v-for="(bar, i) in rhythmBars"
             :key="i"
             class="v-bar"
-            :style="{
-                height: bar.height + 'px',
-                opacity: bar.opacity
-            }"
         ></div>
     </div>
 
@@ -884,17 +927,19 @@ onMounted(() => {
 
 .bg-blur {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  top: -5%;
+  left: -5%;
+  right: -5%;
+  bottom: -5%;
   background-size: cover;
   background-position: center;
-  filter: blur(60px) saturate(1.8);  /* 大半径模糊 + 高饱和度，朦胧封面氛围 */
-  opacity: 0.5;  /* 适中不透明度：既能看清封面色调又不会太深 */
-  z-index: 0;  /* 在 overlay 内部作为底层背景 */
-  transform: scale(1.5) translateZ(0); /* 开启硬件加速，加大缩放比例防止边缘漏底 */
-  will-change: transform;
+  /* 恢复 blur 模拟沉浸朦胧感。
+     安全要点：本元素无 transition，filter 只在切歌（背景图变化）时重算一次，
+     之前的 CPU 50% 真正元凶是 v-bar transition/box-shadow 和 [DL-Debug] 日志，已修复。
+     scale 放大 5% 避免模糊后边缘出现透明 */
+  filter: blur(60px) saturate(1.3);
+  opacity: 0.55;
+  z-index: 0;
   pointer-events: none;
 }
 
@@ -993,8 +1038,9 @@ onMounted(() => {
     right: 20px;
     bottom: 0;
     background-size: cover;
+    /* 恢复 blur 光晕效果，无 transition 安全 */
     filter: blur(30px);
-    opacity: 0.4;
+    opacity: 0.35;
     border-radius: 12px;
     z-index: 0;
 }
@@ -1587,17 +1633,17 @@ onMounted(() => {
   animation: none;
 }
 
-/* blur 用瞬时切换（无 transition）避免 GPU 反复计算模糊 */
+/* 移除 filter:blur，改用 opacity 模拟景深，避免 GPU 反复计算模糊 */
 .lyric-line.blur-1 {
-  filter: blur(2px);
+  opacity: 0.6;
 }
 
 .lyric-line.blur-2 {
-  filter: blur(4px);
+  opacity: 0.4;
 }
 
 .lyric-line.blur-far {
-  filter: blur(8px);
+  opacity: 0.25;
 }
 
 .mode-classic .lyric-line.blur-1,
@@ -1684,7 +1730,14 @@ onMounted(() => {
     display: inline-block;
     white-space: pre;
     color: transparent;
-    background: linear-gradient(to right, #000 calc(var(--wp) * 100%), rgba(0,0,0,0.25) calc(var(--wp) * 100%));
+    /* 用 background-position 移动固定渐变代替 calc(var(--wp) * 100%) 颜色断点
+       前者只触发 GPU 合成层位移（丝滑），后者每帧重绘 background（顿挫） */
+    background-image: linear-gradient(to right,
+        #000 0%, #000 50%,
+        rgba(0,0,0,0.25) 50%, rgba(0,0,0,0.25) 100%);
+    background-size: 200% 100%;
+    background-position: calc(100% - var(--wp) * 100%) 0;
+    background-repeat: no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -1692,22 +1745,28 @@ onMounted(() => {
 
 /* 仅激活行的 word 启用 will-change，避免大量元素同时占用 GPU 合成层 */
 .lyric-line.active .yrc-word {
-    will-change: background;
+    will-change: background-position;
 }
 
 .is-cover-mode .yrc-word {
-    background: linear-gradient(to right, #000 calc(var(--wp) * 100%), rgba(0,0,0,0.4) calc(var(--wp) * 100%));
+    background-image: linear-gradient(to right,
+        #000 0%, #000 50%,
+        rgba(0,0,0,0.4) 50%, rgba(0,0,0,0.4) 100%);
+    background-size: 200% 100%;
+    background-position: calc(100% - var(--wp) * 100%) 0;
+    background-repeat: no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
 .lyric-line.active .yrc-word {
-    background: linear-gradient(
-        to right,
-        #000 calc(var(--wp) * 100%),
-        rgba(0,0,0,0.15) calc(var(--wp) * 100%)
-    );
+    background-image: linear-gradient(to right,
+        #000 0%, #000 50%,
+        rgba(0,0,0,0.15) 50%, rgba(0,0,0,0.15) 100%);
+    background-size: 200% 100%;
+    background-position: calc(100% - var(--wp) * 100%) 0;
+    background-repeat: no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -1775,14 +1834,24 @@ onMounted(() => {
 }
 
 .lyric-wrapper.color-follow .yrc-word {
-    background: linear-gradient(to right, var(--active-color) calc(var(--wp) * 100%), var(--active-color-faded) calc(var(--wp) * 100%));
+    background-image: linear-gradient(to right,
+        var(--active-color) 0%, var(--active-color) 50%,
+        var(--active-color-faded) 50%, var(--active-color-faded) 100%);
+    background-size: 200% 100%;
+    background-position: calc(100% - var(--wp) * 100%) 0;
+    background-repeat: no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
 .lyric-wrapper.color-follow .lyric-line.active .yrc-word {
-    background: linear-gradient(to right, var(--active-color) calc(var(--wp) * 100%), var(--active-color-faded) calc(var(--wp) * 100%));
+    background-image: linear-gradient(to right,
+        var(--active-color) 0%, var(--active-color) 50%,
+        var(--active-color-faded) 50%, var(--active-color-faded) 100%);
+    background-size: 200% 100%;
+    background-position: calc(100% - var(--wp) * 100%) 0;
+    background-repeat: no-repeat;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -1932,13 +2001,9 @@ onMounted(() => {
             #c20c0c 30%,
             #ff4d4d 70%,
             #ffe5e5 100%);
-    border-radius: 2px 2px 0 0;  /* 顶部圆角、底部直角，像光柱立在地面上 */
-    transition: height 0.14s cubic-bezier(0.2, 0.8, 0.2, 1),
-                opacity 0.14s ease-out;
-    /* 主体投影 + 顶部内高光：营造立体感 */
-    box-shadow:
-        0 0 6px rgba(255, 77, 77, 0.4),
-        inset 0 1px 0 rgba(255, 255, 255, 0.4);
+    border-radius: 2px 2px 0 0;
+    /* 移除 transition/box-shadow：80 根 bar 每帧更新时这两个属性会触发大量合成与重绘开销 */
+    /* 顶部内高光改用渐变本身表达，无需 box-shadow */
 }
 
 /* Responsive Adaptation */

@@ -32,8 +32,28 @@ if (process.platform === 'win32') {
     app.commandLine.appendSwitch('disable-software-rasterizer');
     app.commandLine.appendSwitch('ignore-gpu-blacklist');
     // 如果在极旧的 Win7 上崩溃，可以尝试取消注释下面这行进行彻底降级
-    // app.disableHardwareAcceleration(); 
+    // app.disableHardwareAcceleration();
 }
+
+// --- 内存/CPU 优化：V8 和 Chromium 开关（激进省内存） ---
+// V8 堆上限 256MB（默认 4GB），gc-interval=500 避免频繁 GC 抢占主线程
+// expose-gc 允许手动调用 gc() 在窗口隐藏时强制回收
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256 --gc-interval=500 --expose-gc')
+// 磁盘缓存降到 5MB（默认 100MB）
+app.commandLine.appendSwitch('disk-cache-size', '5242880')
+// 禁用站点隔离（单窗口应用不需要），大幅降低内存
+app.commandLine.appendSwitch('disable-site-isolation-trials')
+app.commandLine.appendSwitch('disable-features', 'IsolateOrigins,site-per-process')
+// 禁用不必要的 Chromium 子系统，进一步降低基础内存
+app.commandLine.appendSwitch('disable-extensions')
+app.commandLine.appendSwitch('disable-plugins')
+app.commandLine.appendSwitch('disable-printing')
+app.commandLine.appendSwitch('disable-bundled-ppapi-flash')
+app.commandLine.appendSwitch('disable-default-apps')
+app.commandLine.appendSwitch('disable-translate')
+app.commandLine.appendSwitch('disable-media-stream')  // 不用摄像头/麦克风（音频设备用 WebAudio 不依赖此）
+// 降低图片解码缓存内存（Chromium 默认会缓存大量解码后的图片位图）
+app.commandLine.appendSwitch('prune-to-zero', 'true')
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 process.env.APP_ROOT = path.join(__dirname, '..')
@@ -128,7 +148,10 @@ function createWindow() {
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: false,
-            webSecurity: false // 允许跨域
+            webSecurity: false, // 允许跨域
+            backgroundThrottling: true,    // 主窗口后台时节流，降低 CPU
+            spellcheck: false,    // 关闭拼写检查，减少 CPU 开销
+            autoplayPolicy: 'no-user-gesture-required'
         },
     })
 
@@ -155,8 +178,43 @@ function createWindow() {
         if (tray) {
             e.preventDefault()
             win.hide()
+            // 窗口隐藏后立即释放资源，降低后台内存占用
+            releaseMemoryOnHide()
         }
     })
+
+    // 窗口重新显示时通知渲染进程恢复资源（重建 analyser 等）
+    win.on('show', () => {
+        if (_memoryReleaseTimer) {
+            clearTimeout(_memoryReleaseTimer)
+            _memoryReleaseTimer = null
+        }
+        win.webContents.send('window-shown-recover')
+    })
+
+    // 窗口隐藏时主动释放资源，显示时恢复
+    let _memoryReleaseTimer = null
+    function releaseMemoryOnHide() {
+        // 延迟 2 秒执行，避免快速切换时频繁释放/重建
+        if (_memoryReleaseTimer) clearTimeout(_memoryReleaseTimer)
+        _memoryReleaseTimer = setTimeout(() => {
+            try {
+                // 1. 清理 session 缓存（图片、CSS、JS 等解码后的资源位图）
+                session.defaultSession.clearCache().catch(() => {})
+                session.defaultSession.clearStorageData({
+                    storages: ['shadercache', 'serviceworkers', 'cachestorage']
+                }).catch(() => {})
+                // 2. 清理 song-cover 协议的 LRU 缓存（主进程侧）
+                ipcMain.emit('clear-cover-cache')
+                // 3. 通知渲染进程释放资源（暂停 RAF、清理 Audio 等）
+                win.webContents.send('window-hidden-release')
+                // 4. 强制 V8 GC（需要 --expose-gc 标志）
+                if (typeof global.gc === 'function') {
+                    global.gc()
+                }
+            } catch (e) { /* 静默 */ }
+        }, 2000)
+    }
 
     // 接入统一下载管理器
     setDownloadManagerWindow(win)
@@ -230,7 +288,8 @@ function createLyricWindow() {
             nodeIntegration: false,
             contextIsolation: true,
             sandbox: false,
-            webSecurity: false
+            webSecurity: false,
+            backgroundThrottling: false    // 桌面歌词窗口禁止后台节流，保证动画始终流畅
         },
     })
 
@@ -2430,7 +2489,12 @@ app.whenReady().then(() => {
         }
     })
 
-    // 2. song-cover 协议 (带兜底逻辑)
+    // 2. song-cover 协议 (带 LRU 缓存 + 兜底逻辑)
+    // 缓存已解析的封面 Buffer，避免每次切歌都重新 parseFile 音频元数据
+    const _coverCache = new Map()    // key: filePath+static → { data, mimeType, ts }
+    const _COVER_CACHE_MAX = 8       // 最多缓存 8 首歌的封面（省内存，旧值 30 占用过多）
+    const _COVER_CACHE_TTL = 300000  // 5 分钟过期（旧值 10 分钟，缩短以加速释放）
+
     protocol.registerBufferProtocol('song-cover', async (request, callback) => {
         try {
             const urlStr = request.url
@@ -2447,6 +2511,13 @@ app.whenReady().then(() => {
 
             if (!fs.existsSync(filePath)) return callback({ statusCode: 404 })
 
+            // LRU 缓存检查：命中则直接返回，避免重复 parseFile
+            const cacheKey = filePath + (hasStaticParam ? '?static' : '')
+            const cached = _coverCache.get(cacheKey)
+            if (cached && (Date.now() - cached.ts < _COVER_CACHE_TTL)) {
+                return callback({ mimeType: cached.mimeType, data: cached.data })
+            }
+
             // 提取内嵌
             try {
                 const metadata = await (await getMM()).parseFile(filePath)
@@ -2458,6 +2529,13 @@ app.whenReady().then(() => {
                     } else {
                         // music-metadata 11.x 的 pic.data 是 Uint8Array，Electron registerBufferProtocol 需要 Buffer
                         const buf = Buffer.isBuffer(pic.data) ? pic.data : Buffer.from(pic.data)
+                        // 写入 LRU 缓存
+                        if (_coverCache.size >= _COVER_CACHE_MAX) {
+                            // 删除最早的条目（Map 保持插入顺序）
+                            const firstKey = _coverCache.keys().next().value
+                            _coverCache.delete(firstKey)
+                        }
+                        _coverCache.set(cacheKey, { data: buf, mimeType: pic.format, ts: Date.now() })
                         return callback({ mimeType: pic.format, data: buf })
                     }
                 }
@@ -2516,6 +2594,11 @@ app.whenReady().then(() => {
         } catch (e) {
             callback({ statusCode: 500 })
         }
+    })
+
+    // 清理 song-cover LRU 缓存（窗口隐藏时触发，释放封面图片占用的内存）
+    ipcMain.on('clear-cover-cache', () => {
+        try { _coverCache.clear() } catch (e) {}
     })
 
     createWindow()

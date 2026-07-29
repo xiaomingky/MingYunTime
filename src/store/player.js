@@ -100,14 +100,31 @@ export const usePlayerStore = defineStore('player', {
             this.audio = new Audio()
             this.audio.crossOrigin = "anonymous";
             this.audio.ontimeupdate = () => {
+                // 节流 currentTime 更新：ontimeupdate 每秒触发 4-15 次，
+                // 但 currentTime 是响应式变量，每次更新会触发进度条、歌词高亮等多处 watch
+                // 限制到每 200ms 更新一次（5fps），播放进度条和歌词高亮无感知差异
+                const now = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+                if (this._lastTimeUpdate && now - this._lastTimeUpdate < 200) {
+                    // 仍要检查无缝播放预加载（不依赖 UI 更新）
+                    if (this.audio.duration && this.audio.currentTime > 0 && this.audio.duration - this.audio.currentTime < 1 && !this._nextPreloaded) {
+                        this._nextPreloaded = true
+                        this._preloadNextSong()
+                    }
+                    return
+                }
+                this._lastTimeUpdate = now
                 this.currentTime = this.audio.currentTime
                 // 无缝播放：在歌曲结束前1秒预加载下一首
                 if (this.audio.duration && this.audio.currentTime > 0 && this.audio.duration - this.audio.currentTime < 1 && !this._nextPreloaded) {
                     this._nextPreloaded = true
                     this._preloadNextSong()
                 }
-                if (this.showDesktopLyrics) {
-                    this.updateDesktopLyricsState()
+                // 桌面歌词状态更新用 rAF 节流（合并到下一帧，避免每秒 4-66 次深拷贝+IPC）
+                if (this.showDesktopLyrics && !this._desktopLyricRaf) {
+                    this._desktopLyricRaf = requestAnimationFrame(() => {
+                        this._desktopLyricRaf = null
+                        this.updateDesktopLyricsState()
+                    })
                 }
             }
             this.audio.onended = () => {
@@ -674,6 +691,17 @@ export const usePlayerStore = defineStore('player', {
             }
             return null
         },
+        // 窗口隐藏时释放非必要资源（Audio 保留，用户可能在后台听歌）
+        // 断开 analyser 节点释放频谱分析相关内存，下次 show 时由 rebuildAudioGraph 重建
+        releaseVisualizerResources() {
+            try {
+                if (this.analyser) {
+                    try { this.analyser.disconnect() } catch (e) {}
+                    this.analyser = null
+                    this.dataArray = null
+                }
+            } catch (e) { /* 静默 */ }
+        },
         togglePlay() {
             if (!this.audio?.src) return
             if (this.isPlaying) {
@@ -711,15 +739,24 @@ export const usePlayerStore = defineStore('player', {
             let nextIndex = (this.currentIndex + 1) % this.playlist.length
             if (this.playMode === 2) nextIndex = Math.floor(Math.random() * this.playlist.length)
             if (this.playMode === 1) return // 单曲循环不需要预加载
+            // 清理上一次的预加载 Audio 对象，避免内存泄漏
+            if (this._preloadAudio) {
+                try { this._preloadAudio.src = ''; this._preloadAudio.load() } catch (e) {}
+                this._preloadAudio = null
+            }
             const nextSong = this.playlist[nextIndex]
             if (nextSong && nextSong.id && !String(nextSong.id).startsWith('local-')) {
                 const preload = new Audio()
                 preload.crossOrigin = 'anonymous'
                 preload.preload = 'auto'
+                this._preloadAudio = preload    // 保存引用，切歌时清理
                 import('../api').then(({ getSongUrl }) => {
                     getSongUrl(nextSong.id, this.quality).then(res => {
-                        const url = res.data?.[0]?.url
-                        if (url) { preload.src = url; preload.load() }
+                        // 切歌后可能已过期，检查引用是否仍然有效
+                        if (this._preloadAudio === preload) {
+                            const url = res.data?.[0]?.url
+                            if (url) { preload.src = url; preload.load() }
+                        }
                     })
                 })
             }
@@ -1288,12 +1325,26 @@ export const usePlayerStore = defineStore('player', {
         },
         updateDesktopLyricsState() {
             if (!this.showDesktopLyrics) return
+            // 节流：ontimeupdate 每秒触发 4-15 次，叠加其他调用方
+            // 50ms 节流足够流畅（>20fps），同时避免高频 IPC 造成主线程/IPC 通道阻塞
+            const now = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+            if (this._lastDLUpdate && now - this._lastDLUpdate < 50) {
+                // 安排一次延迟刷新，确保最后一次状态不被丢失
+                if (!this._dlPendingTimer) {
+                    this._dlPendingTimer = setTimeout(() => {
+                        this._dlPendingTimer = null
+                        this._lastDLUpdate = 0
+                        this.updateDesktopLyricsState()
+                    }, 60)
+                }
+                return
+            }
+            this._lastDLUpdate = now
             const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
             if (!bridge || !bridge.send) return
 
             const useLyrics = this.yrcLyrics || this.lyrics
-            console.log('[DL-Debug] currentTime:', this.currentTime, 'yrcLen:', this.yrcLyrics?.length, 'lrcLen:', this.lyrics?.length, 'useLen:', useLyrics?.length)
-            
+
             if (!useLyrics || useLyrics.length === 0) {
                 try {
                     bridge.send('update-lyric-state', JSON.parse(JSON.stringify({
@@ -1311,9 +1362,7 @@ export const usePlayerStore = defineStore('player', {
                         words: null,
                         currentMs: this.currentTime * 1000
                     })))
-                } catch (e) {
-                    console.error('[DL-Debug] IPC send error (empty):', e)
-                }
+                } catch (e) { /* 静默：IPC 错误不影响播放 */ }
                 return
             }
 
@@ -1333,8 +1382,6 @@ export const usePlayerStore = defineStore('player', {
             const nextLine = idx >= 0 ? (useLyrics[idx + 1] || null) : (useLyrics[0] || null)
             const prevLine = idx > 0 ? useLyrics[idx - 1] : null
 
-            console.log('[DL-Debug] idx:', idx, 'current:', currentLine?.text, 'next:', nextLine?.text, 'wordsLen:', currentLine?.words?.length)
-
             const payload = {
                 lyric: currentLine ? currentLine.text : '',
                 tlyric: currentLine ? currentLine.ttext || '' : '',
@@ -1352,9 +1399,7 @@ export const usePlayerStore = defineStore('player', {
             }
             try {
                 bridge.send('update-lyric-state', JSON.parse(JSON.stringify(payload)))
-            } catch (e) {
-                console.error('[DL-Debug] IPC send error:', e)
-            }
+            } catch (e) { /* 静默 */ }
         },
         setFont(font) {
             this.desktopLyricFont = font

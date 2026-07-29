@@ -29,12 +29,8 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 
 - Like, add to playlist, download, share, comment
 - Built-in font switching, customizable lyric font/color/size
-- **Word-by-word / line-by-line lyric toggle**: One-click switch between YRC word-by-word highlighting (smooth left-to-right transition) and regular line-by-line highlighting
-- **Word animation performance optimization**: Only refreshes words in the active line; completed/unstarted words are automatically skipped, reducing DOM writes by 95%+
 
 ![Font Switch](showimage/歌曲详情页内置字体切换展示.png)
-
-![Word-by-word Lyrics](showimage/逐词歌词展示.png)
 
 ### 📋 Playlists
 
@@ -59,17 +55,6 @@ A beautiful, feature-rich desktop music player built with **Vue 3** + **Electron
 - MV playback: **local-first + online auto-match**. The MV button on the song detail page prefers local MV files; when none is found, it automatically calls the Netease MV API to match an online MV by song name
 
 ![Local MV](showimage/本地MV展示.png)
-
-### 🎼 Multi-Source Lyric Selection
-
-![Multi-Source Lyrics](showimage/多歌词源选择.png)
-
-- **Three-platform parallel search**: QQ Music + Kugou Music + Netease Cloud Music searched simultaneously, up to 30 results per platform displayed side-by-side
-- **Word-by-word lyric support**: QQ Music (QRC decryption), Kugou (KRC decryption) support word-by-word lyrics; Netease provides YRC word-by-word lyrics
-- **Duration match highlighting**: Search results within ≤1 second of the current song's duration are automatically highlighted (red border + duration badge) for quick identification of the correct version
-- **Artist search toggle**: One-click switch between "search with artist" and "search by song name only" for handling songs with the same title
-- **Universal for local/cloud music**: Local music and My Cloud Music automatically show the selection dialog when no YRC word-by-word lyrics are available; online songs default to QQ matching + Netease fallback
-- **Lyric translation**: QQ/Kugou/Netease lyrics all support synchronized translation display
 
 ### 🔄 Recent Play
 
