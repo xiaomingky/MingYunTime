@@ -52,6 +52,8 @@ import {
 } from 'lucide-vue-next'
 import SearchSuggest from './components/SearchSuggest.vue'
 import { useSearchHistoryStore } from './store/searchHistory'
+import { API_LINES, switchApiLine } from './api'
+import CustomSelect from './components/CustomSelect.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -267,6 +269,26 @@ const toggleMaximize = () => {
 
 const showCloseOptions = ref(false)
 const closePref = ref(localStorage.getItem('close_action') || 'ask')
+
+// API 线路选择（主线路 / 推荐线路 / 备用线路）
+const currentApiLine = ref(localStorage.getItem('api_line') || API_LINES[0].key)
+const currentApiLineLabel = computed(() => {
+    return API_LINES.find(l => l.key === currentApiLine.value)?.label || ''
+})
+const apiLineOptions = computed(() => API_LINES.map(l => ({ value: l.key, label: l.label })))
+const handleSwitchApiLine = (lineKey) => {
+    if (!lineKey || lineKey === localStorage.getItem('api_line')) return
+    if (switchApiLine(lineKey)) {
+        const line = API_LINES.find(l => l.key === lineKey)
+        messageStore.success(`已切换到${line?.label || '新'}线路，即将刷新页面...`, 1500)
+        // 切换 baseURL 后刷新页面，确保所有已发出请求与缓存状态重置
+        setTimeout(() => {
+            window.location.reload()
+        }, 800)
+    } else {
+        messageStore.error('线路切换失败')
+    }
+}
 
 const openCloseOptions = () => {
     if (closePref.value === 'tray') {
@@ -675,6 +697,15 @@ const openGithub = () => {
         </div>
         
         <div class="header-right no-drag">
+          <div class="api-line-selector" :title="`当前：${currentApiLineLabel}`">
+            <span class="api-line-icon"><Sparkles :size="12" /></span>
+            <CustomSelect
+                v-model="currentApiLine"
+                :options="apiLineOptions"
+                transparent
+                @change="handleSwitchApiLine"
+            />
+          </div>
           <div class="user-info-container">
             <div class="user-info clickable" @click="!userStore.isLoggedIn && (showLogin = true)">
               <img v-if="userStore.isLoggedIn && userStore.profile" :src="userStore.profile.avatarUrl" class="avatar" />
@@ -734,18 +765,18 @@ const openGithub = () => {
                     <div class="close-option-divider"></div>
                     <div class="close-option-settings">
                         <span class="settings-label">默认行为：</span>
-                        <span 
-                            class="setting-option" 
+                        <span
+                            class="setting-option"
                             :class="{ active: closePref === 'ask' }"
                             @click="saveClosePref('ask')"
                         >每次询问</span>
-                        <span 
-                            class="setting-option" 
+                        <span
+                            class="setting-option"
                             :class="{ active: closePref === 'tray' }"
                             @click="saveClosePref('tray')"
                         >托盘</span>
-                        <span 
-                            class="setting-option" 
+                        <span
+                            class="setting-option"
                             :class="{ active: closePref === 'quit' }"
                             @click="saveClosePref('quit')"
                         >退出</span>
@@ -1123,6 +1154,31 @@ const openGithub = () => {
 .theme-icons {
     position: relative;
     z-index: 1000;
+}
+
+/* API 线路选择器（用户头像左侧） */
+.api-line-selector {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(236, 65, 65, 0.25);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-right: 8px;
+}
+
+.api-line-selector:hover {
+    border-color: var(--primary-color);
+    background: #fff;
+}
+
+.api-line-icon {
+    display: flex;
+    align-items: center;
+    color: var(--primary-color);
 }
 
 .main-content-wrapper {

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { Sparkles, Loader2, AlertCircle, Database, Wifi, BookOpen, CheckCircle, ChevronDown, ChevronUp } from 'lucide-vue-next'
+import CustomSelect from './CustomSelect.vue'
 
 const props = defineProps({
     lyrics: { type: Array, default: () => [] },
@@ -46,6 +47,10 @@ const cacheKey = computed(() => {
 const apiKey = ref(localStorage.getItem('deepseek_api_key') || '')
 const aiModel = ref(localStorage.getItem('ai_model') || 'deepseek')
 const mimoKey = ref(localStorage.getItem('mimo_api_key') || '')
+const modelOptions = [
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'mimo', label: 'MiMo v2.5' }
+]
 
 function saveApiKey(value) {
     localStorage.setItem('deepseek_api_key', value.trim())
@@ -459,10 +464,7 @@ function getTenseColor(t) {
             <p>AI 英文歌词解析</p>
             <span>选择模型深度解析语法·时态·生词·变形</span>
             <div class="model-select-box">
-                <select v-model="aiModel" @change="saveModel($event.target.value)" class="model-select">
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="mimo">MiMo v2.5</option>
-                </select>
+                <CustomSelect v-model="aiModel" :options="modelOptions" @change="saveModel" />
             </div>
             <div v-if="aiModel === 'deepseek'" class="api-key-box">
                 <input
@@ -647,17 +649,13 @@ function getTenseColor(t) {
     max-width: 320px;
 }
 .model-select {
+    /* 使用全局 select 美化样式，此处仅覆盖尺寸与对齐 */
     width: 100%;
-    padding: 8px 14px;
-    border: 1px solid #e0e0e0;
-    border-radius: 8px;
+    padding: 8px 28px 8px 14px;
     font-size: 13px;
-    outline: none;
     text-align: center;
-    background: #fafafa;
-    cursor: pointer;
+    text-align-last: center;
 }
-.model-select:focus { border-color: #6366f1; background: #fff; }
 
 .mimo-hint {
     font-size: 12px;

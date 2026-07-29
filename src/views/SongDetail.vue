@@ -3,6 +3,7 @@ import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick } fr
 import { usePlayerStore } from '../store/player'
 import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, BookOpen, RefreshCw, Type } from 'lucide-vue-next'
 import EnglishAnalysis from '../components/EnglishAnalysis.vue'
+import CustomSelect from '../components/CustomSelect.vue'
 import { getCommentMusic } from '../api'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../store/user'
@@ -591,6 +592,10 @@ const handleAddToPlaylist = async (pid) => {
 
 // 字体与颜色设置
 const fonts = ref([])
+const fontOptions = computed(() => {
+    return [{ value: '', label: '默认字体' }, ...fonts.value.map(f => ({ value: f.name, label: f.name }))]
+})
+const onFontChange = (val) => playerStore.setFont(val)
 const getBridge = () => window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
 
 const registerFonts = async () => {
@@ -762,10 +767,12 @@ onMounted(() => {
             </div>
             <div class="group">
                 <span class="label">桌面字体</span>
-                <select class="font-select" v-model="playerStore.desktopLyricFont" @change="playerStore.setFont($event.target.value)">
-                    <option value="">默认字体</option>
-                    <option v-for="f in fonts" :key="f.name" :value="f.name">{{ f.name }}</option>
-                </select>
+                <CustomSelect
+                    v-model="playerStore.desktopLyricFont"
+                    :options="fontOptions"
+                    compact
+                    @change="onFontChange"
+                />
             </div>
             <div class="group">
                 <span class="label">颜色</span>
@@ -1530,16 +1537,6 @@ onMounted(() => {
 
 .switch-track.active .switch-thumb {
     transform: translateX(16px);
-}
-
-.font-select {
-    background: rgba(0,0,0,0.05);
-    border: none;
-    outline: none;
-    padding: 4px 10px;
-    border-radius: 4px;
-    font-size: 13px;
-    color: #333;
 }
 
 .color-picker {

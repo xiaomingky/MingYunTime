@@ -8,6 +8,7 @@ import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
 import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw } from 'lucide-vue-next'
 import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout } from '../api'
+import CustomSelect from '../components/CustomSelect.vue'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
@@ -650,9 +651,7 @@ const typeLabel = (s) => {
                 </div>
                 <div class="form-row">
                     <label>类型</label>
-                    <select v-model="streamForm.type">
-                        <option v-for="t in streamTypes" :key="t.value" :value="t.value">{{ t.label }}</option>
-                    </select>
+                    <CustomSelect v-model="streamForm.type" :options="streamTypes" />
                 </div>
                 <div class="form-tips">
                     <p>· 自动识别：按 URL 后缀判断（.flv → FLV，.m3u8 → HLS，.mp4 → 直链）</p>

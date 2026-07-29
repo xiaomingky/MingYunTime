@@ -1,10 +1,39 @@
 import axios from 'axios'
 
+// API 线路配置：用户可在关闭选项下拉框中切换
+// 主线路：VITE_API_BASE_URL 环境变量配置（默认 https://api.xiaomingky.cn）
+// 推荐线路：https://api2.xiaomingky.cn/
+// 备用线路：https://api3.xiaomingky.cn/
+// 切换后写入 localStorage: 'api_line'，优先级高于环境变量
+export const API_LINES = [
+    { key: 'main', label: '主线路', url: import.meta.env.VITE_API_BASE_URL || '' },
+    { key: 'recommended', label: '推荐线路', url: 'https://api2.xiaomingky.cn/' },
+    { key: 'backup', label: '备用线路', url: 'https://api3.xiaomingky.cn/' }
+]
+
+function getCurrentApiBaseUrl() {
+    const savedKey = localStorage.getItem('api_line')
+    if (savedKey) {
+        const found = API_LINES.find(l => l.key === savedKey)
+        if (found) return found.url
+    }
+    return API_LINES[0].url
+}
+
 const request = axios.create({
-    baseURL: import.meta.env.VITE_API_BASE_URL || '',
+    baseURL: getCurrentApiBaseUrl(),
     timeout: 30000,
     withCredentials: true
 })
+
+// 运行时切换 API 线路（无需刷新页面，立即生效）
+export function switchApiLine(lineKey) {
+    const line = API_LINES.find(l => l.key === lineKey)
+    if (!line) return false
+    localStorage.setItem('api_line', lineKey)
+    request.defaults.baseURL = line.url
+    return true
+}
 
 // 用户自建后端（账号锁 + 云音乐）地址
 export const CLOUD_BASE_URL = import.meta.env.VITE_CLOUD_BASE_URL || ''
