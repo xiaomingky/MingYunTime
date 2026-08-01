@@ -413,7 +413,11 @@ watch(currentLyricIndex, (newIndex, oldIndex) => {
   }
   // 切换激活行时重置新行的 word 缓存，让逐字动画能从头推进
   if (useYrcRender.value) {
-    nextTick(() => resetYrcLineCache())
+    nextTick(() => {
+        resetYrcLineCache()
+        // 立即根据当前播放进度设置 --wp，避免整行停留在 0（浅灰色）再逐步变黑
+        updateYrcWordProgress()
+    })
   }
 })
 
@@ -1731,7 +1735,7 @@ onMounted(() => {
        前者只触发 GPU 合成层位移（丝滑），后者每帧重绘 background（顿挫） */
     background-image: linear-gradient(to right,
         #000 0%, #000 50%,
-        rgba(0,0,0,0.25) 50%, rgba(0,0,0,0.25) 100%);
+        rgba(0,0,0,0.5) 50%, rgba(0,0,0,0.5) 100%);
     background-size: 200% 100%;
     background-position: calc(100% - var(--wp) * 100%) 0;
     background-repeat: no-repeat;
@@ -1748,7 +1752,7 @@ onMounted(() => {
 .is-cover-mode .yrc-word {
     background-image: linear-gradient(to right,
         #000 0%, #000 50%,
-        rgba(0,0,0,0.4) 50%, rgba(0,0,0,0.4) 100%);
+        rgba(0,0,0,0.5) 50%, rgba(0,0,0,0.5) 100%);
     background-size: 200% 100%;
     background-position: calc(100% - var(--wp) * 100%) 0;
     background-repeat: no-repeat;
@@ -1760,7 +1764,7 @@ onMounted(() => {
 .lyric-line.active .yrc-word {
     background-image: linear-gradient(to right,
         #000 0%, #000 50%,
-        rgba(0,0,0,0.15) 50%, rgba(0,0,0,0.15) 100%);
+        rgba(0,0,0,0.5) 50%, rgba(0,0,0,0.5) 100%);
     background-size: 200% 100%;
     background-position: calc(100% - var(--wp) * 100%) 0;
     background-repeat: no-repeat;

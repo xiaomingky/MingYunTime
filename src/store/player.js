@@ -119,12 +119,10 @@ export const usePlayerStore = defineStore('player', {
                     this._nextPreloaded = true
                     this._preloadNextSong()
                 }
-                // 桌面歌词状态更新用 rAF 节流（合并到下一帧，避免每秒 4-66 次深拷贝+IPC）
-                if (this.showDesktopLyrics && !this._desktopLyricRaf) {
-                    this._desktopLyricRaf = requestAnimationFrame(() => {
-                        this._desktopLyricRaf = null
-                        this.updateDesktopLyricsState()
-                    })
+                // 桌面歌词状态更新：直接调用（内部有 50ms 节流）
+                // 不用 requestAnimationFrame，因为主窗口最小化后 RAF 会被暂停
+                if (this.showDesktopLyrics) {
+                    this.updateDesktopLyricsState()
                 }
             }
             this.audio.onended = () => {
@@ -1321,6 +1319,27 @@ export const usePlayerStore = defineStore('player', {
             }
             if (this.showDesktopLyrics) {
                 this.updateDesktopLyricsState()
+                this._startDesktopLyricInterval()
+            } else {
+                this._stopDesktopLyricInterval()
+            }
+        },
+        // 启动定时推送：主窗口最小化后 ontimeupdate + RAF 会被节流/暂停，
+        // setInterval 虽也被降频但不会完全停止，
+        // 配合桌面歌词窗口自身的 delta 累加可保持歌词持续滚动
+        // 频率 1000ms：作为后台后备，主窗口可见时 ontimeupdate 已高频推送
+        _startDesktopLyricInterval() {
+            this._stopDesktopLyricInterval()
+            this._desktopLyricTimer = setInterval(() => {
+                if (this.showDesktopLyrics && this.isPlaying) {
+                    this.updateDesktopLyricsState()
+                }
+            }, 1000)
+        },
+        _stopDesktopLyricInterval() {
+            if (this._desktopLyricTimer) {
+                clearInterval(this._desktopLyricTimer)
+                this._desktopLyricTimer = null
             }
         },
         updateDesktopLyricsState() {

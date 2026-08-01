@@ -168,8 +168,12 @@ const handleStateChange = (_, data) => {
     
     if (data.words && Array.isArray(data.words) && data.words.length > 0) {
         currentWords.value = data.words
-        currentMs.value = data.currentMs || 0
-        lastFrameTime = performance.now()
+        // 仅在歌词行变化时用真实进度重置 currentMs，
+        // 否则保留 RAF 的 delta 累加值，避免 --wp 在累加值与真实值间来回跳变导致闪烁
+        if (lyricChanged) {
+            currentMs.value = data.currentMs || 0
+            lastFrameTime = performance.now()
+        }
     } else {
         currentWords.value = null
     }

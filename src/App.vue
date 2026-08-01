@@ -214,6 +214,7 @@ onMounted(() => {
     // 初始化桌面歌词窗口状态
     if (playerStore.showDesktopLyrics) {
         b.send('toggle-desktop-lyrics', true)
+        playerStore._startDesktopLyricInterval()
     }
 
     // 窗口隐藏时释放渲染进程非必要资源（降低后台内存）
