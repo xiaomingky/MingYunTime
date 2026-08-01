@@ -43,12 +43,18 @@ export const usePlayerStore = defineStore('player', {
         showDesktopLyrics: localStorage.getItem('show_desktop_lyrics') === 'true',
         desktopLyricFont: '',
         desktopLyricColor: '#00E5FF',
+        // 桌面歌词模式：'complex' 复杂模式（封面+控制+歌词）/ 'simple' 简约模式（仅歌词）
+        desktopLyricMode: localStorage.getItem('desktop_lyric_mode') || 'complex',
+        // 桌面歌词背景透明度 0-100（百分比，100=不透明）
+        desktopLyricOpacity: parseInt(localStorage.getItem('desktop_lyric_opacity') || '100', 10),
         bgMode: localStorage.getItem('player_bg_mode') || 'cover', // 'cover' | 'classic'
         audioDevices: [],
         currentDeviceId: localStorage.getItem('audio_device_id') || '',
         recentSongs: JSON.parse(localStorage.getItem('recent_songs') || '[]'),
         localSongs: JSON.parse(localStorage.getItem('local_songs') || '[]'),
         quality: localStorage.getItem('music_quality') || 'standard',
+        // 沉浸环绕声(level=sky)的子类型：'c51'(5.1环绕,默认) / 'aac'
+        immerseType: localStorage.getItem('music_immerse_type') || 'c51',
         playbackRate: parseFloat(localStorage.getItem('playback_rate') || '1'),
         autoFetchLyric: localStorage.getItem('auto_fetch_lyric') !== 'false',
         eqEnabled: localStorage.getItem('eq_enabled') === 'true',
@@ -307,9 +313,23 @@ export const usePlayerStore = defineStore('player', {
                 const isCloud = typeof song.id === 'string' && song.id.startsWith('cloud-')
 
                 if (!url && !isLocal && !isCloud) {
-                    const res = await getSongUrl(song.id, this.quality)
-                    const songData = res.data?.[0] || res?.[0]
-                    url = songData?.url
+                    // 沉浸环绕声型等高阶音质多数歌曲无资源，逐级回退保证可播放
+                    const surroundFallback = ['jyeffect', 'jymaster', 'sky', 'dolby', 'hires']
+                    let tryLevels = [this.quality]
+                    if (surroundFallback.includes(this.quality)) {
+                        tryLevels = [this.quality, 'lossless', 'exhigh', 'standard']
+                    }
+                    for (const lv of tryLevels) {
+                        const res = await getSongUrl(song.id, lv, this.immerseType)
+                        const songData = res.data?.[0] || res?.[0]
+                        if (songData?.url) {
+                            url = songData.url
+                            if (lv !== this.quality) {
+                                useMessageStore().info(`当前音质无资源，已回退到：${({ lossless: '无损', exhigh: '极高', standard: '标准' })[lv] || lv}`)
+                            }
+                            break
+                        }
+                    }
                 }
 
                 if (!url && !isLocal) {
@@ -749,7 +769,7 @@ export const usePlayerStore = defineStore('player', {
                 preload.preload = 'auto'
                 this._preloadAudio = preload    // 保存引用，切歌时清理
                 import('../api').then(({ getSongUrl }) => {
-                    getSongUrl(nextSong.id, this.quality).then(res => {
+                    getSongUrl(nextSong.id, this.quality, this.immerseType).then(res => {
                         // 切歌后可能已过期，检查引用是否仍然有效
                         if (this._preloadAudio === preload) {
                             const url = res.data?.[0]?.url
@@ -1293,6 +1313,17 @@ export const usePlayerStore = defineStore('player', {
                 })
             }
         },
+        setImmerseType(t) {
+            this.immerseType = t
+            localStorage.setItem('music_immerse_type', t)
+            // 仅在当前为沉浸环绕声时重新加载
+            if (this.quality === 'sky' && this.currentSong && this.currentSong.id && !String(this.currentSong.id).startsWith('local-') && this.isPlaying) {
+                const currentTime = this.currentTime
+                this.playSong(this.currentSong).then(() => {
+                    this.seek(currentTime)
+                })
+            }
+        },
         setPlaybackRate(rate) {
             this.playbackRate = rate
             localStorage.setItem('playback_rate', rate)
@@ -1378,6 +1409,8 @@ export const usePlayerStore = defineStore('player', {
                         picUrl: this.currentSong.al?.picUrl || '',
                         font: this.desktopLyricFont,
                         color: this.desktopLyricColor,
+                        mode: this.desktopLyricMode,
+                        opacity: this.desktopLyricOpacity,
                         words: null,
                         currentMs: this.currentTime * 1000
                     })))
@@ -1413,6 +1446,8 @@ export const usePlayerStore = defineStore('player', {
                 picUrl: this.currentSong.al?.picUrl || '',
                 font: this.desktopLyricFont,
                 color: this.desktopLyricColor,
+                mode: this.desktopLyricMode,
+                opacity: this.desktopLyricOpacity,
                 words: currentLine?.words || null,
                 currentMs: this.currentTime * 1000
             }
@@ -1426,6 +1461,16 @@ export const usePlayerStore = defineStore('player', {
         },
         setColor(color) {
             this.desktopLyricColor = color
+            this.updateDesktopLyricsState()
+        },
+        setDesktopLyricMode(mode) {
+            this.desktopLyricMode = mode
+            localStorage.setItem('desktop_lyric_mode', mode)
+            this.updateDesktopLyricsState()
+        },
+        setDesktopLyricOpacity(opacity) {
+            this.desktopLyricOpacity = Math.max(0, Math.min(100, parseInt(opacity, 10) || 0))
+            localStorage.setItem('desktop_lyric_opacity', String(this.desktopLyricOpacity))
             this.updateDesktopLyricsState()
         },
         async fetchAudioDevices() {

@@ -14,6 +14,10 @@ const isPlaying = ref(false)
 const currentFont = ref('')
 const currentColor = ref('#ec4141')
 const isLocked = ref(false)
+// 桌面歌词模式：'complex' 复杂 / 'simple' 简约（仅歌词）
+const lyricMode = ref('complex')
+// 背景透明度 0-100（100=不透明）
+const bgOpacity = ref(100)
 
 // 逐词歌词高频动画插值所用的状态
 const currentWords = ref(null)
@@ -34,6 +38,12 @@ const lyricKeyCounter = ref(0)
 const lyricFontFamily = computed(() => {
     return currentFont.value ? `"${currentFont.value}", "Noto Serif SC", "Songti SC", serif` : '"Noto Serif SC", "Songti SC", serif'
 })
+
+const isSimpleMode = computed(() => lyricMode.value === 'simple')
+// 卡片背景样式：通过 CSS 变量控制不透明度（同时作用于锁定/未锁定）
+const cardBgStyle = computed(() => ({
+    '--card-opacity': (bgOpacity.value / 100).toFixed(3)
+}))
 
 const getBridge = () => {
   return window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer || window.electron
@@ -165,6 +175,12 @@ const handleStateChange = (_, data) => {
     picUrl.value = data.picUrl || ''
     currentFont.value = data.font || ''
     currentColor.value = data.color && data.color !== '#00E5FF' ? data.color : '#ec4141'
+    if (data.mode === 'simple' || data.mode === 'complex') {
+        lyricMode.value = data.mode
+    }
+    if (typeof data.opacity === 'number' && !isNaN(data.opacity)) {
+        bgOpacity.value = Math.max(0, Math.min(100, data.opacity))
+    }
     
     if (data.words && Array.isArray(data.words) && data.words.length > 0) {
         currentWords.value = data.words
@@ -237,6 +253,13 @@ watch([currentLyric, currentWords], () => {
         checkMarquee()
     }
 }, { flush: 'post' })
+
+// 模式切换会改变歌词容器宽度，需重新检测 marquee 滚动
+watch(lyricMode, () => {
+    lastLyricKey = ''
+    needMarqueeCheck = true
+    checkMarquee()
+})
 
 // 鼠标追踪：精确检测是否在可交互区域上 → 控制穿透
 let ignoreMouseTimer = null
@@ -311,20 +334,20 @@ const close = () => {
 </script>
 
 <template>
-  <div class="desktop-lyric-container" :class="{ locked: isLocked }">
-    <div class="widget-card" :class="{ 'card-locked': isLocked }">
+  <div class="desktop-lyric-container" :class="{ locked: isLocked, 'simple-mode': isSimpleMode }">
+    <div class="widget-card" :class="{ 'card-locked': isLocked, 'card-simple': isSimpleMode }" :style="cardBgStyle">
       <!-- 拖拽层：未锁定时可拖动整个卡片区域 -->
       <div class="drag-overlay" :class="{ 'no-drag': isLocked }"></div>
-      
-      <!-- 左侧：封面与控制器 -->
-      <div class="left-panel no-drag">
+
+      <!-- 左侧：封面与控制器（简约模式隐藏） -->
+      <div v-if="!isSimpleMode" class="left-panel no-drag">
         <div class="cover-wrapper" :class="{ playing: isPlaying }">
           <img v-if="picUrl" :src="picUrl" class="cover-img" />
           <div v-else class="cover-fallback">
             <Music :size="32" class="music-icon" />
           </div>
         </div>
-        
+
         <div class="compact-controls">
           <button class="icon-btn" @click="sendCommand('prev')" title="上一首">
             <SkipBack :size="14" fill="currentColor" />
@@ -340,23 +363,24 @@ const close = () => {
       </div>
 
       <!-- 右侧：歌曲信息与歌词 -->
-      <div class="right-panel">
-        <div class="song-header">
+      <div class="right-panel" :class="{ 'right-panel-simple': isSimpleMode }">
+        <div v-if="!isSimpleMode" class="song-header">
           <span class="song-title" :title="songName">{{ songName || '茗韵时光' }}</span>
           <span class="song-artist" :title="artist">{{ artist || '享受音乐' }}</span>
         </div>
 
-        <div class="lyric-content-area" :style="{ fontFamily: lyricFontFamily }">
+        <div class="lyric-content-area" :class="{ 'lyric-content-simple': isSimpleMode }" :style="{ fontFamily: lyricFontFamily }">
           <div class="lyric-line-current" :class="{ 'lyric-fade-in': lyricTransition }" :key="lyricKeyCounter">
             <div class="marquee-scroll-wrap" ref="marqueeWrapRef">
-              <div 
-                v-if="currentWords && currentWords.length > 0" 
+              <div
+                v-if="currentWords && currentWords.length > 0"
                 ref="currentLyricRef"
-                class="lyric-text-current yrc-text" 
+                class="lyric-text-current yrc-text"
+                :class="{ 'lyric-text-simple': isSimpleMode }"
                 :style="{ color: currentColor }"
               >
-                <span 
-                    v-for="(word, wi) in currentWords" 
+                <span
+                    v-for="(word, wi) in currentWords"
                     :key="wi"
                     class="yrc-word"
                     :data-ws="word.startTime"
@@ -364,17 +388,18 @@ const close = () => {
                     style="--wp: 0"
                 >{{ word.text }}</span>
               </div>
-              <span 
-                v-else 
+              <span
+                v-else
                 ref="currentLyricRef"
-                class="lyric-text-current" 
+                class="lyric-text-current"
+                :class="{ 'lyric-text-simple': isSimpleMode }"
                 :style="{ color: currentColor }"
               >{{ currentLyric }}</span>
             </div>
-            
+
             <span v-if="currentTlyric" class="lyric-trans-current" :style="{ color: currentColor }">{{ currentTlyric }}</span>
           </div>
-          <div class="lyric-line-next" v-if="nextLyric">
+          <div class="lyric-line-next" v-if="nextLyric && !isSimpleMode">
             <span class="lyric-text-next">{{ nextLyric }}</span>
           </div>
         </div>
@@ -442,12 +467,13 @@ const close = () => {
   height: 176px;
   display: flex;
   align-items: center;
-  background: #ffffff;
+  /* 通过 CSS 变量控制背景透明度，默认不透明(1) */
+  background: rgba(255, 255, 255, var(--card-opacity, 1));
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 24px;
   padding: 18px 24px;
   box-sizing: border-box;
-  box-shadow: 
+  box-shadow:
     0 16px 40px rgba(0, 0, 0, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
   transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
@@ -455,11 +481,11 @@ const close = () => {
 }
 
 .widget-card.card-locked {
-  background: rgba(255, 255, 255, 0.88) !important;
+  background: rgba(255, 255, 255, var(--card-opacity, 0.88)) !important;
   backdrop-filter: blur(24px) saturate(200%) brightness(1.02) !important;
   -webkit-backdrop-filter: blur(24px) saturate(200%) brightness(1.02) !important;
   border-color: rgba(236, 65, 65, 0.12) !important;
-  box-shadow: 
+  box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.12),
     0 2px 8px rgba(236, 65, 65, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
@@ -818,5 +844,32 @@ const close = () => {
   color: #ec4141 !important;
   background: rgba(236, 65, 65, 0.15) !important;
   border-color: rgba(236, 65, 65, 0.2) !important;
+}
+
+/* ============ 简约模式：仅显示歌词，居中放大 ============ */
+.widget-card.card-simple {
+  width: 720px;
+  height: 96px;
+  padding: 14px 28px;
+  border-radius: 18px;
+  justify-content: center;
+}
+
+.right-panel-simple {
+  flex: 1;
+  height: 100%;
+  justify-content: center;
+  padding: 0;
+}
+
+.lyric-content-simple {
+  margin-top: 0;
+  justify-content: center;
+}
+
+.lyric-text-simple {
+  font-size: 34px;
+  font-weight: 800;
+  line-height: 1.2;
 }
 </style>

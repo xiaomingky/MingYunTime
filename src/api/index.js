@@ -103,7 +103,14 @@ request.interceptors.response.use(
 export const getBanner = () => request.get('/banner?type=0')
 export const getPersonalizedPlaylist = (limit = 10) => request.get(`/personalized?limit=${limit}`)
 export const getNewSongs = (limit = 12) => request.get(`/personalized/newsong?limit=${limit}`)
-export const getSongUrl = (id, level = 'standard') => request.get(`/song/url/v1?id=${id}&level=${level}`)
+export const getSongUrl = (id, level = 'standard', immerseType = '') => {
+    let url = `/song/url/v1?id=${id}&level=${level}`
+    // 沉浸环绕声(level=sky)需额外指定 immerseType：c51(默认) / aac
+    if (level === 'sky' && immerseType) {
+        url += `&immerseType=${immerseType}`
+    }
+    return request.get(url)
+}
 export const getSongDetail = (ids) => request.get(`/song/detail?ids=${ids}`)
 export const getLyric = (id) => request.get(`/lyric?id=${id}`)
 export const getNewLyric = (id) => request.get(`/lyric/new?id=${id}`)

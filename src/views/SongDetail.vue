@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { usePlayerStore } from '../store/player'
-import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, BookOpen, RefreshCw, Type } from 'lucide-vue-next'
+import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, BookOpen, RefreshCw, Type, LayoutGrid, AlignLeft, Settings } from 'lucide-vue-next'
 import EnglishAnalysis from '../components/EnglishAnalysis.vue'
 import CustomSelect from '../components/CustomSelect.vue'
 import { getCommentMusic } from '../api'
@@ -16,6 +16,8 @@ const router = useRouter()
 const lyricFontSize = ref(32)
 const showGifCover = ref(localStorage.getItem('song_detail_show_gif_cover') !== 'false')
 const showEnglishAnalysis = ref(false)
+// 歌词设置项默认折叠收起
+const showLyricSettings = ref(false)
 // 歌词颜色是否跟随桌面歌词所选颜色
 const lyricColorFollow = ref(localStorage.getItem('song_detail_lyric_color_follow') === 'true')
 
@@ -768,34 +770,64 @@ onMounted(() => {
                    <Type :size="16" />
                    <span class="icon-text">{{ playerStore.lyricDisplayMode === 'word' ? '逐词' : '逐行' }}</span>
                 </div>
-            </div>
-            <div class="group">
-                <span class="label">桌面字体</span>
-                <CustomSelect
-                    v-model="playerStore.desktopLyricFont"
-                    :options="fontOptions"
-                    compact
-                    @change="onFontChange"
-                />
-            </div>
-            <div class="group">
-                <span class="label">颜色</span>
-                <input type="color" :value="playerStore.desktopLyricColor" @input="playerStore.setColor($event.target.value)" class="color-picker" />
-            </div>
-            <div class="group">
-                <span class="label">字号</span>
-                <div class="size-btns">
-                   <Minus :size="14" class="clickable" @click="lyricFontSize = Math.max(32, lyricFontSize - 2)" />
-                   <span class="curr-size">{{ lyricFontSize }}</span>
-                   <Plus :size="14" class="clickable" @click="lyricFontSize = lyricFontSize + 2" />
+                <!-- 设置折叠/展开切换按钮 -->
+                <div class="icon-with-label action-item settings-toggle-btn" :class="{ active: showLyricSettings }" :title="showLyricSettings ? '收起歌词设置' : '展开歌词设置'" @click="showLyricSettings = !showLyricSettings">
+                   <Settings :size="16" />
+                   <span class="icon-text">设置</span>
                 </div>
             </div>
-            <div class="group">
-                <span class="label">歌词变色</span>
-                <div class="switch-track" :class="{ active: lyricColorFollow }" @click="toggleLyricColorFollow" title="开启后歌词颜色跟随上方颜色选择器">
-                    <div class="switch-thumb"></div>
+            <!-- 歌词设置项：默认折叠，点击「设置」按钮展开 -->
+            <transition name="lyric-settings-collapse">
+                <div v-show="showLyricSettings" class="lyric-settings-wrap">
+                    <div class="group">
+                        <span class="label">桌面字体</span>
+                        <CustomSelect
+                            v-model="playerStore.desktopLyricFont"
+                            :options="fontOptions"
+                            compact
+                            @change="onFontChange"
+                        />
+                    </div>
+                    <div class="group">
+                        <span class="label">颜色</span>
+                        <input type="color" :value="playerStore.desktopLyricColor" @input="playerStore.setColor($event.target.value)" class="color-picker" />
+                    </div>
+                    <div class="group">
+                        <span class="label">桌面模式</span>
+                        <div class="dlyric-mode-btns">
+                           <div class="mode-chip" :class="{ active: playerStore.desktopLyricMode === 'complex' }" title="复杂模式：封面+控制+歌词" @click="playerStore.setDesktopLyricMode('complex')">
+                              <LayoutGrid :size="13" />
+                              <span>复杂</span>
+                           </div>
+                           <div class="mode-chip" :class="{ active: playerStore.desktopLyricMode === 'simple' }" title="简约模式：仅显示歌词" @click="playerStore.setDesktopLyricMode('simple')">
+                              <AlignLeft :size="13" />
+                              <span>简约</span>
+                           </div>
+                        </div>
+                    </div>
+                    <div class="group">
+                        <span class="label">背景透明</span>
+                        <div class="opacity-row">
+                           <input type="range" min="0" max="100" :value="100 - playerStore.desktopLyricOpacity" @input="playerStore.setDesktopLyricOpacity(100 - $event.target.value)" class="opacity-slider" />
+                           <span class="opacity-val">{{ 100 - playerStore.desktopLyricOpacity }}%</span>
+                        </div>
+                    </div>
+                    <div class="group">
+                        <span class="label">字号</span>
+                        <div class="size-btns">
+                           <Minus :size="14" class="clickable" @click="lyricFontSize = Math.max(32, lyricFontSize - 2)" />
+                           <span class="curr-size">{{ lyricFontSize }}</span>
+                           <Plus :size="14" class="clickable" @click="lyricFontSize = lyricFontSize + 2" />
+                        </div>
+                    </div>
+                    <div class="group">
+                        <span class="label">歌词变色</span>
+                        <div class="switch-track" :class="{ active: lyricColorFollow }" @click="toggleLyricColorFollow" title="开启后歌词颜色跟随上方颜色选择器">
+                            <div class="switch-thumb"></div>
+                        </div>
+                    </div>
                 </div>
-            </div>
+            </transition>
         </div>
 
         <div class="lyric-wrapper" ref="lyricContainer" :class="['mode-' + lyricMode, { 'color-follow': lyricColorFollow }]" :style="{ '--active-color': activeLyricColor, '--active-color-faded': inactiveLyricColor }">
@@ -1470,6 +1502,36 @@ onMounted(() => {
     gap: 8px;
 }
 
+/* 歌词设置项折叠容器 */
+.lyric-settings-wrap {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    overflow: hidden;
+}
+
+.lyric-settings-collapse-enter-active,
+.lyric-settings-collapse-leave-active {
+    transition: max-height 0.25s ease, opacity 0.2s ease, margin 0.25s ease;
+    overflow: hidden;
+    max-height: 80px;
+}
+
+.lyric-settings-collapse-enter-from,
+.lyric-settings-collapse-leave-to {
+    opacity: 0;
+    max-height: 0;
+    margin-top: -10px;
+}
+
+.settings-toggle-btn {
+    opacity: 0.7;
+}
+.settings-toggle-btn.active {
+    opacity: 1;
+}
+
 .icon-group {
     gap: 10px;
 }
@@ -1561,6 +1623,69 @@ onMounted(() => {
     background: rgba(0,0,0,0.04);
     padding: 6px 14px;
     border-radius: 20px;
+}
+
+/* 桌面歌词模式切换 chips */
+.dlyric-mode-btns {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.mode-chip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    border-radius: 14px;
+    font-size: 12px;
+    color: #666;
+    background: rgba(0,0,0,0.04);
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.mode-chip:hover {
+    background: rgba(236,65,65,0.08);
+    color: var(--primary-color, #ec4141);
+}
+.mode-chip.active {
+    background: var(--primary-color, #ec4141);
+    color: #fff;
+    border-color: var(--primary-color, #ec4141);
+}
+
+/* 透明度滑块 */
+.opacity-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.opacity-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 90px;
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(0,0,0,0.12);
+    outline: none;
+    cursor: pointer;
+}
+.opacity-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--primary-color, #ec4141);
+    border: 2px solid #fff;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    cursor: pointer;
+}
+.opacity-val {
+    font-size: 11px;
+    color: #888;
+    min-width: 32px;
+    text-align: right;
 }
 
 .lyric-wrapper {
