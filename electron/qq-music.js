@@ -506,14 +506,18 @@ export function startQQMusicAPI() {
     // 关键:打包后 process.execPath 指向"茗韵时光.exe"(Electron 主程序),
     // 直接 spawn 会启动整个 Electron 应用而非纯 Node 进程。
     // 设置 ELECTRON_RUN_AS_NODE=1 强制 Electron 以纯 Node 模式运行(只执行脚本,不启 GUI)。
+    //
+    // 重要:--require 必须作为 spawn 参数数组元素传递,不能用 NODE_OPTIONS。
+    // 原因:NODE_OPTIONS 会被 Node 按空格分词,安装路径含空格(如 "C:\Program Files\...")
+    // 或中文时,polyfill 路径会被切断,导致子进程崩溃、QQ API 服务起不来。
+    // 作为 args 数组元素时,Node 直接拿到完整字符串,不会被空格分词。
     const nodeBin = process.execPath
     const env = { ...process.env, PORT: '3200', ELECTRON_RUN_AS_NODE: '1' }
-    env.NODE_OPTIONS = [env.NODE_OPTIONS, `--require=${polyfillPath}`].filter(Boolean).join(' ')
 
     console.log('[QQ API] spawn:', nodeBin, appPath)
-    console.log('[QQ API] NODE_OPTIONS:', env.NODE_OPTIONS)
+    console.log('[QQ API] polyfill (as argv):', polyfillPath)
 
-    qqProcess = spawn(nodeBin, [appPath], {
+    qqProcess = spawn(nodeBin, [`--require=${polyfillPath}`, appPath], {
         env,
         stdio: 'pipe',
         windowsHide: true

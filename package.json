@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "3.0.0",
+  "version": "3.0.2",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "set NODE_OPTIONS=--max-old-space-size=256 && vite",
     "dev:light": "set NODE_OPTIONS=--max-old-space-size=192 && vite",
-    "build": "vite build && electron-builder",
+    "build": "node scripts/ensure-qq-music-dist.cjs && vite build && electron-builder",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -68,14 +68,6 @@
       {
         "from": "electron/qq-styletext-polyfill.cjs",
         "to": "qq-styletext-polyfill.cjs"
-      },
-      {
-        "from": "node_modules/@sansenjian/qq-music-api/dist",
-        "to": "qq-music-api/dist"
-      },
-      {
-        "from": "node_modules/@sansenjian/qq-music-api/package.json",
-        "to": "qq-music-api/package.json"
       }
     ],
     "fileAssociations": [

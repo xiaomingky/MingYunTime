@@ -11,6 +11,9 @@ release_new/
 release_v170/
 release_v171/
 
+# QQ 音乐 API 打包副本(由 scripts/ensure-qq-music-dist.cjs 同步生成)
+resources/qq-music-api/
+
 # 敏感文件
 token
 *.env
