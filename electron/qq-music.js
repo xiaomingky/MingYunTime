@@ -514,6 +514,12 @@ export function startQQMusicAPI() {
     if (nodeOptions.length > 0) {
         env.NODE_OPTIONS = [env.NODE_OPTIONS, ...nodeOptions].filter(Boolean).join(' ')
     }
+    // 关键:打包后 process.execPath 指向"茗韵时光.exe"(Electron 主程序),
+    // 直接 spawn 会启动整个 Electron 应用而非纯 Node 进程。
+    // 设置 ELECTRON_RUN_AS_NODE=1 强制 Electron 以纯 Node 模式运行(只执行脚本,不启 GUI)。
+    if (!systemNode) {
+        env.ELECTRON_RUN_AS_NODE = '1'
+    }
 
     qqProcess = spawn(nodeBin, [appPath], {
         env,
