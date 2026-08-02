@@ -399,7 +399,7 @@ const close = () => {
 
             <span v-if="currentTlyric" class="lyric-trans-current" :style="{ color: currentColor }">{{ currentTlyric }}</span>
           </div>
-          <div class="lyric-line-next" v-if="nextLyric && !isSimpleMode">
+          <div class="lyric-line-next" v-if="nextLyric" :class="{ 'lyric-line-next-simple': isSimpleMode }">
             <span class="lyric-text-next">{{ nextLyric }}</span>
           </div>
         </div>
@@ -848,9 +848,13 @@ const close = () => {
 
 /* ============ 简约模式：仅显示歌词，居中放大 ============ */
 .widget-card.card-simple {
-  width: 720px;
-  height: 96px;
-  padding: 14px 28px;
+  min-width: 320px;
+  max-width: 900px;
+  width: fit-content;
+  height: auto;
+  min-height: 70px;
+  max-height: 160px;
+  padding: 12px 28px;
   border-radius: 18px;
   justify-content: center;
 }
@@ -865,11 +869,31 @@ const close = () => {
 .lyric-content-simple {
   margin-top: 0;
   justify-content: center;
+  gap: 4px;
 }
 
 .lyric-text-simple {
-  font-size: 34px;
+  font-size: 30px;
   font-weight: 800;
   line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 840px;
+}
+
+/* 简约模式下一句歌词预备：小字、半透明 */
+.lyric-line-next-simple {
+  margin-top: 2px;
+}
+
+.lyric-line-next-simple .lyric-text-next {
+  font-size: 16px;
+  opacity: 0.4;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 840px;
 }
 </style>

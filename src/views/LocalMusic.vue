@@ -199,11 +199,13 @@ const showEditModal = ref(false)
 const editingSong = ref(null)
 const editMetadata = ref({ title: '', artist: '', album: '', year: '', genre: '', track: '' })
 const editCover = ref('')
+const editLyrics = ref('')
 const savingMeta = ref(false)
 
 const openEditModal = async (song) => {
     editingSong.value = song
     editCover.value = ''
+    editLyrics.value = ''
     const bridge = getBridge()
     if (bridge?.readSongMetadata) {
         try {
@@ -218,6 +220,7 @@ const openEditModal = async (song) => {
                     track: res.metadata.track || ''
                 }
                 editCover.value = res.metadata.coverData || ''
+                editLyrics.value = res.metadata.lyrics || ''
             }
         } catch (e) { /* fallback to song data */ }
     }
@@ -240,6 +243,14 @@ const handleCoverSelect = (e) => {
     reader.readAsDataURL(file)
 }
 
+// 选择歌词文件（.lrc/.txt）
+const selectLyricsFile = async () => {
+    const bridge = getBridge()
+    if (!bridge?.invoke) return
+    const content = await bridge.invoke('open-lyrics-dialog')
+    if (content) editLyrics.value = content
+}
+
 const saveMetadata = async () => {
     if (!editingSong.value) return
     savingMeta.value = true
@@ -249,7 +260,8 @@ const saveMetadata = async () => {
         const res = await bridge.saveSongMetadata({
             songPath: editingSong.value.path,
             metadata: JSON.parse(JSON.stringify(editMetadata.value)),
-            coverDataUrl: editCover.value || ''
+            coverDataUrl: editCover.value || '',
+            lyrics: editLyrics.value || ''
         })
         if (res.success) {
             // 更新列表中的显示
@@ -421,6 +433,13 @@ const saveMetadata = async () => {
                 <label>风格</label>
                 <input v-model="editMetadata.genre" />
               </div>
+            </div>
+            <div class="field">
+              <label>
+                <span>歌词</span>
+                <button class="lyrics-file-btn" @click="selectLyricsFile">选择 .lrc 文件</button>
+              </label>
+              <textarea v-model="editLyrics" class="lyrics-textarea" placeholder="粘贴 LRC 歌词或点击上方按钮选择 .lrc 文件&#10;支持时间标签，留空则不写入歌词元数据" rows="4"></textarea>
             </div>
           </div>
         </div>
@@ -697,6 +716,21 @@ const saveMetadata = async () => {
     outline: none;
 }
 .field input:focus { border-color: var(--primary-color); }
+.field > label {
+  display: flex; align-items: center; justify-content: space-between;
+}
+.lyrics-file-btn {
+  padding: 2px 10px; border: 1px solid rgba(0,0,0,0.15); border-radius: 10px;
+  background: transparent; color: #666; font-size: 11px; cursor: pointer;
+  transition: all 0.15s;
+}
+.lyrics-file-btn:hover { border-color: var(--primary-color); color: var(--primary-color); }
+.lyrics-textarea {
+    padding: 7px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 12px;
+    font-family: 'Consolas', 'Monaco', monospace; outline: none; resize: vertical;
+    min-height: 60px; line-height: 1.5; white-space: pre;
+}
+.lyrics-textarea:focus { border-color: var(--primary-color); }
 .field-row { display: flex; gap: 10px; }
 .field.small { flex: 1; }
 .field.small input { width: 100%; box-sizing: border-box; }

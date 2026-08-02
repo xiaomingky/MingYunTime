@@ -36,6 +36,12 @@ const duration = ref(0)
 const buffered = ref(0)
 const volume = ref(0.8)
 const isMuted = ref(false)
+// 音量增益倍数（1.0=100% 2.0=200% 3.0=300%），解决直播流声音太小问题
+const gainBoost = ref(parseFloat(localStorage.getItem('bili_gain_boost')) || 1.0)
+// Web Audio API 增益节点
+let audioCtx = null
+let gainNode = null
+let mediaSource = null
 const isFullscreen = ref(false)
 const isLooping = ref(false)
 const buffering = ref(false)
@@ -129,6 +135,9 @@ function hideControls() {
 function togglePlay() {
     const v = videoEl.value
     if (!v) return
+    // 首次播放时初始化 GainNode（需 user gesture）
+    if (!audioCtx && gainBoost.value > 1.0) initGainNode()
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume()
     if (v.paused) v.play().catch(() => {})
     else v.pause()
 }
@@ -156,7 +165,8 @@ function onPlaying() { buffering.value = false }
 function onVolumeChange() {
     const v = videoEl.value
     if (!v) return
-    volume.value = v.volume
+    // 有 GainNode 时 video.volume 固定为 1.0，不从原生 volume 同步（避免覆盖）
+    if (!gainNode) volume.value = v.volume
     isMuted.value = v.muted
 }
 
@@ -249,17 +259,58 @@ function onProgressTouchEnd() {
 }
 
 // ===== 音量 =====
+// 初始化 Web Audio API 增益节点（需 user gesture 后调用）
+function initGainNode() {
+    if (audioCtx) return
+    const v = videoEl.value
+    if (!v) return
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext
+        audioCtx = new AudioCtx()
+        gainNode = audioCtx.createGain()
+        mediaSource = audioCtx.createMediaElementSource(v)
+        mediaSource.connect(gainNode)
+        gainNode.connect(audioCtx.destination)
+        // 应用当前音量和增益
+        gainNode.gain.value = volume.value * gainBoost.value
+    } catch (e) {
+        console.error('initGainNode error:', e)
+    }
+}
+// 实际输出音量 = volume * gainBoost（通过 GainNode 控制可超过 1.0）
 function onVolumeInput() {
     const v = videoEl.value
     if (!v) return
-    v.volume = volume.value
-    v.muted = volume.value === 0
+    if (gainNode) {
+        // 通过 GainNode 控制音量（支持增益 >1.0）
+        v.volume = 1.0
+        v.muted = volume.value === 0
+        gainNode.gain.value = isMuted.value ? 0 : volume.value * gainBoost.value
+    } else {
+        // 未初始化 GainNode 时走原生音量
+        v.volume = volume.value
+        v.muted = volume.value === 0
+    }
 }
 function toggleMute() {
     const v = videoEl.value
     if (!v) return
     v.muted = !v.muted
 }
+// 切换增益倍数：100% → 150% → 200% → 300% → 500% → 1000% → 100%
+function cycleGainBoost() {
+    const steps = [1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
+    const idx = steps.findIndex(s => Math.abs(s - gainBoost.value) < 0.01)
+    gainBoost.value = steps[(idx + 1) % steps.length] || 1.0
+    localStorage.setItem('bili_gain_boost', String(gainBoost.value))
+    if (!audioCtx) initGainNode()
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume()
+    onVolumeInput()
+}
+const gainLabel = computed(() => {
+    const pct = Math.round(gainBoost.value * 100)
+    return pct >= 1000 ? '1000%' : pct + '%'
+})
 
 function setVolumeFromClientX(clientX) {
     const bar = volumeSlider.value
@@ -384,9 +435,9 @@ function onKeydown(e) {
         case 'ArrowRight':
             e.preventDefault(); v.currentTime = Math.min(duration.value, v.currentTime + 5); break
         case 'ArrowUp':
-            e.preventDefault(); v.volume = Math.min(1, v.volume + 0.1); break
+            e.preventDefault(); volume.value = Math.min(1, volume.value + 0.1); onVolumeInput(); break
         case 'ArrowDown':
-            e.preventDefault(); v.volume = Math.max(0, v.volume - 0.1); break
+            e.preventDefault(); volume.value = Math.max(0, volume.value - 0.1); onVolumeInput(); break
         case 'f':
         case 'F':
             e.preventDefault(); toggleFullscreen(); break
@@ -678,6 +729,10 @@ onBeforeUnmount(() => {
     window.removeEventListener('keydown', onKeydown)
     if (hideControlsTimer) clearTimeout(hideControlsTimer)
     destroyHls()
+    // 清理 Web Audio API
+    if (mediaSource) { try { mediaSource.disconnect() } catch (e) {} mediaSource = null }
+    if (gainNode) { try { gainNode.disconnect() } catch (e) {} gainNode = null }
+    if (audioCtx) { try { audioCtx.close() } catch (e) {} audioCtx = null }
 })
 
 defineExpose({ videoEl })
@@ -818,6 +873,10 @@ defineExpose({ videoEl })
                             </div>
                             <input type="range" min="0" max="1" step="0.01" v-model.number="volume" @input="onVolumeInput" />
                         </div>
+                        <!-- 音量增益按钮：100% → 150% → 200% → 300%，解决直播流声音太小 -->
+                        <button class="ctrl-btn gain-btn" :class="{ 'gain-active': gainBoost > 1.0 }" @click="cycleGainBoost" :title="`音量增益 ${gainLabel}（点击切换）`">
+                            {{ gainLabel }}
+                        </button>
                     </div>
 
                     <span class="time-display">
@@ -1220,6 +1279,22 @@ defineExpose({ videoEl })
     align-items: center;
     gap: 0;
     position: relative;
+}
+
+/* 音量增益按钮 */
+.gain-btn {
+    min-width: 42px;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 0 6px;
+    color: rgba(255, 255, 255, 0.6);
+}
+.gain-btn.gain-active {
+    color: #ff6b6b;
+}
+.gain-btn:hover {
+    color: #ff6b6b;
+    background: rgba(255, 255, 255, .15);
 }
 .volume-slider {
     width: 70px;

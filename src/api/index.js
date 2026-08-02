@@ -1,5 +1,29 @@
 import axios from 'axios'
 
+// ========== 平台配置 ==========
+// 平台切换：网易云（默认）/ QQ 音乐
+// 切换后写入 localStorage: 'current_platform'
+// 网易云走 axios 直连 NCM API；QQ 音乐走 Electron IPC（见 src/api/qq.js）
+export const PLATFORMS = {
+    netease: {
+        key: 'netease',
+        label: '网易云音乐',
+        themeColor: '#EC4141',
+        icon: 'cloud'
+    },
+    qq: {
+        key: 'qq',
+        label: 'QQ 音乐',
+        themeColor: '#31C27C',
+        icon: 'qq'
+    }
+}
+
+export const getCurrentPlatform = () => localStorage.getItem('current_platform') || 'netease'
+export const setCurrentPlatform = (key) => localStorage.setItem('current_platform', key)
+export const isQQPlatform = () => getCurrentPlatform() === 'qq'
+export const isNeteasePlatform = () => getCurrentPlatform() === 'netease'
+
 // API 线路配置：用户可在关闭选项下拉框中切换
 // 主线路：VITE_API_BASE_URL 环境变量配置（默认 https://api.xiaomingky.cn）
 // 推荐线路：https://api2.xiaomingky.cn/
@@ -127,6 +151,47 @@ export const getCommentMusic = (id, limit = 20, offset = 0) => request.get(`/com
 export const getUserDetail = (uid) => request.get(`/user/detail?uid=${uid}`)
 export const getCommentPlaylist = (id, limit = 20, offset = 0) => request.get(`/comment/playlist?id=${id}&limit=${limit}&offset=${offset}`)
 export const getAlbum = (id) => request.get(`/album?id=${id}`)
+
+// 评论：新版评论接口（支持完整分页 / 排序 / 游标）
+// type: 0歌曲 1mv 2歌单 3专辑 4电台节目 5视频 6动态 7电台
+// sortType: 1推荐 2热度 3时间；sortType=3 且非首页时需传 cursor（上一条 time）
+export const getCommentNew = (params) => {
+    const { id, type = 0, pageNo = 1, pageSize = 20, sortType = 3, cursor = '' } = params
+    let url = `/comment/new?id=${id}&type=${type}&pageNo=${pageNo}&pageSize=${pageSize}&sortType=${sortType}`
+    if (cursor) url += `&cursor=${cursor}`
+    return request.get(url)
+}
+// 评论点赞：t=1 点赞，t=0 取消
+export const likeComment = (id, cid, t, type = 0) =>
+    request.get(`/comment/like?id=${id}&cid=${cid}&t=${t}&type=${type}`)
+// 发送/回复/删除评论：t=1 发送, t=2 回复, t=0 删除
+export const sendComment = (params) => {
+    const { t, type = 0, id, content, commentId, threadId } = params
+    const query = { t, type, timestamp: Date.now() }
+    if (threadId) query.threadId = threadId
+    else query.id = id
+    if (t === 2 || t === 0) query.commentId = commentId
+    if (t === 1 || t === 2) query.content = content
+    return request.get('/comment', { params: query })
+}
+
+// ---------- 网易云官方云盘 ----------
+// 云盘列表（limit/offset 分页，返回数据无 url，需再调 /song/url/v1 获取）
+// 注意：此接口返回 {code, count, data, hasMore}，不能被响应拦截器拆包，需原样返回
+export const getUserCloud = (limit = 30, offset = 0) =>
+    request.get(`/user/cloud?limit=${limit}&offset=${offset}&timestamp=${Date.now()}`)
+// 云盘数据详情
+export const getUserCloudDetail = (id) =>
+    request.get(`/user/cloud/detail?id=${id}`)
+// 云盘歌曲删除
+export const deleteUserCloud = (id) =>
+    request.get(`/user/cloud/del?id=${id}&timestamp=${Date.now()}`)
+// 云盘歌曲信息匹配纠正（asid=0 取消匹配，保持文件原信息；asid=歌曲ID 匹配指定网易云歌曲）
+export const matchCloud = (uid, sid, asid) =>
+    request.get(`/cloud/match?uid=${uid}&sid=${sid}&asid=${asid}&timestamp=${Date.now()}`)
+// 获取云盘歌词
+export const getCloudLyric = (uid, sid) =>
+    request.get(`/cloud/lyric/get?uid=${uid}&sid=${sid}`)
 
 // Playlist operations
 export const playlistUpdate = (data) => request.get(`/playlist/update?name=${data.name}&desc=${data.desc || ''}&id=${data.id || ''}`)

@@ -20,6 +20,21 @@
     -moz-osx-font-smoothing: grayscale;
 }
 
+/* QQ 音乐主题：绿色（在 #app 或 body 上设置 data-platform="qq" 即可生效） */
+[data-platform="qq"] {
+    --primary-color: #31C27C;
+    --header-bg: #31C27C;
+    --bg-main: #FFFFFF;
+    --bg-sidebar: #F5F7F6;
+    --bg-footer: #FFFFFF;
+    --border-color: #E0E5E2;
+    --text-main: #2C3E2F;
+    --text-secondary: #5A6B5E;
+    --text-light: #8F9D92;
+    --hover-bg: #EAF5EF;
+    --active-bg: #E0F0E7;
+}
+
 * {
     box-sizing: border-box;
     margin: 0;
@@ -163,6 +178,35 @@ footer.footer {
     color: white;
     font-weight: bold;
     font-size: 18px;
+}
+
+/* 平台切换按钮：网易云 ⇄ QQ 音乐 */
+.platform-switch {
+    display: flex;
+    align-items: center;
+    background-color: rgba(255, 255, 255, 0.18);
+    border-radius: 14px;
+    padding: 2px;
+    gap: 2px;
+    margin-left: 4px;
+}
+.platform-btn {
+    padding: 3px 10px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.75);
+    cursor: pointer;
+    border-radius: 12px;
+    transition: all 0.18s ease;
+    user-select: none;
+    white-space: nowrap;
+}
+.platform-btn:hover {
+    color: white;
+}
+.platform-btn.active {
+    background-color: rgba(255, 255, 255, 0.92);
+    color: var(--primary-color);
+    font-weight: 600;
 }
 
 .logo-icon {
@@ -394,7 +438,7 @@ footer.footer {
 
 .time {
     font-size: 11px;
-    color: #999;
+    color: #444;
     width: 35px;
 }
 
@@ -458,6 +502,40 @@ footer.footer {
     height: 100%;
     background: linear-gradient(90deg, #c20c0c, var(--primary-color));
     border-radius: 2px;
+}
+
+/* 音量超过 100% 时,填充条变为橙色提示增益状态 */
+.volume-slider.boosted .volume-fill {
+    background: linear-gradient(90deg, var(--primary-color), #ff8c00);
+}
+
+/* 音量数值显示 */
+.volume-value {
+    font-size: 11px;
+    color: #444;
+    min-width: 28px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 音量增益按钮:激活时高亮橙色 */
+.boost-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    color: #666;
+    transition: all 0.2s;
+}
+.boost-btn:hover {
+    color: var(--primary-color);
+    background: rgba(236, 65, 65, 0.08);
+}
+.boost-btn.active {
+    color: #ff8c00;
+    background: rgba(255, 140, 0, 0.12);
 }
 
 .volume-slider:hover .progress-dot,

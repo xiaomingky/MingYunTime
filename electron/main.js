@@ -15,6 +15,18 @@ async function getMM() {
 import axios from 'axios'
 import { exec, execFile } from 'node:child_process'
 import https from 'node:https'
+import crypto from 'node:crypto'
+
+// 解析打包内 ffmpeg 路径（与 download-manager.js 的 resolveTool 一致）
+function getFfmpegPath() {
+    if (app.isPackaged) {
+        const packed = path.join(process.resourcesPath, 'ffmpeg.exe')
+        if (fs.existsSync(packed)) return packed
+    }
+    const dev = path.join(process.env.APP_ROOT || process.cwd(), 'resources', 'ffmpeg.exe')
+    if (fs.existsSync(dev)) return dev
+    return 'ffmpeg'
+}
 
 // 动漫模块
 import './anime.js'
@@ -24,6 +36,8 @@ import './movie.js'
 import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload } from './download-manager.js'
 // 多平台歌词搜索（QQ + 酷狗）—— 必须用静态 import，否则 vite 打包后 dist-electron 下找不到模块
 import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ } from './lyric-providers.js'
+// QQ 音乐 API 子进程(@sansenjian/qq-music-api,监听 3200 端口)
+import { startQQMusicAPI, stopQQMusicAPI } from './qq-music.js'
 
 // --- Win7 兼容性初始化 ---
 if (process.platform === 'win32') {
@@ -191,6 +205,28 @@ function createWindow() {
         }
         win.webContents.send('window-shown-recover')
     })
+
+    // 主窗口拖动/调整大小时暂时隐藏桌面歌词窗口，避免 DWM 反复合成导致闪烁
+    let _lyricHideTimer = null
+    let _lyricHiddenByMove = false
+    const hideLyricOnMove = () => {
+        if (!lyricWin) return
+        // 每次 move 都重设 debounce timer，确保拖动期间不会过早 show
+        if (_lyricHideTimer) clearTimeout(_lyricHideTimer)
+        // hide 只执行一次（避免反复 hide/show 闪烁）
+        if (!_lyricHiddenByMove && lyricWin.isVisible()) {
+            lyricWin.hide()
+            _lyricHiddenByMove = true
+        }
+        _lyricHideTimer = setTimeout(() => {
+            if (lyricWin && _lyricHiddenByMove) {
+                lyricWin.show()
+                _lyricHiddenByMove = false
+            }
+        }, 300)
+    }
+    win.on('move', hideLyricOnMove)
+    win.on('resize', hideLyricOnMove)
 
     // 窗口隐藏时主动释放资源，显示时恢复
     let _memoryReleaseTimer = null
@@ -420,14 +456,15 @@ ipcMain.on('lyric-window-lock', (_, { locked }) => {
     }
 })
 
-// 鼠标悬停检测：动态控制窗口穿透（锁定/未锁定都生效）
+// 鼠标悬停检测：动态控制窗口穿透
+// 锁定时：鼠标在控制按钮上才接收事件，其余穿透
+// 未锁定时：始终接收事件（保证可拖动），不穿透
 ipcMain.on('lyric-card-hover', (_, hovering) => {
     if (!lyricWin) return
     if (isLocked) {
         lyricWin.setIgnoreMouseEvents(!hovering, { forward: true })
-    } else {
-        lyricWin.setIgnoreMouseEvents(!hovering, { forward: true })
     }
+    // 未锁定时不设置穿透，确保 drag 区域可拖动
 })
 
 // 核心递归扫描函数
@@ -2384,6 +2421,9 @@ function checkForUpdates() {
 }
 
 app.whenReady().then(() => {
+    // --- 启动 QQ 音乐 API 子进程(监听 3200 端口) ---
+    startQQMusicAPI()
+
     // --- Electron 22 兼容性协议注册 (Win7 支持) ---
 
     // 1. local-file 协议 (支持 Range 请求)
@@ -2719,20 +2759,41 @@ ipcMain.on('open-external', (_, url) => {
 // ── 元数据编辑 ──
 import NodeID3 from 'node-id3'
 
+// 用 ffmpeg 压缩大封面（避免引入 sharp 的 native 依赖与 Node 版本冲突）
 async function resizeCover(coverDataUrl) {
     if (!coverDataUrl || !coverDataUrl.startsWith('data:')) return null
     const [mime, b64] = coverDataUrl.split(';base64,')
     let imgBuf = Buffer.from(b64, 'base64')
-    if (imgBuf.length > 500 * 1024) {
-        try {
-            const sharp = require('sharp')
-            imgBuf = await sharp(imgBuf).resize(600, 600, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer()
-        } catch (e) {
-            console.warn('[save-metadata] sharp not available, skipping large cover:', e.message)
-            return null
-        }
+    if (imgBuf.length <= 500 * 1024) {
+        return imgBuf && imgBuf.length > 0 ? imgBuf : null
     }
-    return imgBuf && imgBuf.length > 0 ? imgBuf : null
+    // 大于 500KB：用 ffmpeg 缩放至 600x600 内并转 JPEG
+    const tmpDir = app.getPath('temp')
+    const inPath = path.join(tmpDir, 'cover_in_' + Date.now() + '.jpg')
+    const outPath = path.join(tmpDir, 'cover_out_' + Date.now() + '.jpg')
+    try {
+        fs.writeFileSync(inPath, imgBuf)
+        await new Promise((resolve, reject) => {
+            // scale 保持宽高比、不放大；quality 85
+            execFile(getFfmpegPath(), [
+                '-y', '-i', inPath,
+                '-vf', 'scale=600:600:force_original_aspect_ratio=decrease',
+                '-q:v', '3',
+                outPath
+            ], { timeout: 15000 }, (err) => {
+                if (err) { reject(new Error('ffmpeg resize failed: ' + err.message)); return }
+                resolve()
+            })
+        })
+        const resized = fs.readFileSync(outPath)
+        return resized.length > 0 ? resized : imgBuf
+    } catch (e) {
+        console.warn('[save-metadata] ffmpeg resize failed, using original cover:', e.message)
+        return imgBuf && imgBuf.length > 0 ? imgBuf : null
+    } finally {
+        try { fs.unlinkSync(inPath) } catch (e) {}
+        try { fs.unlinkSync(outPath) } catch (e) {}
+    }
 }
 
 function saveCoverTempFile(coverBuf) {
@@ -2743,12 +2804,64 @@ function saveCoverTempFile(coverBuf) {
     return tmpPath
 }
 
+// 根据 MIME 类型保存封面临时文件（ffmpeg 需要正确扩展名识别图片格式）
+function saveCoverTempFileWithMime(coverBuf, coverMime) {
+    if (!coverBuf) return null
+    const tmpDir = app.getPath('temp')
+    const ext = (coverMime || 'image/jpeg').includes('png') ? '.png'
+              : (coverMime || '').includes('gif') ? '.gif' : '.jpg'
+    const tmpPath = path.join(tmpDir, 'mp3_cover_' + Date.now() + ext)
+    fs.writeFileSync(tmpPath, coverBuf)
+    return tmpPath
+}
+
+// 用 ffmpeg 写入标准 ID3v2.3 APIC frame（最可靠的 MP3 封面写入方式）
+// ffmpeg 生成的 APIC frame 被 Windows 资源管理器/所有播放器/网易云云盘统一识别
+async function writeMP3CoverWithFfmpeg(songPath, coverBuf, coverMime) {
+    const coverFile = saveCoverTempFileWithMime(coverBuf, coverMime)
+    const tmpOut = songPath + '.tmp.mp3'
+    try {
+        await new Promise((resolve, reject) => {
+            const args = [
+                '-y',
+                '-i', songPath,
+                '-i', coverFile,
+                '-map', '0:a:0',       // 只映射音频流（丢弃旧封面）
+                '-map', '1:0',         // 映射封面图片
+                '-c', 'copy',          // 直接复制，不重新编码
+                '-id3v2_version', '3', // 强制 ID3v2.3（兼容性最好）
+                '-write_id3v1', '1',   // 同时写 ID3v1（老播放器兼容）
+                '-metadata:s:v', 'title=Album cover',
+                '-metadata:s:v', 'comment=Cover (front)',
+                '-disposition:v', 'attached_pic',
+                tmpOut
+            ]
+            execFile(getFfmpegPath(), args, { timeout: 30000 }, (err, stdout, stderr) => {
+                if (err) {
+                    console.error('[writeMP3CoverWithFfmpeg] ffmpeg failed:', stderr?.slice(-500))
+                    reject(new Error('ffmpeg封面写入失败: ' + err.message))
+                    return
+                }
+                resolve()
+            })
+        })
+        fs.copyFileSync(tmpOut, songPath)
+        fs.unlinkSync(tmpOut)
+    } finally {
+        try { fs.unlinkSync(coverFile) } catch (e) {}
+        try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut) } catch (e) {}
+    }
+}
+
 // 用 ffmpeg 写入元数据（支持 FLAC/OGG/WAV/M4A 等所有格式）
-function saveWithFfmpeg(songPath, metadata, coverBuf) {
+function saveWithFfmpeg(songPath, metadata, coverBuf, lyrics) {
     return new Promise((resolve, reject) => {
         const tmpOut = songPath + '.tmp'
+        // 参数顺序：所有 -i 输入在前，-metadata/-map 等输出选项在后
         const args = ['-y', '-i', songPath]
-        
+        const coverFile = saveCoverTempFile(coverBuf)
+        if (coverFile) args.push('-i', coverFile)
+
         const metaFields = [
             ['title', metadata.title], ['artist', metadata.artist],
             ['album', metadata.album], ['date', metadata.year],
@@ -2757,16 +2870,16 @@ function saveWithFfmpeg(songPath, metadata, coverBuf) {
         for (const [key, val] of metaFields) {
             if (val) args.push('-metadata', `${key}=${val}`)
         }
-        
-        const coverFile = saveCoverTempFile(coverBuf)
-        if (coverFile) args.push('-i', coverFile, '-map', '0', '-map', '1', '-c', 'copy', '-disposition:v', 'attached_pic')
+        if (lyrics) args.push('-metadata', `lyrics=${lyrics}`)
+
+        if (coverFile) args.push('-map', '0', '-map', '1', '-c', 'copy', '-disposition:v', 'attached_pic')
         else args.push('-c', 'copy')
-        
+
         args.push(tmpOut)
-        
-        execFile('ffmpeg', args, { timeout: 30000 }, (err, stdout, stderr) => {
+
+        execFile(getFfmpegPath(), args, { timeout: 30000 }, (err, stdout, stderr) => {
             if (coverFile) { try { fs.unlinkSync(coverFile) } catch(e) {} }
-            if (err) { 
+            if (err) {
                 try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut) } catch(e) {}
                 reject(new Error('ffmpeg写入失败: ' + err.message))
                 return
@@ -2782,16 +2895,143 @@ function saveWithFfmpeg(songPath, metadata, coverBuf) {
     })
 }
 
-// MP3 写入 (NodeID3，不需要 ffmpeg)
-function saveMP3Metadata(songPath, metadata, coverBuf) {
+// 读取 4 字节 syncsafe integer（ID3v2 header size / v2.4 frame size）
+function readSyncsafe(buf, offset) {
+    return ((buf[offset] & 0x7F) << 21) | ((buf[offset + 1] & 0x7F) << 14) |
+           ((buf[offset + 2] & 0x7F) << 7) | (buf[offset + 3] & 0x7F)
+}
+// 写入 4 字节 syncsafe integer
+function writeSyncsafe(value) {
+    const buf = Buffer.alloc(4)
+    buf[0] = (value >>> 21) & 0x7F
+    buf[1] = (value >>> 14) & 0x7F
+    buf[2] = (value >>> 7) & 0x7F
+    buf[3] = value & 0x7F
+    return buf
+}
+
+// 手动构建标准 ID3v2.3 APIC frame 并写入 MP3 文件
+// 解决 NodeID3 0.2.9 生成的 APIC frame 不被部分播放器/网易云云盘识别的问题
+// 流程：读取现有 ID3v2 → 移除旧 APIC frame → 插入标准 APIC frame → 重写 header size
+function writeMP3CoverStandard(songPath, coverBuf, coverMime) {
+    const mime = coverMime || 'image/jpeg'
+    // APIC frame body（ID3v2.3 规范）：
+    //   text encoding(1) + MIME(null-terminated ISO-8859-1) + picture type(1) +
+    //   description(null-terminated ISO-8859-1) + picture data
+    const mimeBuf = Buffer.from(mime, 'ascii')
+    const apicBody = Buffer.concat([
+        Buffer.from([0x00]),       // text encoding: ISO-8859-1（兼容性最好）
+        mimeBuf,
+        Buffer.from([0x00]),       // MIME null terminator
+        Buffer.from([0x03]),       // picture type: 3 = front cover
+        Buffer.from([0x00]),       // description: empty + null terminator
+        coverBuf                   // picture data
+    ])
+    // APIC frame header（v2.3: size 是普通 4 字节大端序，非 syncsafe）
+    const apicFrame = Buffer.concat([
+        Buffer.from('APIC', 'ascii'),
+        Buffer.from([(apicBody.length >>> 24) & 0xFF, (apicBody.length >>> 16) & 0xFF,
+                     (apicBody.length >>> 8) & 0xFF, apicBody.length & 0xFF]),
+        Buffer.from([0x00, 0x00]), // frame flags
+        apicBody
+    ])
+
+    const fileBuf = fs.readFileSync(songPath)
+    let newFileBuf
+
+    if (fileBuf.length >= 10 && fileBuf.toString('ascii', 0, 3) === 'ID3') {
+        const version = fileBuf[3]          // major version (3=v2.3, 4=v2.4)
+        const headerSize = readSyncsafe(fileBuf, 6)
+        const headerEnd = 10 + headerSize
+
+        // 解析现有 frames，跳过旧 APIC
+        const frames = []
+        let offset = 10
+        while (offset + 10 <= headerEnd) {
+            const id = fileBuf.toString('ascii', offset, offset + 4)
+            if (id.charCodeAt(0) === 0) break  // padding 区域
+            let fsize
+            if (version >= 4) {
+                fsize = readSyncsafe(fileBuf, offset + 4)
+            } else {
+                fsize = fileBuf.readUInt32BE(offset + 4)
+            }
+            if (fsize <= 0 || offset + 10 + fsize > headerEnd) break
+            const fflags = fileBuf.readUInt16BE(offset + 8)
+            const fbody = fileBuf.subarray(offset + 10, offset + 10 + fsize)
+            if (id !== 'APIC') {
+                frames.push({ id, body: fbody, flags: fflags })
+            }
+            offset += 10 + fsize
+        }
+
+        // 追加标准 APIC frame
+        frames.push({ id: 'APIC', body: apicBody, flags: 0 })
+
+        // 重新构建所有 frame（统一用 v2.3 格式：size 为普通大端序）
+        const allFrames = Buffer.concat(frames.map(f => {
+            const fid = Buffer.from(f.id.padEnd(4).slice(0, 4), 'ascii')
+            const fsize = Buffer.alloc(4)
+            fsize.writeUInt32BE(f.body.length, 0)
+            const fflags = Buffer.alloc(2)
+            fflags.writeUInt16BE(f.flags || 0, 0)
+            return Buffer.concat([fid, fsize, fflags, f.body])
+        }))
+
+        // 新 ID3v2.3 header
+        const newHeader = Buffer.concat([
+            Buffer.from('ID3', 'ascii'),
+            Buffer.from([0x03, 0x00]),    // version 2.3.0
+            Buffer.from([0x00]),          // flags
+            writeSyncsafe(allFrames.length)
+        ])
+        const audioData = fileBuf.subarray(headerEnd)
+        newFileBuf = Buffer.concat([newHeader, allFrames, audioData])
+    } else {
+        // 无 ID3v2 header，直接在文件头插入
+        const newHeader = Buffer.concat([
+            Buffer.from('ID3', 'ascii'),
+            Buffer.from([0x03, 0x00]),
+            Buffer.from([0x00]),
+            writeSyncsafe(apicFrame.length)
+        ])
+        newFileBuf = Buffer.concat([newHeader, apicFrame, fileBuf])
+    }
+
+    fs.writeFileSync(songPath, newFileBuf)
+}
+
+// MP3 写入 (NodeID3 写文本标签 + ffmpeg 写标准 APIC frame)
+async function saveMP3Metadata(songPath, metadata, coverBuf, coverMime, lyrics) {
+    // 第一步：用 NodeID3 写入文本标签和歌词（不写封面，封面由 ffmpeg 写入确保标准兼容）
     const tags = {
         title: metadata.title || '', artist: metadata.artist || '',
         album: metadata.album || '', year: metadata.year || '',
         genre: metadata.genre || '', trackNumber: metadata.track || ''
     }
-    if (coverBuf) tags.image = { mime: 'image/jpeg', type: { id: 3, name: 'front cover' }, description: 'Cover', imageBuffer: coverBuf }
+    if (lyrics) tags.unsynchronisedLyrics = { language: 'chi', text: lyrics }
     const success = NodeID3.write(tags, songPath)
     if (!success) throw new Error('ID3写入失败')
+
+    // 第二步：用 ffmpeg 写入标准 ID3v2.3 APIC frame（最可靠，所有播放器/云盘都能识别）
+    if (coverBuf && coverBuf.length > 0) {
+        try {
+            await writeMP3CoverWithFfmpeg(songPath, coverBuf, coverMime)
+            console.log('[saveMP3Metadata] cover written (ffmpeg APIC):', { mime: coverMime, size: coverBuf.length })
+        } catch (e) {
+            // ffmpeg 失败时 fallback 到手动构建标准 APIC frame
+            console.warn('[saveMP3Metadata] ffmpeg cover failed, fallback to manual APIC:', e.message)
+            writeMP3CoverStandard(songPath, coverBuf, coverMime)
+            console.log('[saveMP3Metadata] cover written (manual APIC fallback):', { mime: coverMime, size: coverBuf.length })
+        }
+        // 验证封面是否真的写入
+        try {
+            const read = NodeID3.read(songPath)
+            console.log('[saveMP3Metadata] verify after write:', { hasImage: !!read.image, imageMime: read.image?.mime, imageSize: read.image?.imageBuffer?.length })
+        } catch (e) {
+            console.warn('[saveMP3Metadata] verify read failed:', e.message)
+        }
+    }
 }
 
 ipcMain.handle('read-song-metadata', async (_, songPath) => {
@@ -2806,6 +3046,7 @@ ipcMain.handle('read-song-metadata', async (_, songPath) => {
             genre: metadata.common.genre?.[0] || '',
             track: metadata.common.track?.no || '',
             hasCover: !!(metadata.common.picture?.length),
+            lyrics: metadata.common.lyrics?.[0]?.text || '',
             format: ext.replace('.', '').toUpperCase()
         }
         // 提取封面 base64
@@ -2818,13 +3059,762 @@ ipcMain.handle('read-song-metadata', async (_, songPath) => {
     } catch (err) { return { success: false, error: err.message } }
 })
 
-ipcMain.handle('save-song-metadata', async (_, { songPath, metadata, coverDataUrl }) => {
+// 解析本地音频文件元数据（基于文件路径，避免大 Buffer 跨进程序列化导致 OOM）
+// 用于云盘上传前预填歌名/歌手/封面
+ipcMain.handle('parse-upload-file', async (_, filePath) => {
+    try {
+        const metadata = await (await getMM()).parseFile(filePath)
+        const result = {
+            title: metadata.common.title || '',
+            artist: metadata.common.artist || '',
+            album: metadata.common.album || '',
+            hasCover: !!(metadata.common.picture?.length)
+        }
+        if (metadata.common.picture?.length) {
+            const pic = metadata.common.picture[0]
+            const base64 = Buffer.from(pic.data).toString('base64')
+            result.coverData = `data:${pic.format};base64,${base64}`
+            result.coverMime = pic.format
+        }
+        return { success: true, metadata: result }
+    } catch (err) { return { success: false, error: err.message } }
+})
+
+// 将元数据（歌名/歌手/专辑/封面/歌词）写入本地音频文件，返回写入后的文件路径
+// MP3 用 NodeID3，OGG/OPUS 用 Vorbis comment METADATA_BLOCK_PICTURE，其他用 ffmpeg attached_pic
+// 构建 Vorbis METADATA_BLOCK_PICTURE base64（FLAC picture format）
+function buildVorbisCoverBase64(imageBuf, mime) {
+    const mimeBuf = Buffer.from(mime || 'image/jpeg', 'utf-8')
+    const descBuf = Buffer.from('', 'utf-8')
+    // 4(pictureType) + 4(mimeLen) + mime + 4(descLen) + desc + 4(w) + 4(h) + 4(depth) + 4(colors) + 4(dataLen) + data
+    const buf = Buffer.alloc(4 + 4 + mimeBuf.length + 4 + descBuf.length + 16 + 4 + imageBuf.length)
+    let offset = 0
+    buf.writeUInt32BE(3, offset); offset += 4              // picture type: front cover
+    buf.writeUInt32BE(mimeBuf.length, offset); offset += 4
+    mimeBuf.copy(buf, offset); offset += mimeBuf.length
+    buf.writeUInt32BE(descBuf.length, offset); offset += 4
+    descBuf.copy(buf, offset); offset += descBuf.length
+    buf.writeUInt32BE(0, offset); offset += 4               // width
+    buf.writeUInt32BE(0, offset); offset += 4               // height
+    buf.writeUInt32BE(0, offset); offset += 4               // color depth
+    buf.writeUInt32BE(0, offset); offset += 4               // number of colors
+    buf.writeUInt32BE(imageBuf.length, offset); offset += 4
+    imageBuf.copy(buf, offset)
+    return buf.toString('base64')
+}
+
+// ============ OGG/Opus Vorbis Comment 二进制注入器 ============
+// 直接操作 OGG 二进制结构，无命令行长度限制，支持写入原始大封面和歌词
+// OGG CRC32 (多项式 0x04c11db7，无反射)
+const OGG_CRC_TABLE = (() => {
+    const t = new Uint32Array(256)
+    for (let i = 0; i < 256; i++) {
+        let r = i << 24
+        for (let j = 0; j < 8; j++) r = (r & 0x80000000) ? (((r << 1) ^ 0x04c11db7) >>> 0) : ((r << 1) >>> 0)
+        t[i] = r >>> 0
+    }
+    return t
+})()
+function oggCrc32(buf) {
+    let crc = 0
+    for (let i = 0; i < buf.length; i++) {
+        crc = ((crc << 8) ^ OGG_CRC_TABLE[((crc >>> 24) ^ buf[i]) & 0xff]) >>> 0
+    }
+    return crc >>> 0
+}
+
+// 解析整个 OGG 文件的所有 pages
+function parseOggPages(buf) {
+    const pages = []
+    let offset = 0
+    while (offset + 27 <= buf.length) {
+        if (buf.toString('ascii', offset, offset + 4) !== 'OggS') break
+        const headerType = buf[offset + 5]
+        const granuleLow = buf.readUInt32LE(offset + 6)
+        const granuleHigh = buf.readUInt32LE(offset + 10)
+        const serial = buf.readUInt32LE(offset + 14)
+        const seqNo = buf.readUInt32LE(offset + 18)
+        const numSegs = buf[offset + 26]
+        const segTable = []
+        let payloadLen = 0
+        for (let i = 0; i < numSegs; i++) {
+            segTable.push(buf[offset + 27 + i])
+            payloadLen += buf[offset + 27 + i]
+        }
+        const payloadStart = offset + 27 + numSegs
+        const payload = buf.slice(payloadStart, payloadStart + payloadLen)
+        pages.push({ headerType, granuleLow, granuleHigh, serial, seqNo, segTable, payload, startOffset: offset, totalSize: 27 + numSegs + payloadLen })
+        offset = payloadStart + payloadLen
+    }
+    return pages
+}
+
+// 构建 OGG page bytes
+function buildOggPage(headerType, granuleLow, granuleHigh, serial, seqNo, segTable, payload) {
+    const header = Buffer.alloc(27 + segTable.length)
+    header.write('OggS', 0, 'ascii')
+    header[5] = headerType
+    header.writeUInt32LE(granuleLow, 6)
+    header.writeUInt32LE(granuleHigh, 10)
+    header.writeUInt32LE(serial, 14)
+    header.writeUInt32LE(seqNo, 18)
+    header.writeUInt32LE(0, 22)  // CRC 占位
+    header[26] = segTable.length
+    for (let i = 0; i < segTable.length; i++) header[27 + i] = segTable[i]
+    const fullPage = Buffer.concat([header, payload])
+    const crc = oggCrc32(fullPage)
+    fullPage.writeUInt32LE(crc, 22)
+    return fullPage
+}
+
+// 将大 packet 分割成多个 OGG pages
+// 每页最多 254 个 255-segment（留 1 个槽位给 end marker），payload 最多 254*255=64770 bytes
+function packetToOggPages(packetData, serial, startSeqNo) {
+    const pages = []
+    const MAX_SEGMENTS = 254  // 保守值，留 1 个给 end marker
+    let offset = 0, seqNo = startSeqNo, isFirst = true
+    while (offset < packetData.length) {
+        const remaining = packetData.length - offset
+        const segTable = []
+        let chunkSize = 0
+        if (remaining <= MAX_SEGMENTS * 255) {
+            // 这页能放完剩余数据
+            chunkSize = remaining
+            const numFull = Math.floor(chunkSize / 255)
+            const remainder = chunkSize % 255
+            for (let i = 0; i < numFull; i++) segTable.push(255)
+            if (remainder > 0) segTable.push(remainder)
+            else if (chunkSize > 0) segTable.push(0)  // end marker
+        } else {
+            // 这页放不下，放 MAX_SEGMENTS 个 255-segment（packet 继续到下一页）
+            chunkSize = MAX_SEGMENTS * 255
+            for (let i = 0; i < MAX_SEGMENTS; i++) segTable.push(255)
+        }
+        const chunk = packetData.slice(offset, offset + chunkSize)
+        const headerType = isFirst ? 0 : 1  // 后续页设 continuation flag
+        pages.push(buildOggPage(headerType, 0, 0, serial, seqNo, segTable, chunk))
+        offset += chunkSize
+        seqNo++
+        isFirst = false
+    }
+    return pages
+}
+
+// 注入 OGG/Opus Vorbis comment（保留原有 comments，替换/添加/删除指定 keys）
+// updates: { KEY: value | null }，null 表示删除该 key
+// 使用 segment 级别精确提取 comment header packet，正确处理 comment 与 setup header 共享 page 的情况
+function injectOggComments(filePath, updates) {
+    const buf = fs.readFileSync(filePath)
+    const pages = parseOggPages(buf)
+    if (pages.length < 2) throw new Error('OGG page 数量异常')
+
+    const serial = pages[0].serial
+
+    // 从 page 1 开始按 segment 提取第一个完整 packet（comment header）
+    // 同时记录 packet 结束所在 page 的剩余 segments（可能是 setup header 或 audio data）
+    let commentPacket = Buffer.alloc(0)
+    let commentEndPageIdx = -1
+    let remainingSegsInEndPage = []  // comment packet 结束后，同一 page 中的剩余 segments
+    let remainingPayloadInEndPage = Buffer.alloc(0)
+    let remainingHeaderType = 0
+    let foundPacketEnd = false
+
+    for (let pageIdx = 1; pageIdx < pages.length && !foundPacketEnd; pageIdx++) {
+        const pg = pages[pageIdx]
+        let payloadPos = 0
+        for (let s = 0; s < pg.segTable.length; s++) {
+            const segLen = pg.segTable[s]
+            commentPacket = Buffer.concat([commentPacket, pg.payload.slice(payloadPos, payloadPos + segLen)])
+            payloadPos += segLen
+            if (segLen < 255) {
+                // comment packet 结束
+                commentEndPageIdx = pageIdx
+                foundPacketEnd = true
+                // 收集剩余 segments（属于后续 packets）
+                for (let s2 = s + 1; s2 < pg.segTable.length; s2++) {
+                    remainingSegsInEndPage.push(pg.segTable[s2])
+                    remainingPayloadInEndPage = Buffer.concat([remainingPayloadInEndPage, pg.payload.slice(payloadPos, payloadPos + pg.segTable[s2])])
+                    payloadPos += pg.segTable[s2]
+                }
+                remainingHeaderType = pg.headerType
+                break
+            }
+        }
+    }
+    if (!foundPacketEnd) throw new Error('无法找到 comment header packet 结束')
+
+    // 判断格式并解析
+    let isOpus = false, magicLen = 7
+    if (commentPacket.length >= 7 && commentPacket[0] === 3 && commentPacket.toString('ascii', 1, 7) === 'vorbis') {
+        isOpus = false
+    } else if (commentPacket.length >= 8 && commentPacket.toString('ascii', 0, 8) === 'OpusTags') {
+        isOpus = true; magicLen = 8
+    } else {
+        throw new Error('无法识别的 comment header 格式')
+    }
+
+    const magic = commentPacket.slice(0, magicLen)
+    let pos = magicLen
+    const vendorLen = commentPacket.readUInt32LE(pos); pos += 4
+    const vendor = commentPacket.slice(pos, pos + vendorLen); pos += vendorLen
+    let commentCount = commentPacket.readUInt32LE(pos); pos += 4
+    let comments = []
+    for (let i = 0; i < commentCount; i++) {
+        const len = commentPacket.readUInt32LE(pos); pos += 4
+        comments.push(commentPacket.slice(pos, pos + len).toString('utf-8'))
+        pos += len
+    }
+
+    // 修改 comments：移除 updates 指定的 keys（大小写不敏感），再添加新值
+    const updateKeysUpper = Object.keys(updates).map(k => k.toUpperCase())
+    comments = comments.filter(c => {
+        const eq = c.indexOf('=')
+        return eq < 0 || !updateKeysUpper.includes(c.slice(0, eq).toUpperCase())
+    })
+    for (const [k, v] of Object.entries(updates)) {
+        if (v != null) comments.push(`${k}=${v}`)
+    }
+
+    // 重建 comment packet
+    const parts = [magic]
+    const vl = Buffer.alloc(4); vl.writeUInt32LE(vendor.length); parts.push(vl, vendor)
+    const cl = Buffer.alloc(4); cl.writeUInt32LE(comments.length); parts.push(cl)
+    for (const c of comments) {
+        const cb = Buffer.from(c, 'utf-8')
+        const lb = Buffer.alloc(4); lb.writeUInt32LE(cb.length); parts.push(lb, cb)
+    }
+    if (!isOpus) parts.push(Buffer.from([1]))  // Vorbis framing bit
+    const newPacket = Buffer.concat(parts)
+
+    // 将新 comment packet 分页（seqNo 从 1 开始）
+    const newCommentPages = packetToOggPages(newPacket, serial, 1)
+
+    // 如果原 comment 结束 page 有剩余数据（setup header 或 audio data 的开始），
+    // 保持其 segment table 不变，作为单独的 page 追加
+    let extraPage = null
+    if (remainingSegsInEndPage.length > 0) {
+        extraPage = buildOggPage(remainingHeaderType, 0, 0, serial, 1 + newCommentPages.length, remainingSegsInEndPage, remainingPayloadInEndPage)
+    }
+
+    // 后续 pages（commentEndPageIdx + 1 开始）调整 seqNo
+    const newHeaderPageCount = newCommentPages.length + (extraPage ? 1 : 0)
+    const oldHeaderPageCount = commentEndPageIdx  // page 1 到 commentEndPageIdx（含）
+    const seqNoOffset = newHeaderPageCount - oldHeaderPageCount
+
+    // 重组文件
+    const outputParts = []
+    // page 0 原样保留
+    outputParts.push(buf.slice(0, pages[1].startOffset))
+    // 新 comment pages
+    for (const p of newCommentPages) outputParts.push(p)
+    // 剩余数据页（如果有）
+    if (extraPage) outputParts.push(extraPage)
+    // 后续 pages 调整 seqNo + 重算 CRC
+    for (let i = commentEndPageIdx + 1; i < pages.length; i++) {
+        const pg = pages[i]
+        const orig = buf.slice(pg.startOffset, pg.startOffset + pg.totalSize)
+        const nb = Buffer.from(orig)
+        nb.writeUInt32LE(pg.seqNo + seqNoOffset, 18)
+        nb.writeUInt32LE(0, 22)
+        nb.writeUInt32LE(oggCrc32(nb), 22)
+        outputParts.push(nb)
+    }
+    fs.writeFileSync(filePath, Buffer.concat(outputParts))
+}
+
+// 用 ffmpeg 压缩封面到指定大小（用于 Vorbis comment，避免 base64 超过命令行长度限制）
+async function compressCoverForVorbis(coverBuf) {
+    const tmpDir = app.getPath('temp')
+    const inPath = path.join(tmpDir, 'vorbis_in_' + Date.now() + '.jpg')
+    const outPath = path.join(tmpDir, 'vorbis_out_' + Date.now() + '.jpg')
+    try {
+        fs.writeFileSync(inPath, coverBuf)
+        // 逐级压缩：先用较大尺寸，若 base64 仍超限则递减尺寸/质量
+        // 目标：base64 < 28000（留余量，命令行参数上限约 30000）
+        const presets = [
+            { scale: 256, q: 8 },
+            { scale: 200, q: 10 },
+            { scale: 160, q: 12 },
+            { scale: 128, q: 15 }
+        ]
+        for (const preset of presets) {
+            await new Promise((resolve, reject) => {
+                execFile(getFfmpegPath(), [
+                    '-y', '-i', inPath,
+                    '-vf', `scale=${preset.scale}:${preset.scale}:force_original_aspect_ratio=decrease`,
+                    '-q:v', String(preset.q),
+                    outPath
+                ], { timeout: 15000 }, (err) => {
+                    if (err) { reject(new Error('ffmpeg compress failed: ' + err.message)); return }
+                    resolve()
+                })
+            })
+            const buf = fs.readFileSync(outPath)
+            const b64Len = Math.ceil(buf.length * 4 / 3) + 60  // 预估 base64 长度（含 METADATA_BLOCK_PICTURE 头部开销）
+            if (b64Len < 28000) {
+                return buf
+            }
+            console.log(`[vorbis-cover] preset ${preset.scale}x q${preset.q} -> ${buf.length}B (b64~${b64Len}), still too large, trying next`)
+        }
+        // 所有预设都不够小，返回最后一个结果（最小那个）
+        return fs.readFileSync(outPath)
+    } catch (e) {
+        console.warn('[vorbis-cover] compress failed, using original:', e.message)
+        return coverBuf
+    } finally {
+        try { fs.unlinkSync(inPath) } catch (e) {}
+        try { fs.unlinkSync(outPath) } catch (e) {}
+    }
+}
+
+// OGG/OPUS/FLAC 等 Vorbis comment 格式
+const VORBIS_COMMENT_EXT = ['.ogg', '.opus', '.oga']
+const FLAC_EXT = '.flac'
+
+// 读取文件头判断音频实际格式（解决扩展名与内容不符的问题，如 .mp3 实为 FLAC）
+// 返回: 'mp3' | 'flac' | 'ogg' | 'wav' | 'm4a' | 'mp4' | null
+function detectActualAudioFormat(filePath) {
+    try {
+        const fd = fs.openSync(filePath, 'r')
+        const header = Buffer.alloc(12)
+        const bytesRead = fs.readSync(fd, header, 0, 12, 0)
+        fs.closeSync(fd)
+        if (bytesRead < 4) return null
+        // fLaC
+        if (header.toString('ascii', 0, 4) === 'fLaC') return 'flac'
+        // OggS
+        if (header.toString('ascii', 0, 4) === 'OggS') return 'ogg'
+        // RIFF....WAVE
+        if (header.toString('ascii', 0, 4) === 'RIFF' && header.toString('ascii', 8, 12) === 'WAVE') return 'wav'
+        // MP3 帧同步 (0xFF Ex)
+        if (header[0] === 0xFF && (header[1] & 0xE0) === 0xE0) return 'mp3'
+        // ftyp box (M4A/MP4): offset 4-8 = 'ftyp'
+        if (bytesRead >= 8 && header.toString('ascii', 4, 8) === 'ftyp') return 'm4a'
+        // ID3v2 开头：跳过 ID3v2 标签后继续检测实际音频格式（可能 ID3v2+fLaC / ID3v2+MP3）
+        if (header.toString('ascii', 0, 3) === 'ID3') {
+            if (bytesRead < 10) return 'mp3'
+            // ID3v2 size 是 syncsafe integer（每字节最高位不用）
+            const id3Size = ((header[6] & 0x7F) << 21) | ((header[7] & 0x7F) << 14) |
+                           ((header[8] & 0x7F) << 7) | (header[9] & 0x7F)
+            const afterId3Offset = 10 + id3Size
+            // 读取 ID3v2 标签之后的数据
+            const fd2 = fs.openSync(filePath, 'r')
+            const afterBuf = Buffer.alloc(12)
+            const afterRead = fs.readSync(fd2, afterBuf, 0, 12, afterId3Offset)
+            fs.closeSync(fd2)
+            if (afterRead >= 4) {
+                if (afterBuf.toString('ascii', 0, 4) === 'fLaC') return 'flac'
+                if (afterBuf.toString('ascii', 0, 4) === 'OggS') return 'ogg'
+                if (afterBuf.toString('ascii', 0, 4) === 'RIFF' && afterRead >= 12 && afterBuf.toString('ascii', 8, 12) === 'WAVE') return 'wav'
+                if (afterBuf[0] === 0xFF && (afterBuf[1] & 0xE0) === 0xE0) return 'mp3'
+            }
+            // ID3v2 后无法识别，默认 MP3
+            return 'mp3'
+        }
+        return null
+    } catch (e) {
+        return null
+    }
+}
+
+// FLAC 二进制注入 Vorbis comment + PICTURE 块（不经过 ffmpeg，不压缩，支持原始大封面+歌词）
+// FLAC 结构: fLaC(4) + METADATA_BLOCK* + AUDIO_FRAME*
+// METADATA_BLOCK: block_type(1字节,高位为last标志) + block_length(3字节) + block_data
+// block_type: 0=STREAMINFO(必须保留) 1=PADDING 2=APPLICATION 3=SEEKTABLE 4=VORBIS_COMMENT 5=CUESHEET 6=PICTURE
+// updates.METADATA_BLOCK_PICTURE 必须是 FLAC PICTURE 块的二进制 Buffer（用 buildFlacPictureBlock 构造）
+function injectFlacComments(filePath, updates) {
+    const buf = fs.readFileSync(filePath)
+    // 支持 ID3v2 前置标签的 FLAC 文件（如 .mp3 实为 FLAC 且被 NodeID3 写过 ID3v2）
+    // FLAC 标准不应有 ID3v2 前置标签，这里自动移除以恢复标准 FLAC 结构
+    let flacStart = 0
+    if (buf.length >= 3 && buf.toString('latin1', 0, 3) === 'ID3') {
+        // 跳过 ID3v2 标签
+        if (buf.length < 10) throw new Error('文件过小')
+        const id3Size = ((buf[6] & 0x7F) << 21) | ((buf[7] & 0x7F) << 14) |
+                       ((buf[8] & 0x7F) << 7) | (buf[9] & 0x7F)
+        flacStart = 10 + id3Size
+        console.log('[injectFlacComments] 检测到 ID3v2 前置标签,已移除:', { id3Size, flacStart })
+    }
+    if (buf.length < flacStart + 4 || buf.toString('latin1', flacStart, flacStart + 4) !== 'fLaC') {
+        throw new Error('非有效 FLAC 文件')
+    }
+    let pos = flacStart + 4
+    const blocks = []
+    // 1. 解析所有 metadata block
+    while (pos < buf.length) {
+        const isLast = (buf[pos] & 0x80) !== 0
+        const type = buf[pos] & 0x7F
+        const len = (buf[pos + 1] << 16) | (buf[pos + 2] << 8) | buf[pos + 3]
+        const dataStart = pos + 4
+        const dataEnd = dataStart + len
+        if (dataEnd > buf.length) throw new Error('FLAC 块长度越界')
+        blocks.push({ type, isLast, data: buf.slice(dataStart, dataEnd) })
+        pos = dataEnd
+        if (isLast) break  // 最后一个 metadata block，之后是音频帧
+    }
+    if (blocks.length === 0 || blocks[0].type !== 0) {
+        throw new Error('FLAC 缺少 STREAMINFO 块')
+    }
+    // 2. 构建新的 VORBIS_COMMENT 块数据
+    //    格式: vendor_length(4 LE) + vendor_string + comment_count(4 LE) + comment*
+    //    comment: length(4 LE) + "KEY=value" (UTF-8)
+    const vendorStr = 'trae-music-editor'
+    const vendorBuf = Buffer.from(vendorStr, 'utf-8')
+    const comments = []
+    const targetKeys = new Set(Object.keys(updates).map(k => k.toUpperCase()))
+    const oldVc = blocks.find(b => b.type === 4)
+    if (oldVc) {
+        let p = 0
+        const vlen = oldVc.data.readUInt32LE(p); p += 4
+        p += vlen  // skip vendor
+        const count = oldVc.data.readUInt32LE(p); p += 4
+        for (let i = 0; i < count; i++) {
+            const clen = oldVc.data.readUInt32LE(p); p += 4
+            const cstr = oldVc.data.toString('utf-8', p, p + clen); p += clen
+            const eqIdx = cstr.indexOf('=')
+            if (eqIdx > 0) {
+                const k = cstr.substring(0, eqIdx).toUpperCase()
+                if (!targetKeys.has(k) && k !== 'METADATA_BLOCK_PICTURE') {
+                    comments.push(cstr)
+                }
+            }
+        }
+    }
+    for (const [k, v] of Object.entries(updates)) {
+        if (v != null && k !== 'METADATA_BLOCK_PICTURE') {
+            comments.push(`${k.toUpperCase()}=${v}`)
+        }
+    }
+    const commentBufs = comments.map(c => {
+        const cb = Buffer.from(c, 'utf-8')
+        const lenBuf = Buffer.alloc(4)
+        lenBuf.writeUInt32LE(cb.length, 0)
+        return Buffer.concat([lenBuf, cb])
+    })
+    const vcData = Buffer.concat([
+        (() => { const b = Buffer.alloc(4); b.writeUInt32LE(vendorBuf.length, 0); return b })(),
+        vendorBuf,
+        (() => { const b = Buffer.alloc(4); b.writeUInt32LE(comments.length, 0); return b })(),
+        ...commentBufs
+    ])
+    // 3. 重新组装文件: fLaC + blocks(保留非 VC/PICTURE/PADDING，添加新 VC 和 PICTURE) + 音频帧
+    const audioData = buf.slice(pos)
+    const outBlocks = []
+    for (const b of blocks) {
+        if (b.type === 4 || b.type === 6 || b.type === 1) continue  // 跳过旧 VC/PICTURE/PADDING
+        outBlocks.push({ type: b.type, data: b.data })
+    }
+    outBlocks.push({ type: 4, data: vcData })
+    if (updates.METADATA_BLOCK_PICTURE != null) {
+        outBlocks.push({ type: 6, data: updates.METADATA_BLOCK_PICTURE })
+    }
+    // 写入: fLaC + 所有块（最后一个标记 isLast）+ 音频帧
+    const parts = [Buffer.from('fLaC', 'latin1')]
+    for (let i = 0; i < outBlocks.length; i++) {
+        const isLast = (i === outBlocks.length - 1)
+        const header = Buffer.alloc(4)
+        header[0] = (isLast ? 0x80 : 0x00) | (outBlocks[i].type & 0x7F)
+        header[1] = (outBlocks[i].data.length >> 16) & 0xFF
+        header[2] = (outBlocks[i].data.length >> 8) & 0xFF
+        header[3] = outBlocks[i].data.length & 0xFF
+        parts.push(header, outBlocks[i].data)
+    }
+    parts.push(audioData)
+    fs.writeFileSync(filePath, Buffer.concat(parts))
+}
+
+// 构建 FLAC PICTURE 块二进制数据（type=3 前封面）
+// 格式: type(4 BE) + mime_len(4 BE) + mime + desc_len(4 BE) + desc + width(4 BE) + height(4 BE) + color_depth(4 BE) + colors(4 BE) + data_len(4 BE) + data
+function buildFlacPictureBlock(imageBuf, mime) {
+    const mimeBuf = Buffer.from(mime || 'image/jpeg', 'utf-8')
+    const descBuf = Buffer.from('', 'utf-8')
+    const parts = []
+    const typeBuf = Buffer.alloc(4)
+    typeBuf.writeUInt32BE(3, 0)  // 3 = front cover
+    parts.push(typeBuf)
+    const mimeLenBuf = Buffer.alloc(4)
+    mimeLenBuf.writeUInt32BE(mimeBuf.length, 0)
+    parts.push(mimeLenBuf, mimeBuf)
+    const descLenBuf = Buffer.alloc(4)
+    descLenBuf.writeUInt32BE(descBuf.length, 0)
+    parts.push(descLenBuf, descBuf)
+    const dimBuf = Buffer.alloc(16)  // width(4) + height(4) + color_depth(4) + colors(4)，全 0
+    parts.push(dimBuf)
+    const dataLenBuf = Buffer.alloc(4)
+    dataLenBuf.writeUInt32BE(imageBuf.length, 0)
+    parts.push(dataLenBuf, imageBuf)
+    return Buffer.concat(parts)
+}
+
+// 从 data URL 解析真实 mime 类型
+function getCoverMime(coverDataUrl) {
+    if (!coverDataUrl || !coverDataUrl.startsWith('data:')) return 'image/jpeg'
+    const m = coverDataUrl.match(/^data:([^;]+)/)
+    return m ? m[1] : 'image/jpeg'
+}
+
+ipcMain.handle('write-upload-file', async (_, { filePath, metadata, coverDataUrl, lyrics }) => {
+    try {
+        const ext = path.extname(filePath).toLowerCase()
+        // 优先用文件头判断实际格式（解决扩展名与内容不符的问题，如 .mp3 实为 FLAC）
+        const actualFmt = detectActualAudioFormat(filePath)
+        const fmt = actualFmt || ext.replace('.', '')
+        const coverMime = getCoverMime(coverDataUrl)
+        let coverBuf = await resizeCover(coverDataUrl)
+        if (actualFmt && actualFmt !== ext.replace('.', '') && actualFmt !== 'm4a') {
+            console.log('[write-upload-file] 格式与扩展名不符,按实际格式处理:', { ext, actualFmt, filePath })
+        }
+        // MP3：NodeID3 写文本标签 + ffmpeg 写标准 APIC frame（确保跨应用兼容）
+        if (fmt === 'mp3') {
+            const tags = {
+                title: metadata?.title || '',
+                artist: metadata?.artist || '',
+                album: metadata?.album || ''
+            }
+            if (lyrics) tags.unsynchronisedLyrics = { language: 'chi', text: lyrics }
+            const success = NodeID3.write(tags, filePath)
+            if (!success) throw new Error('ID3写入失败')
+            if (coverBuf) {
+                try {
+                    await writeMP3CoverWithFfmpeg(filePath, coverBuf, coverMime)
+                } catch (e) {
+                    console.warn('[write-upload-file] ffmpeg cover failed, fallback:', e.message)
+                    writeMP3CoverStandard(filePath, coverBuf, coverMime)
+                }
+            }
+            console.log('[write-upload-file] MP3 written OK:', { title: tags.title, coverMime, coverSize: coverBuf?.length, hasLyrics: !!lyrics })
+            return { success: true, path: filePath }
+        }
+        // OGG/OPUS：完全用二进制注入 Vorbis comment（不经过 ffmpeg，不压缩，支持原始大封面+歌词）
+        if (fmt === 'ogg' || fmt === 'opus' || fmt === 'oga') {
+            const updates = {}
+            if (metadata?.title) updates.TITLE = metadata.title
+            if (metadata?.artist) updates.ARTIST = metadata.artist
+            if (metadata?.album) updates.ALBUM = metadata.album
+            if (coverBuf) {
+                updates.METADATA_BLOCK_PICTURE = buildVorbisCoverBase64(coverBuf, coverMime)
+                console.log('[write-upload-file] OGG inject cover (no ffmpeg, no compress):', { size: coverBuf.length, mime: coverMime, b64Len: updates.METADATA_BLOCK_PICTURE.length })
+            }
+            if (lyrics) updates.LYRICS = lyrics
+            injectOggComments(filePath, updates)
+            console.log('[write-upload-file] OGG comment injected OK (pure binary, no ffmpeg)')
+            return { success: true, path: filePath }
+        }
+        // FLAC：纯二进制注入 Vorbis comment + PICTURE 块
+        if (fmt === 'flac') {
+            const updates = {}
+            if (metadata?.title) updates.TITLE = metadata.title
+            if (metadata?.artist) updates.ARTIST = metadata.artist
+            if (metadata?.album) updates.ALBUM = metadata.album
+            if (metadata?.year) updates.DATE = metadata.year
+            if (metadata?.genre) updates.GENRE = metadata.genre
+            if (metadata?.track) updates.TRACKNUMBER = metadata.track
+            if (lyrics) updates.LYRICS = lyrics
+            if (coverBuf) {
+                updates.METADATA_BLOCK_PICTURE = buildFlacPictureBlock(coverBuf, coverMime)
+                console.log('[write-upload-file] FLAC inject cover:', { size: coverBuf.length, mime: coverMime })
+            }
+            injectFlacComments(filePath, updates)
+            console.log('[write-upload-file] FLAC injected OK')
+            return { success: true, path: filePath }
+        }
+        // FLAC/M4A/WAV 等：ffmpeg attached_pic 方式
+        const tmpOut = filePath + '.tmp' + ext
+        await new Promise((resolve, reject) => {
+            const args = ['-y', '-i', filePath]
+            const coverFile = saveCoverTempFile(coverBuf)
+            if (coverFile) args.push('-i', coverFile)
+            if (metadata?.title) args.push('-metadata', `title=${metadata.title}`)
+            if (metadata?.artist) args.push('-metadata', `artist=${metadata.artist}`)
+            if (metadata?.album) args.push('-metadata', `album=${metadata.album}`)
+            if (lyrics) args.push('-metadata', `lyrics=${lyrics}`)
+            if (coverFile) {
+                args.push('-map', '0', '-map', '1', '-c', 'copy', '-disposition:v', 'attached_pic')
+            } else {
+                args.push('-c', 'copy')
+            }
+            args.push(tmpOut)
+            execFile(getFfmpegPath(), args, { timeout: 30000 }, (err) => {
+                if (coverFile) { try { fs.unlinkSync(coverFile) } catch (e) {} }
+                if (err) { try { if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut) } catch (e) {}; reject(new Error('ffmpeg写入失败: ' + err.message)); return }
+                resolve()
+            })
+        })
+        fs.copyFileSync(tmpOut, filePath)
+        try { fs.unlinkSync(tmpOut) } catch (e) {}
+        return { success: true, path: filePath }
+    } catch (err) { return { success: false, error: err.message } }
+})
+
+// 云盘上传文件选择对话框（支持多选，返回路径数组）
+ipcMain.handle('open-cloud-upload-dialog', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+        properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Audio Files', extensions: ['mp3', 'flac', 'wav', 'm4a', 'ape', 'ogg', 'aac', 'wma'] }]
+    })
+    if (canceled || filePaths.length === 0) return null
+    return filePaths  // 返回数组
+})
+
+// 选择封面图片对话框，返回 dataURL
+ipcMain.handle('open-cover-dialog', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'bmp'] }]
+    })
+    if (canceled || filePaths.length === 0) return null
+    try {
+        const buf = fs.readFileSync(filePaths[0])
+        const ext = path.extname(filePaths[0]).slice(1).toLowerCase()
+        const mime = ext === 'jpg' ? 'jpeg' : ext
+        return `data:image/${mime};base64,${buf.toString('base64')}`
+    } catch (e) { return null }
+})
+
+// 选择歌词文件（.lrc/.txt），返回文本内容
+ipcMain.handle('open-lyrics-dialog', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+        properties: ['openFile'],
+        filters: [{ name: '歌词文件', extensions: ['lrc', 'txt'] }]
+    })
+    if (canceled || filePaths.length === 0) return null
+    try {
+        const content = fs.readFileSync(filePaths[0], 'utf-8')
+        return content
+    } catch (e) { return null }
+})
+
+// 流式计算文件 MD5（不一次性读入内存，避免大文件 OOM）
+function calculateFileMD5Stream(filePath) {
+    return new Promise((resolve, reject) => {
+        const hash = crypto.createHash('md5')
+        const stream = fs.createReadStream(filePath)
+        stream.on('data', (chunk) => hash.update(chunk))
+        stream.on('end', () => resolve(hash.digest('hex')))
+        stream.on('error', reject)
+    })
+}
+
+// 云盘完整上传（主进程内完成，避免大 Buffer 跨进程序列化）
+// 参数: { filePath, filename, cookie, apiBaseUrl, song, artist, album }
+// complete 始终传 song/artist/album（参考官方示例）
+// 服务器默认自动匹配网易云歌曲，取消匹配由渲染进程上传后调用 matchCloud API
+// 进度通过 event.sender.send('cloud-upload-progress', { progress, status, filename }) 推送
+ipcMain.handle('cloud-upload', async (event, { filePath, filename, cookie, apiBaseUrl, song, artist, album }) => {
+    const sendProgress = (progress, status) => {
+        try { event.sender.send('cloud-upload-progress', { progress, status, filename }) } catch (e) {}
+    }
+    try {
+        const stat = fs.statSync(filePath)
+        sendProgress(0, '计算文件指纹...')
+        // 1. 流式 MD5
+        const md5 = await calculateFileMD5Stream(filePath)
+        sendProgress(0, '获取上传凭证...')
+        // 2. 获取上传凭证
+        const tokenRes = await axios.post(`${apiBaseUrl}/cloud/upload/token`, {
+            cookie, md5, fileSize: stat.size, filename
+        })
+        if (tokenRes.data.code !== 200) {
+            return { success: false, error: tokenRes.data.message || tokenRes.data.msg || '获取上传凭证失败' }
+        }
+        const tokenInfo = tokenRes.data.data || {}
+        const { needUpload, songId, resourceId, uploadUrl, uploadToken } = tokenInfo
+        if (!songId || !resourceId) {
+            console.error('[cloud-upload] token missing songId/resourceId:', tokenInfo)
+            return { success: false, error: '上传凭证缺少必要字段（songId/resourceId）' }
+        }
+        // 3. 秒传或 POST 文件流到云存储
+        if (needUpload && uploadUrl) {
+            sendProgress(0, '上传中...')
+            // 根据扩展名设置正确的 Content-Type，避免服务器按错误格式处理
+            const ext = path.extname(filePath).toLowerCase()
+            const contentTypeMap = {
+                '.mp3': 'audio/mpeg',
+                '.flac': 'audio/flac',
+                '.ogg': 'audio/ogg',
+                '.opus': 'audio/ogg',
+                '.oga': 'audio/ogg',
+                '.m4a': 'audio/mp4',
+                '.aac': 'audio/aac',
+                '.wav': 'audio/wav'
+            }
+            const contentType = contentTypeMap[ext] || 'audio/mpeg'
+            const nosRes = await new Promise((resolve, reject) => {
+                const stream = fs.createReadStream(filePath)
+                let uploaded = 0
+                stream.on('data', (chunk) => {
+                    uploaded += chunk.length
+                    const p = Math.round((uploaded / stat.size) * 100)
+                    sendProgress(p, '上传中...')
+                })
+                axios.post(uploadUrl, stream, {
+                    headers: {
+                        'x-nos-token': uploadToken,
+                        'Content-MD5': md5,
+                        'Content-Type': contentType,
+                        'Content-Length': String(stat.size)
+                    },
+                    maxContentLength: Infinity,
+                    maxBodyLength: Infinity,
+                    timeout: 0,
+                    validateStatus: () => true
+                }).then(resolve).catch(reject)
+            })
+            if (nosRes.status !== 200) {
+                console.error('[cloud-upload] NOS upload failed:', nosRes.status, nosRes.statusText, typeof nosRes.data === 'string' ? nosRes.data.substring(0, 500) : nosRes.data)
+                return { success: false, error: `云存储上传失败（HTTP ${nosRes.status}）` }
+            }
+        } else {
+            sendProgress(100, '秒传命中，完成导入...')
+            console.log('[cloud-upload] 秒传命中（MD5 已存在），songId 可能是之前上传的同内容文件')
+        }
+        // 4. 完成导入（带重试，服务器处理上传数据需要时间）
+        // complete 始终传 song/artist/album（参考官方示例实现）
+        sendProgress(100, '完成导入...')
+        await new Promise(r => setTimeout(r, 2000))
+        let completeRes = null
+        const completeParams = {
+            cookie, songId, resourceId, md5, filename,
+            song: song || filename.replace(/\.[^.]+$/, ''),
+            artist: artist || '未知艺术家',
+            album: album || '未知专辑'
+        }
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                completeRes = await axios.post(`${apiBaseUrl}/cloud/upload/complete`, completeParams)
+                if (completeRes.data.code === 200) break
+                console.warn(`[cloud-upload] complete attempt ${attempt + 1} failed:`, completeRes.data.code, completeRes.data.msg)
+            } catch (e) {
+                console.warn(`[cloud-upload] complete attempt ${attempt + 1} error:`, e.message)
+            }
+            if (attempt < 2) await new Promise(r => setTimeout(r, 3000))
+        }
+        if (!completeRes || completeRes.data.code !== 200) {
+            console.error('[cloud-upload] complete final failed:', completeRes?.data)
+            return { success: false, error: completeRes?.data?.message || completeRes?.data?.msg || '导入失败' }
+        }
+        console.log('[cloud-upload] upload success:', { songId, resourceId, needUpload })
+        return { success: true, songId, resourceId, needUpload: !!needUpload }
+    } catch (err) {
+        console.error('Cloud upload error:', err)
+        return { success: false, error: err.message || '上传失败' }
+    }
+})
+
+ipcMain.handle('save-song-metadata', async (_, { songPath, metadata, coverDataUrl, lyrics }) => {
     try {
         const ext = path.extname(songPath).toLowerCase()
-        const isMP3 = ext === '.mp3'
+        // 优先用文件头判断实际格式（解决扩展名与内容不符的问题，如 .mp3 实为 FLAC）
+        const actualFmt = detectActualAudioFormat(songPath)
+        const isMP3 = actualFmt === 'mp3' || (actualFmt === null && ext === '.mp3')
+        const isVorbis = actualFmt === 'ogg' || (actualFmt === null && VORBIS_COMMENT_EXT.includes(ext))
+        const isFlac = actualFmt === 'flac' || (actualFmt === null && ext === FLAC_EXT)
         const SUPPORTED_SAVE_EXTENSIONS = [...AUDIO_EXTENSIONS, '.mp4']
-        if (!isMP3 && !SUPPORTED_SAVE_EXTENSIONS.includes(ext)) {
-            return { success: false, error: `暂不支持 ${ext} 格式的元数据写入（支持 MP3/FLAC/OGG/WAV/M4A 等）` }
+        if (!isMP3 && !isVorbis && !isFlac && !SUPPORTED_SAVE_EXTENSIONS.includes(ext)) {
+            return { success: false, error: `暂不支持 ${ext} 格式（实际 ${actualFmt || '未知'}）的元数据写入（支持 MP3/FLAC/OGG/WAV/M4A 等）` }
+        }
+        if (actualFmt && actualFmt !== ext.replace('.', '') && actualFmt !== 'm4a') {
+            console.log('[save-song-metadata] 格式与扩展名不符,按实际格式处理:', { ext, actualFmt, songPath })
         }
 
         // 备份原文件
@@ -2832,11 +3822,41 @@ ipcMain.handle('save-song-metadata', async (_, { songPath, metadata, coverDataUr
         fs.copyFileSync(songPath, backupPath)
 
         try {
+            const coverMime = getCoverMime(coverDataUrl)
             const coverBuf = await resizeCover(coverDataUrl)
             if (isMP3) {
-                saveMP3Metadata(songPath, metadata, coverBuf)
+                // MP3：NodeID3 写文本 + ffmpeg 写标准 APIC frame（支持封面/歌词）
+                await saveMP3Metadata(songPath, metadata, coverBuf, coverMime, lyrics)
+            } else if (isVorbis) {
+                // OGG/Opus：纯二进制注入 Vorbis comment（不压缩，支持原始大封面+歌词）
+                const updates = {}
+                if (metadata?.title) updates.TITLE = metadata.title
+                if (metadata?.artist) updates.ARTIST = metadata.artist
+                if (metadata?.album) updates.ALBUM = metadata.album
+                if (metadata?.date) updates.DATE = metadata.date
+                if (metadata?.genre) updates.GENRE = metadata.genre
+                if (metadata?.track) updates.TRACKNUMBER = metadata.track
+                if (coverBuf) updates.METADATA_BLOCK_PICTURE = buildVorbisCoverBase64(coverBuf, coverMime)
+                if (lyrics) updates.LYRICS = lyrics
+                injectOggComments(songPath, updates)
+            } else if (isFlac) {
+                // FLAC：纯二进制注入 Vorbis comment + PICTURE 块（不压缩，支持原始大封面+歌词）
+                const updates = {}
+                if (metadata?.title) updates.TITLE = metadata.title
+                if (metadata?.artist) updates.ARTIST = metadata.artist
+                if (metadata?.album) updates.ALBUM = metadata.album
+                if (metadata?.year) updates.DATE = metadata.year
+                if (metadata?.genre) updates.GENRE = metadata.genre
+                if (metadata?.track) updates.TRACKNUMBER = metadata.track
+                if (lyrics) updates.LYRICS = lyrics
+                // FLAC PICTURE 块是二进制格式，不是 base64，直接构造
+                if (coverBuf) {
+                    updates.METADATA_BLOCK_PICTURE = buildFlacPictureBlock(coverBuf, coverMime)
+                }
+                injectFlacComments(songPath, updates)
             } else {
-                await saveWithFfmpeg(songPath, metadata, coverBuf)
+                // M4A/WAV 等：ffmpeg attached_pic
+                await saveWithFfmpeg(songPath, metadata, coverBuf, lyrics)
             }
 
             // 验证写入后文件是否可读
@@ -2894,6 +3914,11 @@ ipcMain.handle('show-item-in-folder', async (_, filePath) => {
 
 app.on('window-all-closed', () => {
     // Don't quit on window close if tray icon exists
+})
+
+app.on('before-quit', () => {
+    // 退出前停止 QQ 音乐 API 子进程
+    stopQQMusicAPI()
 })
 
 app.on('activate', () => {

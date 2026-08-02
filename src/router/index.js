@@ -10,6 +10,17 @@ import LocalVideo from '../views/LocalVideo.vue'
 import AlbumDetail from '../views/AlbumDetail.vue'
 import CloudMusic from '../views/CloudMusic.vue'
 import Downloads from '../views/Downloads.vue'
+import NetEaseCloud from '../views/NetEaseCloud.vue'
+
+// QQ 音乐模块（懒加载，与网易云路由隔离）
+const QQDiscovery = () => import('../views/qq/Discovery.vue')
+const QQSearch = () => import('../views/qq/Search.vue')
+const QQPlaylistDetail = () => import('../views/qq/PlaylistDetail.vue')
+const QQSingerDetail = () => import('../views/qq/SingerDetail.vue')
+const QQAlbumDetail = () => import('../views/qq/AlbumDetail.vue')
+const QQLiked = () => import('../views/qq/Liked.vue')
+const QQSingerList = () => import('../views/qq/SingerList.vue')
+const QQPlaylistCategory = () => import('../views/qq/PlaylistCategory.vue')
 
 // 动漫模块（懒加载，减小首屏 bundle）
 const Anime = () => import('../views/Anime.vue')
@@ -20,6 +31,7 @@ const Movie = () => import('../views/Movie.vue')
 const MovieDetail = () => import('../views/MovieDetail.vue')
 
 const routes = [
+    // ========== 网易云平台路由（默认） ==========
     {
         path: '/',
         name: 'Discovery',
@@ -71,6 +83,11 @@ const routes = [
         component: CloudMusic
     },
     {
+        path: '/netease-cloud',
+        name: 'NetEaseCloud',
+        component: NetEaseCloud
+    },
+    {
         path: '/downloads',
         name: 'Downloads',
         component: Downloads
@@ -96,6 +113,48 @@ const routes = [
         path: '/movie/:source/:id',
         name: 'MovieDetail',
         component: MovieDetail
+    },
+
+    // ========== QQ 音乐平台路由（独立路径前缀 /qq/） ==========
+    {
+        path: '/qq',
+        name: 'QQDiscovery',
+        component: QQDiscovery
+    },
+    {
+        path: '/qq/search',
+        name: 'QQSearch',
+        component: QQSearch
+    },
+    {
+        path: '/qq/playlist/:id',
+        name: 'QQPlaylistDetail',
+        component: QQPlaylistDetail
+    },
+    {
+        path: '/qq/singer/:id',
+        name: 'QQSingerDetail',
+        component: QQSingerDetail
+    },
+    {
+        path: '/qq/album/:id',
+        name: 'QQAlbumDetail',
+        component: QQAlbumDetail
+    },
+    {
+        path: '/qq/liked',
+        name: 'QQLiked',
+        component: QQLiked
+    },
+    {
+        path: '/qq/singers',
+        name: 'QQSingerList',
+        component: QQSingerList
+    },
+    {
+        path: '/qq/categories',
+        name: 'QQPlaylistCategory',
+        component: QQPlaylistCategory
     }
 ]
 
@@ -118,6 +177,17 @@ export function getPendingLockTarget() {
 }
 
 router.beforeEach((to, from, next) => {
+    // 平台路由守卫:根据当前平台重定向首页
+    // QQ 平台访问 / → 重定向到 /qq;网易云平台访问 /qq → 重定向到 /
+    const platform = localStorage.getItem('current_platform') || 'netease'
+    if (platform === 'qq' && to.path === '/') {
+        return next('/qq')
+    }
+    if (platform === 'netease' && to.path === '/qq' && !from.path.startsWith('/qq')) {
+        return next('/')
+    }
+
+    // 账号密码锁路由守护:访问"我喜欢的音乐"或自己创建的歌单时拦截
     const userStore = useUserStore()
     if (!userStore.isLoggedIn || !userStore.lockStatus.locked || userStore.lockStatus.unlocked) {
         return next()

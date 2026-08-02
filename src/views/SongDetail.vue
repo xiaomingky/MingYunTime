@@ -1,21 +1,24 @@
 <script setup>
 import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { usePlayerStore } from '../store/player'
-import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, BookOpen, RefreshCw, Type, LayoutGrid, AlignLeft, Settings } from 'lucide-vue-next'
-import EnglishAnalysis from '../components/EnglishAnalysis.vue'
+import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, RefreshCw, Type, LayoutGrid, AlignLeft, Settings, ThumbsUp, MessageCircle, Trash2, CornerDownLeft } from 'lucide-vue-next'
 import CustomSelect from '../components/CustomSelect.vue'
-import { getCommentMusic } from '../api'
+import { getCommentNew, likeComment, sendComment } from '../api'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '../store/user'
 import { useMessageStore } from '../store/message'
+import { useQQUserStore } from '../store/qq-user'
+import { qqOperSonglist } from '../api/qq'
 
 const playerStore = usePlayerStore()
 const userStore = useUserStore()
 const messageStore = useMessageStore()
+const qqUserStore = useQQUserStore()
 const router = useRouter()
+// 是否 QQ 平台歌曲(QQ 歌曲评论用 QQComment 组件,不走网易云 getCommentNew)
+const isQQSong = computed(() => playerStore.currentSong.platform === 'qq' || !!playerStore.currentSong.songmid)
 const lyricFontSize = ref(32)
 const showGifCover = ref(localStorage.getItem('song_detail_show_gif_cover') !== 'false')
-const showEnglishAnalysis = ref(false)
 // 歌词设置项默认折叠收起
 const showLyricSettings = ref(false)
 // 歌词颜色是否跟随桌面歌词所选颜色
@@ -44,14 +47,8 @@ const hexToRgba = (hex, alpha) => {
 
 const inactiveLyricColor = computed(() => hexToRgba(activeLyricColor.value, 0.2))
 
-const toggleEnglishAnalysis = () => {
-    showEnglishAnalysis.value = !showEnglishAnalysis.value
-}
-
-// 切换歌曲时关闭解析面板
+// 切换歌曲时重置歌词滚动到开头
 watch(() => playerStore.currentSong.id, () => {
-    showEnglishAnalysis.value = false
-    // 切歌时立即重置歌词滚动到开头，避免显示上一首的滚动位置
     if (lyricContainer.value) {
         lyricContainer.value.scrollTo({ top: 0, behavior: 'auto' })
     }
@@ -481,15 +478,22 @@ watch(showMvMenu, (val) => {
 })
 
 const handleDownload = async () => {
+    // 本地音乐已有路径，无需下载
+    if (playerStore.currentSong.path) {
+        messageStore.info('此歌曲已在本地')
+        return
+    }
+
+    // QQ 平台歌曲：走 playerStore.downloadQQSong 统一处理（qqDownload 拉高品质 URL + IPC 落盘）
+    if (playerStore.currentSong.platform === 'qq' || playerStore.currentSong.songmid) {
+        await playerStore.downloadQQSong(playerStore.currentSong)
+        return
+    }
+
     if (playerStore.currentSong.url) {
         const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
         if (bridge && bridge.invoke) {
             try {
-                // 如果是本地音乐已经有路径了，就不需要下载了
-                if (playerStore.currentSong.path) {
-                    messageStore.info('此歌曲已在本地')
-                    return
-                }
                 const res = await bridge.invoke('download-song', {
                     url: playerStore.currentSong.url,
                     name: playerStore.currentSong.name,
@@ -536,32 +540,212 @@ const goToAlbum = () => {
 const comments = ref([])
 const totalComments = ref(0)
 const showCommentPanel = ref(false)
+// 评论分页 / 排序 / 操作状态
+const commentSortType = ref(3) // 1推荐 2热度 3时间
+const commentPageNo = ref(1)
+const commentCursor = ref('')
+const commentHasMore = ref(false)
+const commentLoading = ref(false)
+const commentText = ref('')
+const replyTarget = ref(null) // 回复目标评论对象
+const commentSubmitting = ref(false)
+const commentsListRef = ref(null)
 
-const fetchComments = async () => {
+const canManageComment = (comment) => {
+    return userStore.isLoggedIn && userStore.profile?.userId === comment.user?.userId
+}
+
+const fetchComments = async (reset = true) => {
     if (!playerStore.currentSong.id) return
+    if (commentLoading.value) return
+    if (reset) {
+        commentPageNo.value = 1
+        commentCursor.value = ''
+        comments.value = []
+    }
+    commentLoading.value = true
     try {
-        const res = await getCommentMusic(playerStore.currentSong.id, 20)
-        comments.value = res.hotComments || res.comments || []
-        totalComments.value = res.total || 0
+        // QQ 平台:调用 fcg_global_comment_h5.fcg(用 songid 作 topid)
+        // QQ 评论排序: 2=热评(cmd=6), 其他=最新(cmd=8)
+        if (isQQSong.value) {
+            const { qqComments } = await import('../api/qq')
+            const { useQQUserStore } = await import('../store/qq-user')
+            const qqUser = useQQUserStore()
+            // songmid 必传,songid 可选(主进程 songid 缺失时自动调 song-detail 补全)
+            const songmid = playerStore.currentSong.songmid || playerStore.currentSong.id
+            const songid = playerStore.currentSong.songid || 0
+            if (!songmid) {
+                messageStore.warning('该歌曲缺少 songmid,无法获取评论')
+                commentLoading.value = false
+                return
+            }
+            const cmd = commentSortType.value === 2 ? 6 : 8  // 6=热评, 8=最新
+            const res = await qqComments(songmid, songid, cmd, commentPageNo.value - 1, 20, commentCursor.value, qqUser.cookie)
+            const list = res?.data?.comments || []
+            if (reset) {
+                comments.value = list
+            } else {
+                comments.value.push(...list)
+            }
+            totalComments.value = res?.data?.total || 0
+            commentHasMore.value = !!res?.data?.hasMore
+            // QQ 分页游标:上一页最后一条评论的 commentId
+            if (list.length > 0) {
+                commentCursor.value = res?.data?.lasthotcommentid || list[list.length - 1].commentId || ''
+            }
+        } else {
+            // 网易云/本地歌曲评论
+            const res = await getCommentNew({
+                id: playerStore.currentSong.id,
+                type: 0,
+                pageNo: commentPageNo.value,
+                pageSize: 20,
+                sortType: commentSortType.value,
+                cursor: commentCursor.value
+            })
+            const list = res.data?.comments || res.comments || []
+            if (reset) {
+                comments.value = list
+            } else {
+                comments.value.push(...list)
+            }
+            totalComments.value = res.data?.totalCount || res.total || 0
+            commentHasMore.value = !!(res.data?.hasMore ?? res.hasMore)
+            // sortType=3 时，cursor 为上一页最后一条的 time
+            if (list.length > 0 && commentSortType.value === 3) {
+                commentCursor.value = String(list[list.length - 1].time)
+            }
+        }
     } catch (err) {
         console.error('Fetch comments error:', err)
+        messageStore.error('获取评论失败')
+    } finally {
+        commentLoading.value = false
+    }
+}
+
+const loadMoreComments = () => {
+    if (!commentHasMore.value || commentLoading.value) return
+    commentPageNo.value++
+    fetchComments(false)
+}
+
+const onCommentsScroll = (e) => {
+    const el = e.target
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 60 && commentHasMore.value && !commentLoading.value) {
+        loadMoreComments()
+    }
+}
+
+const switchCommentSort = (type) => {
+    if (commentSortType.value === type || commentLoading.value) return
+    commentSortType.value = type
+    fetchComments(true)
+}
+
+const toggleLike = async (comment) => {
+    if (!userStore.isLoggedIn) { messageStore.warning('请先登录后再点赞'); return }
+    const wasLiked = !!comment.liked
+    // 乐观更新
+    comment.liked = !wasLiked
+    comment.likedCount = (comment.likedCount || 0) + (wasLiked ? -1 : 1)
+    try {
+        await likeComment(playerStore.currentSong.id, comment.commentId, wasLiked ? 0 : 1, 0)
+    } catch (err) {
+        // 回滚
+        comment.liked = wasLiked
+        comment.likedCount = (comment.likedCount || 0) + (wasLiked ? 1 : -1)
+        messageStore.error('点赞操作失败')
+    }
+}
+
+const startReply = (comment) => {
+    if (!userStore.isLoggedIn) { messageStore.warning('请先登录后再回复'); return }
+    replyTarget.value = comment
+    commentText.value = ''
+}
+
+const cancelReply = () => {
+    replyTarget.value = null
+    commentText.value = ''
+}
+
+const submitComment = async () => {
+    const text = commentText.value.trim()
+    if (!text) { messageStore.warning('请输入评论内容'); return }
+    if (!userStore.isLoggedIn) { messageStore.warning('请先登录'); return }
+    if (commentSubmitting.value) return
+    commentSubmitting.value = true
+    try {
+        const isReply = !!replyTarget.value
+        const res = await sendComment({
+            t: isReply ? 2 : 1,
+            type: 0,
+            id: playerStore.currentSong.id,
+            content: text,
+            commentId: isReply ? replyTarget.value.commentId : undefined
+        })
+        if (res.code === 200) {
+            messageStore.success(isReply ? '回复成功' : '评论成功')
+            commentText.value = ''
+            replyTarget.value = null
+            await fetchComments(true)
+        } else {
+            messageStore.error(res.message || res.msg || (isReply ? '回复失败' : '评论失败'))
+        }
+    } catch (err) {
+        console.error('Submit comment error:', err)
+        messageStore.error('提交失败，请稍后重试')
+    } finally {
+        commentSubmitting.value = false
+    }
+}
+
+const deleteComment = async (comment) => {
+    if (!canManageComment(comment)) return
+    const confirmed = await messageStore.confirm('确定删除这条评论吗？', '删除评论')
+    if (!confirmed) return
+    try {
+        const res = await sendComment({
+            t: 0,
+            type: 0,
+            id: playerStore.currentSong.id,
+            commentId: comment.commentId
+        })
+        if (res.code === 200) {
+            messageStore.success('删除成功')
+            const idx = comments.value.findIndex(c => c.commentId === comment.commentId)
+            if (idx !== -1) {
+                comments.value.splice(idx, 1)
+                totalComments.value = Math.max(0, totalComments.value - 1)
+            }
+        } else {
+            messageStore.error(res.message || res.msg || '删除失败')
+        }
+    } catch (err) {
+        console.error('Delete comment error:', err)
+        messageStore.error('删除失败，请稍后重试')
     }
 }
 
 watch(() => playerStore.currentSong.id, () => {
     if (playerStore.showSongDetail) {
-        fetchComments()
+        fetchComments(true)
     }
 })
 
 watch(() => playerStore.showSongDetail, (val) => {
     if (val) {
-        fetchComments()
+        fetchComments(true)
     }
 })
 
 const handleComment = () => {
     showCommentPanel.value = !showCommentPanel.value
+    // 打开评论面板时如果评论为空,自动拉取
+    if (showCommentPanel.value && comments.value.length === 0 && !commentLoading.value) {
+        fetchComments(true)
+    }
 }
 
 const formatDate = (timestamp) => {
@@ -645,23 +829,9 @@ onMounted(() => {
       <ChevronDown class="close-btn no-drag" :size="30" @mousedown.stop @click.stop="playerStore.showSongDetail = false" />
     </div>
 
-    <div class="main-content" :class="{ 'analysis-active': showEnglishAnalysis }">
-      <div class="left-section" :class="{ 'analysis-mode': showEnglishAnalysis }">
-        <!-- English Analysis Panel -->
-        <div v-if="showEnglishAnalysis" class="analysis-wrapper">
-            <EnglishAnalysis
-                :lyrics="playerStore.lyrics"
-                :songName="playerStore.currentSong.name"
-                :artist="playerStore.currentSong.artist"
-                :songPath="playerStore.currentSong.path || ''"
-                :songId="playerStore.currentSong.id"
-                :currentLyricIndex="currentLyricIndex"
-                @scrollToLine="handleLyricClick"
-            />
-        </div>
-
+    <div class="main-content">
+      <div class="left-section">
         <!-- Normal Cover + Info -->
-        <template v-else>
         <div class="cover-container">
             <div class="cover-glow" :style="{ backgroundImage: `url(${getCoverUrl()})` }"></div>
             <div class="cover-wrapper" :class="{ playing: playerStore.isPlaying }">
@@ -683,7 +853,7 @@ onMounted(() => {
             <div class="song-name-container">
                 <h1 class="song-name">
                     {{ playerStore.currentSong.name }}
-                    <span v-if="playerStore.currentSong.fee === 1" class="vip-badge-song">VIP</span>
+                    <span v-if="playerStore.currentSong.fee === 1 || (isQQSong && playerStore.currentSong.isVip)" class="vip-badge-song">VIP</span>
                 </h1>
             </div>
                 <div class="song-info">
@@ -696,36 +866,37 @@ onMounted(() => {
            <div class="action-item" :class="{ active: playerStore.isLiked }" @click="playerStore.toggleLike()">
               <Heart :size="22" :fill="playerStore.isLiked ? '#EC4141' : 'none'" :color="playerStore.isLiked ? '#EC4141' : 'currentColor'" />
            </div>
-           <div class="action-item" @click="showPlaylistSelector = true"><Plus :size="24" /></div>
+           <!-- QQ 平台取消歌单管理,仅网易云显示添加到歌单 -->
+           <div v-if="!isQQSong" class="action-item" @click="showPlaylistSelector = true"><Plus :size="24" /></div>
            <div class="action-item" @click="handleDownload"><Download :size="22" /></div>
            <div class="action-item" @click="handleShare"><Share2 :size="22" /></div>
            <div class="action-item" @click="handleComment"><MessageSquare :size="22" /></div>
         </div>
 
-        <!-- Playlist Selector Modal -->
-        <div v-if="showPlaylistSelector" class="playlist-selector-overlay" @click="showPlaylistSelector = false">
+        <!-- Playlist Selector Modal (仅网易云平台) -->
+        <div v-if="showPlaylistSelector && !isQQSong" class="playlist-selector-overlay" @click="showPlaylistSelector = false">
             <div class="playlist-selector-modal" @click.stop>
                 <div class="modal-header">
                     <h3>收藏到歌单</h3>
                     <X :size="20" class="clickable" @click="showPlaylistSelector = false" />
                 </div>
                 <div class="modal-body">
-                    <div 
-                        v-for="p in userStore.playlists.filter(pl => pl.userId === userStore.profile?.userId)" 
-                        :key="p.id" 
-                        class="playlist-item clickable"
-                        @click="handleAddToPlaylist(p.id)"
-                    >
-                        <div class="cover">
-                            <img :src="p.coverImgUrl + '?param=40y40'" />
+                    <!-- 网易云平台: 原有逻辑 -->
+                        <div
+                            v-for="p in userStore.playlists.filter(pl => pl.userId === userStore.profile?.userId)"
+                            :key="p.id"
+                            class="playlist-item clickable"
+                            @click="handleAddToPlaylist(p.id)"
+                        >
+                            <div class="cover">
+                                <img :src="p.coverImgUrl + '?param=40y40'" />
+                            </div>
+                            <div class="name">{{ p.name }}</div>
+                            <div class="count">{{ p.trackCount }}首</div>
                         </div>
-                        <div class="name">{{ p.name }}</div>
-                        <div class="count">{{ p.trackCount }}首</div>
-                    </div>
                 </div>
             </div>
         </div>
-        </template>
       </div>
 
       <div class="right-lyrics" v-show="!showCommentPanel">
@@ -748,10 +919,6 @@ onMounted(() => {
                             <small>用网易云 MV API 按歌名匹配</small>
                         </div>
                     </div>
-                </div>
-                <div class="icon-with-label action-item en-btn" :class="{ active: showEnglishAnalysis }" title="英文解析" @click="toggleEnglishAnalysis">
-                   <BookOpen :size="18" />
-                   <span class="icon-text">解析</span>
                 </div>
                 <div class="icon-with-label action-item" :class="{ active: playerStore.bgMode === 'cover' }" :title="playerStore.bgMode === 'cover' ? '切换到经典样式' : '切换到沉浸模式'" @click="playerStore.toggleBgMode()">
                    <ImagePlay v-if="playerStore.bgMode === 'cover'" :size="18" />
@@ -880,27 +1047,73 @@ onMounted(() => {
               <span class="title">歌曲评论 ({{ totalComments }})</span>
               <button class="close-panel-btn" @click="showCommentPanel = false">返回歌词</button>
           </div>
-          <div class="comments-list">
-              <div v-for="comment in comments" :key="comment.commentId" class="comment-item">
-                  <div class="user-avatar">
-                      <img :src="comment.user.avatarUrl" />
+          <!-- QQ 平台:评论(只读,不支持发送/点赞/删除) -->
+          <!-- 网易云/本地歌曲评论:完整评论逻辑(支持发送/点赞/删除) -->
+          <div class="comments-toolbar">
+              <button v-if="!isQQSong" class="sort-btn" :class="{ active: commentSortType === 3 }" @click="switchCommentSort(3)">按时间</button>
+              <button class="sort-btn" :class="{ active: commentSortType === 2 }" @click="switchCommentSort(2)">按热度</button>
+              <button v-if="!isQQSong" class="sort-btn" :class="{ active: commentSortType === 1 }" @click="switchCommentSort(1)">推荐</button>
+              <span v-if="isQQSong" class="sort-btn" style="cursor:default;opacity:0.6">最新评论</span>
+          </div>
+          <div class="comments-list" ref="commentsListRef" @scroll="onCommentsScroll">
+                  <div v-for="comment in comments" :key="comment.commentId" class="comment-item">
+                      <div class="user-avatar">
+                          <img :src="comment.user.avatarUrl || ''" @error="$event.target.style.visibility='hidden'" />
+                      </div>
+                      <div class="comment-content">
+                          <div class="user-info-row">
+                              <span class="username">{{ comment.user.nickname }}:</span>
+                              <span class="content-text">{{ comment.content }}</span>
+                          </div>
+                          <div v-if="comment.beReplied && comment.beReplied.length" class="replied-content">
+                              <span class="username">@{{ comment.beReplied[0].user.nickname }}:</span>
+                              {{ comment.beReplied[0].content }}
+                          </div>
+                          <div class="bottom-info">
+                              <span class="time">{{ formatDate(comment.time) }}</span>
+                              <div v-if="!isQQSong" class="comment-actions">
+                                  <button class="action-btn like-btn" :class="{ liked: comment.liked }" @click="toggleLike(comment)" :title="comment.liked ? '取消点赞' : '点赞'">
+                                      <ThumbsUp :size="14" :fill="comment.liked ? 'currentColor' : 'none'" />
+                                      <span v-if="comment.likedCount">{{ comment.likedCount }}</span>
+                                  </button>
+                                  <button class="action-btn" @click="startReply(comment)" title="回复">
+                                      <MessageCircle :size="14" />
+                                      <span>回复</span>
+                                  </button>
+                                  <button v-if="canManageComment(comment)" class="action-btn danger" @click="deleteComment(comment)" title="删除">
+                                      <Trash2 :size="14" />
+                                      <span>删除</span>
+                                  </button>
+                              </div>
+                              <div v-else class="comment-actions">
+                                  <span v-if="comment.likedCount" class="qq-like-count">👍 {{ comment.likedCount }}</span>
+                              </div>
+                          </div>
+                      </div>
                   </div>
-                  <div class="comment-content">
-                      <div class="user-info-row">
-                          <span class="username">{{ comment.user.nickname }}:</span>
-                          <span class="content-text">{{ comment.content }}</span>
-                      </div>
-                      <div v-if="comment.beReplied && comment.beReplied.length" class="replied-content">
-                          <span class="username">@{{ comment.beReplied[0].user.nickname }}:</span>
-                          {{ comment.beReplied[0].content }}
-                      </div>
-                      <div class="bottom-info">
-                          <span class="time">{{ formatDate(comment.time) }}</span>
-                      </div>
+                  <div v-if="commentLoading" class="comment-loading">{{ comments.length === 0 ? '加载中...' : '加载更多...' }}</div>
+                  <div v-else-if="!commentHasMore && comments.length > 0" class="comment-loading">没有更多评论了</div>
+                  <div v-if="!commentLoading && comments.length === 0" class="no-comment">暂无评论，快来抢沙发吧</div>
+              </div>
+              <div v-if="!isQQSong" class="comment-input-box">
+                  <div v-if="replyTarget" class="reply-banner">
+                      <span>回复 @{{ replyTarget.user.nickname }}</span>
+                      <button class="cancel-reply" @click="cancelReply"><X :size="14" /></button>
+                  </div>
+                  <div class="comment-input-row">
+                      <textarea
+                          v-model="commentText"
+                          class="comment-input"
+                          :placeholder="replyTarget ? `回复 @${replyTarget.user.nickname}...` : '发表评论...'"
+                          rows="1"
+                          @keydown.enter.exact.prevent="submitComment"
+                      ></textarea>
+                      <button class="send-btn" :disabled="commentSubmitting || !commentText.trim()" @click="submitComment">
+                          <CornerDownLeft :size="16" />
+                          {{ commentSubmitting ? '发送中' : '发送' }}
+                      </button>
                   </div>
               </div>
-              <div v-if="comments.length === 0" class="no-comment">暂无评论</div>
-          </div>
       </div>
     </div>
 
@@ -1020,14 +1233,6 @@ onMounted(() => {
   max-height: 85vh; 
 }
 
-.main-content.analysis-active {
-  align-items: stretch;
-  justify-content: flex-start;
-  max-height: none;
-  padding: 0 3%;
-  gap: 24px;
-}
-
 .left-section {
   flex: 1;
   min-width: 0;
@@ -1037,35 +1242,6 @@ onMounted(() => {
   text-align: center;
   overflow-y: auto;
   overflow-x: hidden;
-}
-
-.left-section.analysis-mode {
-  align-items: stretch;
-  text-align: left;
-  flex: 1.2;
-  max-width: 55%;
-  min-width: 380px;
-  transition: flex 0.3s, max-width 0.3s;
-}
-
-.left-section:not(.analysis-mode) {
-  flex: 1;
-  max-width: none;
-  min-width: 0;
-  transition: flex 0.3s;
-}
-
-.analysis-wrapper {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  animation: slideLeft 0.35s ease;
-}
-
-@keyframes slideLeft {
-    from { opacity: 0; transform: translateX(-30px); }
-    to { opacity: 1; transform: translateX(0); }
 }
 
 .cover-container {
@@ -1211,7 +1387,7 @@ onMounted(() => {
 
 .song-info {
   font-size: 14px;
-  color: #888;
+  color: #444;
   display: flex;
   justify-content: center;
   gap: 20px;
@@ -1226,6 +1402,11 @@ onMounted(() => {
     text-overflow: ellipsis;
     max-width: 220px;
     display: inline-block;
+}
+
+.link {
+  color: #333;
+  font-weight: 500;
 }
 
 .link:hover {
@@ -1276,23 +1457,6 @@ onMounted(() => {
 .mv-btn:hover {
     background: var(--primary-color) !important;
     color: white !important;
-}
-
-.en-btn {
-    background: rgba(99, 102, 241, 0.08);
-    color: #6366f1;
-    width: 48px;
-    height: 48px;
-}
-
-.en-btn:hover {
-    background: #6366f1 !important;
-    color: white !important;
-}
-
-.en-btn.active {
-    background: #6366f1;
-    color: white;
 }
 
 .lyric-controls .mv-btn {
@@ -1461,11 +1625,6 @@ onMounted(() => {
     flex-shrink: 0;
 }
 
-.lyric-controls .en-btn {
-    width: 48px;
-    height: 48px;
-}
-
 .right-lyrics {
   flex: 2;
   min-width: 0;
@@ -1474,16 +1633,6 @@ onMounted(() => {
   flex-direction: column;
   position: relative;
   min-height: 0;
-}
-
-.main-content.analysis-active .right-lyrics {
-  flex: 1;
-  min-width: 320px;
-  height: 100%;
-}
-
-.main-content.analysis-active .right-lyrics .lyric-wrapper {
-  padding: 0;
 }
 
 .lyric-controls {
@@ -1502,8 +1651,10 @@ onMounted(() => {
     gap: 8px;
 }
 
-/* 歌词设置项折叠容器 */
+/* 歌词设置项折叠容器：独占一行，靠右对齐 */
 .lyric-settings-wrap {
+    width: 100%;
+    justify-content: flex-end;
     display: flex;
     align-items: center;
     gap: 20px;
@@ -1730,7 +1881,30 @@ onMounted(() => {
 }
 
 .is-cover-mode .lyric-line {
-  color: rgba(0, 0, 0, 0.6);
+  color: rgba(0, 0, 0, 0.75);
+  opacity: 0.75;
+}
+
+/* 沉浸模式：加深已播放/景深行的透明度，保证在封面背景上可读 */
+.is-cover-mode .lyric-line.played {
+  opacity: 0.5;
+  color: rgba(0,0,0,0.6);
+}
+
+.is-cover-mode .lyric-line.leaving {
+  opacity: 0.5;
+}
+
+.is-cover-mode .lyric-line.blur-1 {
+  opacity: 0.7;
+}
+
+.is-cover-mode .lyric-line.blur-2 {
+  opacity: 0.55;
+}
+
+.is-cover-mode .lyric-line.blur-far {
+  opacity: 0.4;
 }
 
 .lyric-line:hover {
@@ -1797,7 +1971,7 @@ onMounted(() => {
 }
 
 .is-cover-mode .lyric-line.active .main-text {
-     background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.3) var(--progress));
+     background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.55) var(--progress));
      -webkit-background-clip: text;
      background-clip: text;
      -webkit-text-fill-color: transparent;
@@ -1812,6 +1986,10 @@ onMounted(() => {
     pointer-events: none;
     padding: 40vh 0;
     text-align: center;
+}
+
+.is-cover-mode .no-lyric {
+    color: rgba(0,0,0,0.5);
 }
 
 .main-text {
@@ -1877,7 +2055,7 @@ onMounted(() => {
 .is-cover-mode .yrc-word {
     background-image: linear-gradient(to right,
         #000 0%, #000 50%,
-        rgba(0,0,0,0.5) 50%, rgba(0,0,0,0.5) 100%);
+        rgba(0,0,0,0.65) 50%, rgba(0,0,0,0.65) 100%);
     background-size: 200% 100%;
     background-position: calc(100% - var(--wp) * 100%) 0;
     background-repeat: no-repeat;
@@ -1901,6 +2079,11 @@ onMounted(() => {
 .lyric-line:not(.active) .yrc-word {
     background: none;
     -webkit-text-fill-color: rgba(0,0,0,0.55);
+}
+
+/* 沉浸模式：加深非激活行逐字歌词颜色 */
+.is-cover-mode .lyric-line:not(.active) .yrc-word {
+    -webkit-text-fill-color: rgba(0,0,0,0.7);
 }
 
 /* === 经典模式 === */
@@ -2083,6 +2266,165 @@ onMounted(() => {
 .bottom-info {
     font-size: 12px;
     color: #999;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 4px;
+}
+
+.comment-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.qq-like-count {
+    font-size: 12px;
+    color: #999;
+    user-select: none;
+}
+
+.action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 3px 8px;
+    border: none;
+    background: none;
+    color: #888;
+    font-size: 12px;
+    cursor: pointer;
+    border-radius: 12px;
+    transition: all 0.2s;
+}
+
+.action-btn:hover {
+    background: rgba(0,0,0,0.06);
+    color: #555;
+}
+
+.action-btn.like-btn.liked {
+    color: var(--primary-color);
+}
+
+.action-btn.danger:hover {
+    background: rgba(236, 65, 65, 0.1);
+    color: var(--primary-color);
+}
+
+.comments-toolbar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.sort-btn {
+    padding: 3px 12px;
+    border: 1px solid rgba(0,0,0,0.1);
+    border-radius: 14px;
+    background: transparent;
+    color: #666;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.sort-btn:hover {
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.sort-btn.active {
+    background: var(--primary-color);
+    color: #fff;
+    border-color: var(--primary-color);
+}
+
+.comment-loading {
+    text-align: center;
+    padding: 14px 0;
+    color: #999;
+    font-size: 12px;
+}
+
+.comment-input-box {
+    border-top: 1px solid rgba(0,0,0,0.06);
+    padding-top: 10px;
+    margin-top: 6px;
+}
+
+.reply-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--primary-color);
+    padding: 4px 8px;
+    margin-bottom: 6px;
+    background: rgba(236, 65, 65, 0.06);
+    border-radius: 6px;
+}
+
+.cancel-reply {
+    border: none;
+    background: none;
+    color: #999;
+    cursor: pointer;
+    padding: 2px;
+    display: flex;
+}
+
+.cancel-reply:hover {
+    color: var(--primary-color);
+}
+
+.comment-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+}
+
+.comment-input {
+    flex: 1;
+    resize: none;
+    border: 1px solid rgba(0,0,0,0.1);
+    border-radius: 16px;
+    padding: 8px 14px;
+    font-size: 13px;
+    background: rgba(255,255,255,0.7);
+    outline: none;
+    max-height: 80px;
+    line-height: 1.5;
+    font-family: inherit;
+}
+
+.comment-input:focus {
+    border-color: var(--primary-color);
+    background: #fff;
+}
+
+.send-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 16px;
+    background: var(--primary-color);
+    color: #fff;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+}
+
+.send-btn:hover:not(:disabled) {
+    opacity: 0.9;
+}
+
+.send-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 .no-comment {
@@ -2254,6 +2596,26 @@ onMounted(() => {
 
 .playlist-item:hover {
     background: #f5f5f5;
+}
+
+/* QQ 新建歌单按钮 */
+.create-playlist-row {
+    padding: 12px 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    color: var(--primary-color, #31C27C);
+    font-size: 14px;
+    border-bottom: 1px solid #f0f0f0;
+}
+.create-playlist-row:hover { background: #f9f9f9; }
+
+.empty-tip {
+    padding: 30px 20px;
+    text-align: center;
+    color: #999;
+    font-size: 13px;
 }
 
 .playlist-item .cover {

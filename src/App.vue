@@ -31,6 +31,7 @@ import {
   HardDrive,
   Clock,
   Cloud,
+  Database,
   Lock,
   Play,
   Pause,
@@ -48,10 +49,13 @@ import {
   HeartHandshake,
   Film,
   MonitorPlay,
-  Sparkles
+  Sparkles,
+  Zap
 } from 'lucide-vue-next'
 import SearchSuggest from './components/SearchSuggest.vue'
 import { useSearchHistoryStore } from './store/searchHistory'
+import { usePlatformStore } from './store/platform'
+import { useQQUserStore } from './store/qq-user'
 import { API_LINES, switchApiLine } from './api'
 import CustomSelect from './components/CustomSelect.vue'
 
@@ -61,6 +65,27 @@ const playerStore = usePlayerStore()
 const userStore = useUserStore()
 const messageStore = useMessageStore()
 const searchHistoryStore = useSearchHistoryStore()
+const platformStore = usePlatformStore()
+const qqUserStore = useQQUserStore()
+
+// 当前平台的登录态（根据平台自动选择 userStore 或 qqUserStore）
+const activeUserStore = computed(() => platformStore.isQQ ? qqUserStore : userStore)
+// 当前平台的"已登录"状态
+const isLoggedIn = computed(() => platformStore.isQQ ? qqUserStore.isLoggedIn : userStore.isLoggedIn)
+// 当前平台的用户头像
+const avatarUrl = computed(() => {
+    if (platformStore.isQQ) {
+        return qqUserStore.profile?.avatarUrl || ''
+    }
+    return userStore.profile?.avatarUrl || ''
+})
+// 当前平台的用户昵称
+const nickname = computed(() => {
+    if (platformStore.isQQ) {
+        return qqUserStore.profile?.nickname || '未登录'
+    }
+    return userStore.isLoggedIn ? (userStore.profile?.nickname || '网易云用户') : '未登录'
+})
 
 const searchText = ref('')
 const showSearchSuggest = ref(false)
@@ -74,6 +99,36 @@ const showQualityMenu = ref(false)
 const showDonate = ref(false)
 const showLockModal = ref(false)
 const pendingProtectedPath = ref('')
+// QQ Cookie 查看弹窗(可复制)
+const showCookieModal = ref(false)
+const cookieCopied = ref(false)
+const copyCookie = async () => {
+    const cookie = qqUserStore.cookie || ''
+    if (!cookie) return
+    try {
+        await navigator.clipboard.writeText(cookie)
+        cookieCopied.value = true
+        messageStore.success('Cookie 已复制到剪贴板', 2000)
+        setTimeout(() => { cookieCopied.value = false }, 2000)
+    } catch (e) {
+        // 降级方案:创建 textarea 选区复制
+        const ta = document.createElement('textarea')
+        ta.value = cookie
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        try {
+            document.execCommand('copy')
+            cookieCopied.value = true
+            messageStore.success('Cookie 已复制到剪贴板', 2000)
+            setTimeout(() => { cookieCopied.value = false }, 2000)
+        } catch (err) {
+            messageStore.error('复制失败,请手动选择文本复制')
+        }
+        document.body.removeChild(ta)
+    }
+}
 
 // 自动更新检测
 const updateInfo = ref({ available: false, version: '', notes: '', downloadUrl: '' })
@@ -125,10 +180,54 @@ const toggleUserMenu = () => {
 }
 
 const logout = () => {
-    userStore.logout()
+    if (platformStore.isQQ) {
+        qqUserStore.logout()
+    } else {
+        userStore.logout()
+    }
     showUserMenu.value = false
-    router.push('/')
+    router.push(platformStore.isQQ ? '/qq' : '/')
 }
+
+// 平台切换：调用 store 切换并刷新页面
+const switchPlatform = (key) => {
+    platformStore.switchTo(key)
+}
+// 平台下拉框选项
+const platformOptions = computed(() => [
+    { value: 'netease', label: '网易云' },
+    { value: 'qq', label: 'QQ音乐' }
+])
+// 下拉框切换平台
+const onPlatformChange = (key) => {
+    if (key && key !== platformStore.current) {
+        switchPlatform(key)
+    }
+}
+
+// 各平台侧边栏导航项（动态切换）
+const neteaseNavItems = [
+    { id: '/', label: '发现音乐', icon: Music },
+    { id: '/video', label: 'MV', icon: Tv },
+    { id: '/anime', label: '动漫', icon: MonitorPlay },
+    { id: '/movie', label: '影视', icon: Film },
+]
+const qqNavItems = [
+    { id: '/qq', label: '发现音乐', icon: Music },
+    { id: '/qq/singers', label: '歌手', icon: Mic },
+    { id: '/qq/categories', label: '歌单分类', icon: ListMusic },
+    { id: '/anime', label: '动漫', icon: MonitorPlay },
+    { id: '/movie', label: '影视', icon: Film },
+]
+// 本地资源导航（两平台共用，保留我们的自有功能）
+const libraryNavItems = [
+    { id: '/local', label: '本地音乐', icon: HardDrive },
+    { id: '/local-video', label: '本地视频', icon: Film },
+    { id: '/recent', label: '最近播放', icon: Clock },
+    { id: '/cloud', label: '我的云音乐', icon: Cloud },
+    { id: '/netease-cloud', label: '官方云盘', icon: Database },
+    { id: '/downloads', label: '下载', icon: Download },
+]
 
 const toggleSongDetailOverlay = () => {
   if (playerStore.currentSong.id) {
@@ -192,12 +291,19 @@ watch([() => playerStore.currentIndex, () => playerStore.playMode], persistPlayS
 onMounted(() => {
   playerStore.initAudio()
 
-  userStore.fetchStatus().then(async () => {
-      if (userStore.isLoggedIn && userStore.profile?.userId) {
-          await userStore.syncCloudAccount()
-          await userStore.checkLockStatus()
-      }
-  })
+  // 平台隔离：QQ 平台不调网易云 fetchStatus；网易云平台不调 QQ fetchUserPlaylists
+  if (platformStore.isNetease) {
+      userStore.fetchStatus().then(async () => {
+          if (userStore.isLoggedIn && userStore.profile?.userId) {
+              await userStore.syncCloudAccount()
+              await userStore.checkLockStatus()
+          }
+      })
+  } else if (platformStore.isQQ && qqUserStore.isLoggedIn && qqUserStore.uin) {
+      qqUserStore.fetchUserPlaylists()
+      // 启动时刷新真实昵称/头像/VIP状态(解决重启后显示"已登录"的问题)
+      qqUserStore.fetchRealProfile()
+  }
 
   const b = getBridge()
   if (b && b.on) {
@@ -360,7 +466,9 @@ const handleSearch = () => {
   if (searchText.value.trim()) {
     searchHistoryStore.addHistory('music', searchText.value)
     showSearchSuggest.value = false
-    router.push({ path: '/search', query: { keywords: searchText.value, t: Date.now() } })
+    // 根据当前平台跳转搜索页
+    const searchPath = platformStore.isQQ ? '/qq/search' : '/search'
+    router.push({ path: searchPath, query: { keywords: searchText.value, t: Date.now() } })
   }
 }
 
@@ -535,6 +643,7 @@ const handleVolumeDrag = (e) => {
     const barra = document.querySelector('.volume-slider')
     if (!barra) return
     const rect = barra.getBoundingClientRect()
+    // 音量条满格 100(增益通过 boost 按钮实现,不通过拖拽)
     const vol = Math.max(0, Math.min(100, Math.round(((e.clientX - rect.left) / rect.width) * 100)))
     playerStore.setVolume(vol)
 }
@@ -543,6 +652,25 @@ const stopDragVolume = () => {
     isDraggingVolume.value = false
     window.removeEventListener('mousemove', handleVolumeDrag)
     window.removeEventListener('mouseup', stopDragVolume)
+}
+
+// 音量滚轮调整:步进 10(向上增大,向下减小),范围 0-100
+const onVolumeWheel = (e) => {
+    e.preventDefault()
+    const delta = e.deltaY < 0 ? 10 : -10
+    playerStore.setVolume(playerStore.volume + delta)
+}
+
+// 音量增益:每次 +50%,最大 500%;达到 500% 后再次点击重置为 100%
+const boostVolume = () => {
+    const v = playerStore.volume
+    if (v >= 500) {
+        playerStore.setVolume(100)
+    } else if (v < 100) {
+        playerStore.setVolume(100)
+    } else {
+        playerStore.setVolume(Math.min(500, v + 50))
+    }
 }
 
 // 处理被路由守护拦截的受保护歌单
@@ -612,7 +740,7 @@ const openGithub = () => {
 </script>
 
 <template>
-  <div class="app-container" :class="{ 'is-desktop-lyrics': route.path === '/desktop-lyrics' }">
+  <div class="app-container" :class="{ 'is-desktop-lyrics': route.path === '/desktop-lyrics' }" :data-platform="platformStore.current">
     <Toast />
     <VideoDownloadToast />
     <ConfirmModal />
@@ -641,7 +769,7 @@ const openGithub = () => {
       <LoginModal :show="showLogin" @close="showLogin = false" />
       <LockModal :show="showLockModal" @close="showLockModal = false" @verified="onLockVerified" />
       <MvPlayer />
-      
+
       <!-- Custom Create Playlist Modal -->
     <div class="modal-overlay" v-if="showCreatePlaylist" @click="showCreatePlaylist = false">
         <div class="custom-modal" @click.stop>
@@ -650,18 +778,18 @@ const openGithub = () => {
                 <X class="clickable" :size="20" @click="showCreatePlaylist = false" />
             </div>
             <div class="modal-body">
-                <input 
-                    type="text" 
-                    v-model="newPlaylistName" 
-                    placeholder="请输入新歌单标题" 
+                <input
+                    type="text"
+                    v-model="newPlaylistName"
+                    placeholder="请输入新歌单标题"
                     autofocus
                     @keyup.enter="submitCreatePlaylist"
                 />
             </div>
             <div class="modal-footer">
                 <button class="cancel-btn clickable" @click="showCreatePlaylist = false">取消</button>
-                <button 
-                  class="save-btn clickable" 
+                <button
+                  class="save-btn clickable"
                   :disabled="!newPlaylistName.trim()"
                   @click="submitCreatePlaylist"
                 >创建</button>
@@ -669,13 +797,46 @@ const openGithub = () => {
         </div>
 </div>
 
+    <!-- QQ Cookie 查看弹窗(可复制) -->
+    <div v-if="showCookieModal" class="modal-overlay" @click.self="showCookieModal = false">
+        <div class="custom-modal" @click.stop>
+            <div class="modal-header">
+                <h3>QQ 音乐 Cookie</h3>
+                <X class="clickable" :size="20" @click="showCookieModal = false" />
+            </div>
+            <div class="modal-body">
+                <textarea
+                    class="cookie-textarea"
+                    :value="qqUserStore.cookie"
+                    readonly
+                    rows="10"
+                ></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="cancel-btn clickable" @click="showCookieModal = false">关闭</button>
+                <button class="save-btn clickable" @click="copyCookie">
+                    {{ cookieCopied ? '已复制' : '复制 Cookie' }}
+                </button>
+            </div>
+        </div>
+    </div>
+
 <header class="header" v-show="!playerStore.showSongDetail && !playerStore.showMvPlayer">
         <div class="header-left no-drag">
-          <div class="logo clickable" @click="navigateTo('/')">
+          <div class="logo clickable" @click="navigateTo(platformStore.isQQ ? '/qq' : '/')">
             <div class="logo-icon">
               <Music :size="20" color="white" />
             </div>
             <span>茗韵时光</span>
+          </div>
+          <!-- 平台切换:下拉框(网易云 / QQ 音乐) -->
+          <div class="platform-select-wrapper" :title="`当前：${platformStore.currentPlatform.label}`">
+            <CustomSelect
+                :model-value="platformStore.current"
+                :options="platformOptions"
+                transparent
+                @change="onPlatformChange"
+            />
           </div>
           <div class="nav-arrows">
             <div class="arrow-btn clickable" @click="router.back()">
@@ -723,7 +884,7 @@ const openGithub = () => {
         </div>
         
         <div class="header-right no-drag">
-          <div class="api-line-selector" :title="`当前：${currentApiLineLabel}`">
+          <div v-if="platformStore.isNetease" class="api-line-selector" :title="`当前：${currentApiLineLabel}`">
             <span class="api-line-icon"><Sparkles :size="12" /></span>
             <CustomSelect
                 v-model="currentApiLine"
@@ -733,25 +894,30 @@ const openGithub = () => {
             />
           </div>
           <div class="user-info-container">
-            <div class="user-info clickable" @click="!userStore.isLoggedIn && (showLogin = true)">
-              <img v-if="userStore.isLoggedIn && userStore.profile" :src="userStore.profile.avatarUrl" class="avatar" />
+            <div class="user-info clickable" @click="!isLoggedIn && (showLogin = true)">
+              <img v-if="isLoggedIn && avatarUrl" :src="avatarUrl" class="avatar" />
               <div v-else class="avatar"></div>
-              <span class="nickname">{{ userStore.isLoggedIn ? userStore.profile.nickname : '未登录' }}</span>
-              <div v-if="userStore.vipInfo && userStore.vipInfo.redVipLevelIcon" class="vip-badge">
+              <span class="nickname">{{ isLoggedIn ? nickname : '未登录' }}</span>
+              <div v-if="!platformStore.isQQ && userStore.vipInfo && userStore.vipInfo.redVipLevelIcon" class="vip-badge">
                  <img :src="userStore.vipInfo.redVipLevelIcon" class="vip-icon" />
               </div>
+              <span v-if="platformStore.isQQ && qqUserStore.profile?.isVip" class="qq-vip-badge" :title="qqUserStore.profile?.vipLevel >= 2 ? '豪华绿钻' : '绿钻'">
+                  <img v-if="qqUserStore.profile?.vipIcon" :src="qqUserStore.profile.vipIcon" class="qq-vip-icon" />
+                  <template v-else>VIP</template>
+              </span>
             </div>
           </div>
 
-          <div class="theme-icons clickable" @click.stop="userStore.isLoggedIn ? toggleUserMenu() : null">
+          <div class="theme-icons clickable" @click.stop="isLoggedIn ? toggleUserMenu() : null">
             <Settings :size="16" />
-            
-            <div class="user-dropdown" v-if="showUserMenu && userStore.isLoggedIn" @click.stop>
+
+            <div class="user-dropdown" v-if="showUserMenu && isLoggedIn" @click.stop>
                 <div class="dropdown-header">
                     <div class="stats-item">
-                        <span class="count">{{ userStore.profile.eventCount || 0 }}</span>
-                        <span class="label">动态</span>
+                        <span class="count">{{ platformStore.isQQ ? (qqUserStore.profile?.uin || '-') : (userStore.profile?.eventCount || 0) }}</span>
+                        <span class="label">{{ platformStore.isQQ ? 'QQ号' : '动态' }}</span>
                     </div>
+                    <template v-if="!platformStore.isQQ">
                     <div class="stats-item">
                         <span class="count">{{ userStore.profile.follows || 0 }}</span>
                         <span class="label">关注</span>
@@ -760,11 +926,17 @@ const openGithub = () => {
                         <span class="count">{{ userStore.profile.followeds || 0 }}</span>
                         <span class="label">粉丝</span>
                     </div>
+                    </template>
                 </div>
                 <div class="dropdown-list">
-                    <div class="menu-sub-item">
+                    <div v-if="!platformStore.isQQ" class="menu-sub-item">
                         <div class="left">等级</div>
                         <div class="right">Lv.{{ userStore.profile.level || 0 }}</div>
+                    </div>
+                    <!-- QQ 平台:显示 Cookie(可复制) -->
+                    <div v-if="platformStore.isQQ && qqUserStore.cookie" class="menu-sub-item" @click="showCookieModal = true">
+                        <div class="left">查看 Cookie</div>
+                        <div class="right"><Copy :size="14" /></div>
                     </div>
                     <div class="menu-sub-item" @click="logout">
                         <div class="left">退出登录</div>
@@ -816,18 +988,13 @@ const openGithub = () => {
     <div class="main-layout">
       <aside class="sidebar">
         <div class="sidebar-scroll-container">
-            <!-- Navigation -->
+            <!-- Navigation：根据平台动态显示 -->
             <div class="sidebar-section">
               <div
-                v-for="item in [
-                  { id: '/', label: '发现音乐', icon: Music },
-                  { id: '/video', label: 'MV', icon: Tv },
-                  { id: '/anime', label: '动漫', icon: MonitorPlay },
-                  { id: '/movie', label: '影视', icon: Film },
-                ]"
+                v-for="item in (platformStore.isQQ ? qqNavItems : neteaseNavItems)"
                 :key="item.id"
                 class="menu-item"
-                :class="{ active: item.id === '/' ? route.path === '/' : route.path.startsWith(item.id) }"
+                :class="{ active: item.id === (platformStore.isQQ ? '/qq' : '/') ? route.path === item.id : route.path.startsWith(item.id) }"
                 @click="navigateTo(item.id)"
               >
                 <component :is="item.icon" :size="18" />
@@ -835,17 +1002,11 @@ const openGithub = () => {
               </div>
             </div>
 
-            <!-- Library -->
+            <!-- Library：本地资源，两平台共用 -->
             <div class="sidebar-label">我的音乐</div>
             <div class="sidebar-section">
               <div
-                v-for="item in [
-                  { id: '/local', label: '本地音乐', icon: HardDrive },
-                  { id: '/local-video', label: '本地视频', icon: Film },
-                  { id: '/recent', label: '最近播放', icon: Clock },
-                  { id: '/cloud', label: '我的云音乐', icon: Cloud },
-                  { id: '/downloads', label: '下载', icon: Download },
-                ]"
+                v-for="item in libraryNavItems"
                 :key="item.id"
                 class="menu-item"
                 :class="{ active: route.path === item.id }"
@@ -856,33 +1017,52 @@ const openGithub = () => {
               </div>
             </div>
 
-            <!-- Playlists -->
-            <div v-if="userStore.isLoggedIn" class="sidebar-label">
-                <span>创建的歌单</span>
-                <Plus :size="14" class="clickable add-icon" @click.stop="handleCreatePlaylist" />
-            </div>
-            <div v-if="userStore.isLoggedIn" class="sidebar-section">
-              <div v-if="userStore.likedPlaylistId" 
-                   class="menu-item" 
-                   :class="{ active: route.path === `/playlist/${userStore.likedPlaylistId}` }"
-                   @click="requireLockForPlaylist(userStore.likedPlaylistId)">
-                <Heart :size="18" />
-                <span class="menu-label">我喜欢的音乐</span>
-                <Lock v-if="userStore.lockStatus.locked" :size="12" class="lock-icon" />
-              </div>
+            <!-- 网易云：创建的歌单 -->
+            <template v-if="platformStore.isNetease">
+                <div v-if="userStore.isLoggedIn" class="sidebar-label">
+                    <span>创建的歌单</span>
+                    <Plus :size="14" class="clickable add-icon" @click.stop="handleCreatePlaylist" />
+                </div>
+                <div v-if="userStore.isLoggedIn" class="sidebar-section">
+                  <div v-if="userStore.likedPlaylistId"
+                       class="menu-item"
+                       :class="{ active: route.path === `/playlist/${userStore.likedPlaylistId}` }"
+                       @click="requireLockForPlaylist(userStore.likedPlaylistId)">
+                    <Heart :size="18" />
+                    <span class="menu-label">我喜欢的音乐</span>
+                    <Lock v-if="userStore.lockStatus.locked" :size="12" class="lock-icon" />
+                  </div>
 
-              <div 
-                v-for="p in userStore.playlists.slice(1)" 
-                :key="p.id" 
-                class="menu-item playlist-item"
-                :class="{ active: route.path === `/playlist/${p.id}` }"
-                @click="requireLockForPlaylist(p.id)"
-              >
-                <ListMusic :size="16" />
-                <span class="menu-label truncate">{{ p.name }}</span>
-                <Lock v-if="userStore.lockStatus.locked" :size="12" class="lock-icon" />
-              </div>
-            </div>
+                  <div
+                    v-for="p in userStore.playlists.slice(1)"
+                    :key="p.id"
+                    class="menu-item playlist-item"
+                    :class="{ active: route.path === `/playlist/${p.id}` }"
+                    @click="requireLockForPlaylist(p.id)"
+                  >
+                    <ListMusic :size="16" />
+                    <span class="menu-label truncate">{{ p.name }}</span>
+                    <Lock v-if="userStore.lockStatus.locked" :size="12" class="lock-icon" />
+                  </div>
+                </div>
+            </template>
+
+            <!-- QQ 音乐：仅显示"我喜欢的音乐"(线上 API),不显示用户歌单列表 -->
+            <template v-else>
+                <div class="sidebar-label">
+                    <span>QQ 音乐</span>
+                </div>
+                <div class="sidebar-section">
+                  <div
+                    class="menu-item"
+                    :class="{ active: route.path === '/qq/liked' }"
+                    @click="navigateTo('/qq/liked')"
+                  >
+                    <Heart :size="18" />
+                    <span class="menu-label">我喜欢的音乐</span>
+                  </div>
+                </div>
+            </template>
         </div>
       </aside>
 
@@ -897,13 +1077,13 @@ const openGithub = () => {
         <div class="song-detail">
           <div class="song-name-row">
             <span class="song-name" :title="playerStore.currentSong.name">{{ playerStore.currentSong.name }}</span>
-            <Heart 
-              :size="16" 
-              class="heart-icon clickable hover-red" 
+            <Heart
+              :size="16"
+              class="heart-icon clickable hover-red"
               :class="{ 'text-red': playerStore.isLiked }"
-              :fill="playerStore.isLiked ? '#EC4141' : 'none'"
-              :color="playerStore.isLiked ? '#EC4141' : 'currentColor'"
-              @click.stop="playerStore.toggleLike()" 
+              :fill="playerStore.isLiked ? platformStore.themeColor : 'none'"
+              :color="playerStore.isLiked ? platformStore.themeColor : 'currentColor'"
+              @click.stop="playerStore.toggleLike()"
             />
           </div>
           <span class="artist-name" :title="playerStore.currentSong.artist">{{ playerStore.currentSong.artist }}</span>
@@ -947,11 +1127,15 @@ const openGithub = () => {
       <div class="extra-controls">
         <div class="volume-control flex items-center gap-2">
           <Volume2 :size="18" class="clickable hover-red" />
-          <div class="volume-slider" :class="{ dragging: isDraggingVolume }" @mousedown="startDragVolume">
-            <div class="volume-fill" :style="{ width: playerStore.volume + '%' }">
+          <div class="volume-slider" :class="{ dragging: isDraggingVolume, boosted: playerStore.volume > 100 }" @mousedown="startDragVolume" @wheel="onVolumeWheel">
+            <div class="volume-fill" :style="{ width: Math.min(100, playerStore.volume) + '%' }">
                <div class="progress-dot"></div>
             </div>
           </div>
+          <span class="volume-value">{{ playerStore.volume > 100 ? (playerStore.volume / 100).toFixed(1) + 'x' : playerStore.volume }}</span>
+          <span class="boost-btn clickable" :class="{ active: playerStore.volume > 100 }" @click="boostVolume" title="音量增益(每次 +50%,最大 500%)">
+            <Zap :size="14" />
+          </span>
         </div>
 
         <EqPanel />
@@ -1226,6 +1410,22 @@ const openGithub = () => {
     z-index: 1000;
 }
 
+/* 平台切换下拉框（logo 右侧） */
+.platform-select-wrapper {
+    display: flex;
+    align-items: center;
+    padding: 0 4px;
+    background: #fff;
+    border: 1px solid rgba(236, 65, 65, 0.4);
+    border-radius: 14px;
+    height: 28px;
+    transition: all 0.2s;
+}
+.platform-select-wrapper:hover {
+    border-color: var(--primary-color);
+    background: #fff;
+}
+
 /* API 线路选择器（用户头像左侧） */
 .api-line-selector {
     display: flex;
@@ -1417,6 +1617,26 @@ const openGithub = () => {
 
 .vip-icon {
     height: 12px;
+}
+
+/* QQ 音乐 VIP 角标 */
+.qq-vip-badge {
+    margin-left: 6px;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(135deg, #ffd700, #ff9500);
+    border-radius: 8px;
+    line-height: 1.2;
+    letter-spacing: 0.5px;
+    box-shadow: 0 1px 3px rgba(255, 149, 0, 0.4);
+    display: inline-flex;
+    align-items: center;
+}
+.qq-vip-icon {
+    height: 14px;
+    display: block;
 }
 
 .nickname {
@@ -1651,6 +1871,30 @@ const openGithub = () => {
     border-color: var(--primary-color);
 }
 
+/* Cookie 查看 textarea(只读,可手动选择) */
+.cookie-textarea {
+    width: 100%;
+    min-height: 180px;
+    max-height: 320px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 10px 12px;
+    font-size: 12px;
+    font-family: Consolas, Monaco, monospace;
+    line-height: 1.5;
+    outline: none;
+    box-sizing: border-box;
+    resize: vertical;
+    word-break: break-all;
+    white-space: pre-wrap;
+    background: #fafafa;
+    color: #333;
+}
+
+.cookie-textarea:focus {
+    border-color: var(--primary-color);
+}
+
 .modal-footer {
     margin-top: 30px;
     display: flex;
@@ -1696,8 +1940,8 @@ const openGithub = () => {
 
 .quality-badge {
     font-size: 10px;
-    border: 1px solid #999;
-    color: #666;
+    border: 1px solid #666;
+    color: #333;
     padding: 0px 6px;
     border-radius: 2px;
     height: 18px;

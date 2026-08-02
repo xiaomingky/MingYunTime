@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "2.3.0",
+  "version": "3.0.0",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -23,6 +23,7 @@
     "@pixi/filter-bulge-pinch": "^5.1.1",
     "@pixi/filter-color-matrix": "^7.4.3",
     "@pixi/sprite": "^7.4.3",
+    "@sansenjian/qq-music-api": "^2.4.0",
     "axios": "^1.13.6",
     "cheerio": "^0.22.0",
     "electron-updater": "^6.8.3",
@@ -37,7 +38,6 @@
     "music-metadata": "^11.12.3",
     "node-id3": "^0.2.9",
     "pinia": "^3.0.4",
-    "sharp": "^0.34.5",
     "vue": "^3.5.30",
     "vue-router": "^5.0.3"
   },
@@ -203,7 +203,9 @@
       "include": "build/installer.nsh",
       "runAfterFinish": true,
       "deleteAppDataOnUninstall": false,
-      "installerLanguages": ["zh_CN"],
+      "installerLanguages": [
+        "zh_CN"
+      ],
       "displayLanguageSelector": false
     }
   }

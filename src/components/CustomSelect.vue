@@ -7,7 +7,8 @@
  * - 支持 placeholder、disabled、紧凑模式、透明模式（贴合胶囊容器）
  * - 自动处理外部点击关闭、键盘 Esc 关闭
  */
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+
 import { ChevronDown } from 'lucide-vue-next'
 
 const props = defineProps({
@@ -45,6 +46,25 @@ const emit = defineEmits(['update:modelValue', 'change'])
 
 const open = ref(false)
 const rootRef = ref(null)
+// 下拉浮层用 fixed 定位，脱离父容器 overflow 限制
+const dropdownStyle = ref({})
+const dropdownRef = ref(null)
+
+// 打开时计算浮层位置（基于触发器在视口中的位置）
+const updateDropdownPosition = () => {
+    if (!rootRef.value) return
+    const rect = rootRef.value.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    // 向下展开空间不足且上方空间更大时，向上展开
+    const showAbove = spaceBelow < 240 && rect.top > spaceBelow
+    dropdownStyle.value = {
+        left: rect.left + 'px',
+        minWidth: rect.width + 'px',
+        [showAbove ? 'bottom' : 'top']: showAbove
+            ? (window.innerHeight - rect.top + 4) + 'px'
+            : (rect.bottom + 4) + 'px'
+    }
+}
 
 // 归一化 options 为 { value, label } 数组
 const normalizedOptions = computed(() => {
@@ -64,6 +84,10 @@ const currentLabel = computed(() => {
 const toggleOpen = () => {
     if (props.disabled) return
     open.value = !open.value
+    if (open.value) {
+        // 下一帧计算位置（等待 DOM 渲染）
+        nextTick(updateDropdownPosition)
+    }
 }
 
 const selectOption = (opt) => {
@@ -74,6 +98,8 @@ const selectOption = (opt) => {
 
 const onDocClick = (e) => {
     if (!rootRef.value) return
+    // 允许点击浮层自身（浮层用 fixed 渲染在 body 层，不在 rootRef 内）
+    if (dropdownRef.value && dropdownRef.value.contains(e.target)) return
     if (!rootRef.value.contains(e.target)) {
         open.value = false
     }
@@ -83,6 +109,21 @@ const onKeydown = (e) => {
     if (e.key === 'Escape') open.value = false
 }
 
+// 滚动/缩放时更新浮层位置（仅打开时）
+const onScrollOrResize = () => {
+    if (open.value) updateDropdownPosition()
+}
+
+watch(open, (val) => {
+    if (val) {
+        window.addEventListener('scroll', onScrollOrResize, true)
+        window.addEventListener('resize', onScrollOrResize)
+    } else {
+        window.removeEventListener('scroll', onScrollOrResize, true)
+        window.removeEventListener('resize', onScrollOrResize)
+    }
+})
+
 onMounted(() => {
     document.addEventListener('click', onDocClick)
     document.addEventListener('keydown', onKeydown)
@@ -91,6 +132,8 @@ onMounted(() => {
 onUnmounted(() => {
     document.removeEventListener('click', onDocClick)
     document.removeEventListener('keydown', onKeydown)
+    window.removeEventListener('scroll', onScrollOrResize, true)
+    window.removeEventListener('resize', onScrollOrResize)
 })
 </script>
 
@@ -108,19 +151,21 @@ onUnmounted(() => {
             <ChevronDown :size="compact ? 12 : 14" class="cs-arrow" :class="{ rotated: open }" />
         </div>
 
-        <Transition name="cs-dropdown">
-            <div v-if="open" class="cs-dropdown" @click.stop>
-                <div
-                    v-for="opt in normalizedOptions"
-                    :key="opt.value"
-                    class="cs-option"
-                    :class="{ active: opt.value === modelValue }"
-                    @click="selectOption(opt)"
-                >
-                    {{ opt.label }}
+        <Teleport to="body">
+            <Transition name="cs-dropdown">
+                <div v-if="open" class="cs-dropdown cs-dropdown-fixed" :class="{ compact }" ref="dropdownRef" :style="dropdownStyle" @click.stop>
+                    <div
+                        v-for="opt in normalizedOptions"
+                        :key="opt.value"
+                        class="cs-option"
+                        :class="{ active: opt.value === modelValue }"
+                        @click="selectOption(opt)"
+                    >
+                        {{ opt.label }}
+                    </div>
                 </div>
-            </div>
-        </Transition>
+            </Transition>
+        </Teleport>
     </div>
 </template>
 
@@ -179,7 +224,7 @@ onUnmounted(() => {
     transform: rotate(180deg);
 }
 
-/* 下拉浮层 */
+/* 下拉浮层（原 absolute 模式，保留兼容） */
 .cs-dropdown {
     position: absolute;
     top: calc(100% + 4px);
@@ -196,42 +241,12 @@ onUnmounted(() => {
     overflow-y: auto;
 }
 
-.cs-option {
-    padding: 8px 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    color: #333;
-    transition: background-color 0.12s, color 0.12s;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.cs-option:hover {
-    background-color: rgba(236, 65, 65, 0.06);
-    color: #333;
-}
-
-.cs-option.active {
-    background-color: rgba(236, 65, 65, 0.1);
-    color: var(--primary-color, #EC4141);
-    font-weight: 600;
-}
-
-/* 紧凑模式 */
-.custom-select.compact .cs-trigger {
-    padding: 4px 10px;
-    font-size: 12px;
-    border-radius: 6px;
-}
-
-.custom-select.compact .cs-dropdown {
-    max-height: 200px;
-}
-
-.custom-select.compact .cs-option {
-    padding: 6px 10px;
-    font-size: 12px;
+/* fixed 定位模式：脱离父容器 overflow 限制 */
+.cs-dropdown-fixed {
+    position: fixed;
+    top: auto;
+    left: auto;
+    right: auto;
 }
 
 /* 透明模式（贴合外层容器，如 API 线路胶囊） */
@@ -288,5 +303,49 @@ onUnmounted(() => {
 .cs-dropdown-leave-to {
     opacity: 0;
     transform: translateY(-4px);
+}
+</style>
+
+<!-- 非 scoped：Teleport 到 body 的下拉浮层样式（全局生效） -->
+<style>
+.cs-dropdown.cs-dropdown-fixed {
+    z-index: 99999;
+    background: #fff;
+    border: 1px solid #f0f0f0;
+    border-radius: 8px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+    padding: 4px;
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.cs-dropdown.cs-dropdown-fixed .cs-option {
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: #333;
+    transition: background-color 0.12s, color 0.12s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cs-dropdown.cs-dropdown-fixed .cs-option:hover {
+    background-color: rgba(236, 65, 65, 0.06);
+}
+
+.cs-dropdown.cs-dropdown-fixed .cs-option.active {
+    background-color: rgba(236, 65, 65, 0.1);
+    color: var(--primary-color, #EC4141);
+    font-weight: 600;
+}
+
+/* 紧凑模式 */
+.cs-dropdown.cs-dropdown-fixed.compact {
+    max-height: 200px;
+}
+.cs-dropdown.cs-dropdown-fixed.compact .cs-option {
+    padding: 6px 10px;
+    font-size: 12px;
 }
 </style>

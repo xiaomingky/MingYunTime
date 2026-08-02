@@ -1,6 +1,21 @@
 import { defineStore } from 'pinia'
 import request, { getSongUrl, getLyric, getNewLyric, cloudSearch } from '../api'
+import { qqSongPlay, qqLyric, qqDownload, qqSongInfo, qqBatchSongInfo, normalizeQQSong } from '../api/qq'
 import { useMessageStore } from './message'
+
+// 音质 level -> 中文名 映射
+const QUALITY_LABELS = {
+    standard: '标准',
+    higher: '较高',
+    exhigh: '极高',
+    lossless: '无损',
+    hires: 'Hi-Res',
+    jyeffect: '高清环绕声',
+    jymaster: '超清母带',
+    sky: '沉浸环绕声',
+    dolby: '杜比全景声'
+}
+const qualityLabel = (lv) => QUALITY_LABELS[lv] || lv
 
 export const usePlayerStore = defineStore('player', {
     state: () => ({
@@ -140,11 +155,14 @@ export const usePlayerStore = defineStore('player', {
                 this.isPlaying = false
             }
             this.audio.onloadedmetadata = () => {
-                if (!this.currentSong.duration || this.currentSong.duration === 0) {
+                // QQ 歌曲: 始终用 audio.duration 覆盖(QQ API interval 字段单位不稳定,
+                //   且流媒体实际时长才是播放器真正需要的)
+                // 其他歌曲: 仅在 duration 为 0 时覆盖(避免覆盖已正确的元数据)
+                if (this.currentSong?.platform === 'qq' || !this.currentSong.duration || this.currentSong.duration === 0) {
                     this.currentSong.duration = this.audio.duration
                 }
             }
-            this.audio.volume = this.volume / 100
+            this._applyVolume()
         },
         async rebuildAudioGraph() {
             if (this.source) { try { this.source.disconnect() } catch (e) {}; this.source = null }
@@ -153,6 +171,7 @@ export const usePlayerStore = defineStore('player', {
             if (this.eqDryGain) { try { this.eqDryGain.disconnect() } catch (e) {}; this.eqDryGain = null }
             if (this.eqWetGain) { try { this.eqWetGain.disconnect() } catch (e) {}; this.eqWetGain = null }
             if (this.analyser) { try { this.analyser.disconnect() } catch (e) {}; this.analyser = null }
+            if (this.volumeGain) { try { this.volumeGain.disconnect() } catch (e) {}; this.volumeGain = null }
             if (this.ctx) { try { this.ctx.close() } catch (e) {}; this.ctx = null }
 
             try {
@@ -191,9 +210,25 @@ export const usePlayerStore = defineStore('player', {
                 this.eqDryGain.gain.setValueAtTime(this.eqEnabled ? 0 : 1, now)
                 this.eqWetGain.gain.setValueAtTime(this.eqEnabled ? 1 : 0, now)
 
-                this.analyser.connect(this.ctx.destination)
+                // 音量增益节点:插入 analyser 与 destination 之间,支持超过 100% 音量放大(最大 500%)
+                // audio.volume 固定为 1.0,实际音量由 volumeGain.gain 控制(volume/100)
+                this.volumeGain = this.ctx.createGain()
+                this.analyser.connect(this.volumeGain)
+                this.volumeGain.connect(this.ctx.destination)
+                this._applyVolume()
             } catch (e) {
                 console.error('rebuildAudioGraph error:', e)
+            }
+        },
+        // 应用音量:有 volumeGain 时用 GainNode 控制(支持 >100%),否则降级用 audio.volume
+        _applyVolume() {
+            const gain = this.volume / 100
+            if (this.volumeGain && this.ctx) {
+                this.audio.volume = 1.0
+                this.volumeGain.gain.setValueAtTime(gain, this.ctx.currentTime)
+            } else if (this.audio) {
+                // ctx 尚未建立时,用原生 audio.volume(上限 1.0)
+                this.audio.volume = Math.min(1, gain)
             }
         },
         async resetAudioElement() {
@@ -235,11 +270,14 @@ export const usePlayerStore = defineStore('player', {
                 this.isPlaying = false
             }
             this.audio.onloadedmetadata = () => {
-                if (!this.currentSong.duration || this.currentSong.duration === 0) {
+                // QQ 歌曲: 始终用 audio.duration 覆盖(QQ API interval 字段单位不稳定,
+                //   且流媒体实际时长才是播放器真正需要的)
+                // 其他歌曲: 仅在 duration 为 0 时覆盖(避免覆盖已正确的元数据)
+                if (this.currentSong?.platform === 'qq' || !this.currentSong.duration || this.currentSong.duration === 0) {
                     this.currentSong.duration = this.audio.duration
                 }
             }
-            this.audio.volume = savedVolume / 100
+            this.audio.volume = Math.min(1, savedVolume / 100)
 
             this.audio.src = savedSrc
 
@@ -270,7 +308,7 @@ export const usePlayerStore = defineStore('player', {
         teardownEqChain() {
             return this.setupEqChain()
         },
-        async playSong(song, list = []) {
+        async playSong(song, list = [], options = {}) {
             this.initAudio()
             if (!song || !song.id) return
 
@@ -311,8 +349,48 @@ export const usePlayerStore = defineStore('player', {
                 let url = song.url
                 const isLocal = typeof song.id === 'string' && song.id.startsWith('local-')
                 const isCloud = typeof song.id === 'string' && song.id.startsWith('cloud-')
+                const isQQ = song.platform === 'qq' || (song.songmid && !isLocal && !isCloud)
 
-                if (!url && !isLocal && !isCloud) {
+                if (isQQ && !url) {
+                    // QQ 音乐：通过 IPC 调用 qq:song-play 获取播放地址
+                    // 必须传 cookie，否则 QQ 服务器返回空 URL + "暂无播放链接"
+                    // 音质优先级：320 -> 128
+                    const songmid = song.songmid || song.id
+                    // 从 qqUserStore 获取 cookie（QQ 播放链接需要登录态）
+                    const { useQQUserStore } = await import('./qq-user')
+                    const qqUserStore = useQQUserStore()
+                    const cookie = qqUserStore.cookie || ''
+                    const tryQualities = ['320', '128']
+                    let lastError = ''
+                    for (const q of tryQualities) {
+                        try {
+                            const res = await qqSongPlay(songmid, q, cookie)
+                            // 真实返回结构（无 response 包裹）：{ data: { playUrl: { [songmid]: { url, error } } } }
+                            const data = res?.data || res
+                            const playUrlEntry = data?.playUrl?.[songmid] || data?.playUrl?.[String(songmid)] || {}
+                            const playUrl = playUrlEntry?.url || data?.url || data?.midurlinfo?.[0]?.purl
+                            if (playUrl && typeof playUrl === 'string') {
+                                url = playUrl.startsWith('http') ? playUrl : `https:${playUrl}`
+                                useMessageStore().info(`当前播放音质：${q === '320' ? '高品 320' : '标准 128'}`)
+                                break
+                            }
+                            // 记录错误信息（如"暂无播放链接"）
+                            if (playUrlEntry?.error) lastError = playUrlEntry.error
+                        } catch (e) {
+                            console.error('[QQ] song-play error:', e)
+                        }
+                    }
+                    if (!url) {
+                        // 区分错误原因：未登录 vs 版权限制
+                        if (!cookie) {
+                            useMessageStore().error(`播放失败：[${song.name}] 请先登录 QQ 音乐账号`)
+                        } else {
+                            useMessageStore().error(`播放失败：[${song.name}] ${lastError || '由于版权或 VIP 限制，QQ 音乐资源不可用'}`)
+                        }
+                        this.next()
+                        return
+                    }
+                } else if (!url && !isLocal && !isCloud) {
                     // 沉浸环绕声型等高阶音质多数歌曲无资源，逐级回退保证可播放
                     const surroundFallback = ['jyeffect', 'jymaster', 'sky', 'dolby', 'hires']
                     let tryLevels = [this.quality]
@@ -324,8 +402,13 @@ export const usePlayerStore = defineStore('player', {
                         const songData = res.data?.[0] || res?.[0]
                         if (songData?.url) {
                             url = songData.url
-                            if (lv !== this.quality) {
-                                useMessageStore().info(`当前音质无资源，已回退到：${({ lossless: '无损', exhigh: '极高', standard: '标准' })[lv] || lv}`)
+                            // 用请求参数 lv 作为音质提示依据（API 返回的 level 字段不可靠）
+                            if (!options.suppressQualityPrompt) {
+                                if (lv !== this.quality) {
+                                    useMessageStore().info(`当前音质无资源，已回退到：${qualityLabel(lv)}`)
+                                } else {
+                                    useMessageStore().info(`当前播放音质：${qualityLabel(lv)}`)
+                                }
                             }
                             break
                         }
@@ -333,7 +416,7 @@ export const usePlayerStore = defineStore('player', {
                 }
 
                 if (!url && !isLocal) {
-                    useMessageStore().warning(`无法播放 [${song.name}]：由于版权或VIP限制，资源不可用。`)
+                    useMessageStore().error(`播放失败：[${song.name}] 由于版权或VIP限制，${qualityLabel(this.quality)} 音质资源不可用`)
                     this.next()
                     return
                 }
@@ -346,13 +429,29 @@ export const usePlayerStore = defineStore('player', {
                         (song.artists ? song.artists.map(a => a.name).join('/') :
                             (song.song?.artists ? song.song.artists.map(a => a.name).join('/') : (song.artist || '未知歌手'))),
                     al: song.al || (song.album || (song.song?.album || { name: '未知专辑', picUrl: '' })),
-                    duration: (isLocal ? (song.duration || song.dt / 1000 || 0) : ((song.dt || (song.song?.duration || 0)) / 1000)),
+                    // QQ 歌曲: duration 初始设为 0,强制由 onloadedmetadata 用 audio.duration 填充
+                    // (QQ API interval 字段单位不稳定,有时秒有时毫秒,导致 4000+ 分钟错误)
+                    // 其他歌曲: dt(毫秒)/1000 = 秒,本地歌曲直接用 duration(秒)
+                    duration: isQQ ? 0 : (isLocal ? (song.duration || song.dt / 1000 || 0) : ((song.dt || (song.song?.duration || 0)) / 1000)),
                     url: url,
-                    path: song.path
+                    path: song.path,
+                    // QQ 平台标识：用于切歌时识别 QQ 歌曲、获取歌词、预加载
+                    platform: song.platform || (isQQ ? 'qq' : ''),
+                    songmid: song.songmid,
+                    // 保留 QQ 歌曲的封面/专辑 mid/vid 等字段(切歌/显示封面/播放 MV 用)
+                    picUrl: song.picUrl || song.al?.picUrl || '',
+                    albummid: song.albummid || '',
+                    albumid: song.albumid || 0,
+                    album: song.album || song.al?.name || '',
+                    vid: song.vid || ''
                 }
 
                 if (!normalized.al.picUrl) {
                     normalized.al.picUrl = song.picUrl || (song.song?.album?.picUrl || 'https://p2.music.126.net/6y-U6QnSjd_5419m1B0R_g==/109951165034938831.jpg?param=300y300')
+                }
+                // QQ 歌曲:确保 al.picUrl 与顶层 picUrl 一致(底部播放条/歌曲详情用 al.picUrl)
+                if (isQQ && normalized.picUrl && !normalized.al.picUrl) {
+                    normalized.al.picUrl = normalized.picUrl
                 }
 
                 this.currentSong = normalized
@@ -394,7 +493,100 @@ export const usePlayerStore = defineStore('player', {
                 // - 本地音乐：检查本地歌词文件 → 无YRC则弹窗选择歌词源
                 // - 云音乐：从云端 lyricUrl 拉取歌词 → 无YRC则弹窗选择歌词源（和本地同规格）
                 // - 线上歌曲：缓存 → QQ匹配 → 网易云回退
-                if (isLocal && song.path) {
+                // - QQ 歌曲：静默自动加载(和网易云同规格,不弹窗)
+                //   流程:缓存 → QQ 歌词源自动匹配 → 网易云 API 回退 → 都失败显示"纯音乐"
+                if (isQQ) {
+                    ;(async () => {
+                        try {
+                            const songmid = song.songmid || song.id
+                            const cacheKey = `lyric_cache_qq_${songmid}`
+                            // 1. 先读 localStorage 缓存
+                            const cachedLyric = localStorage.getItem(cacheKey)
+                            if (cachedLyric) {
+                                try {
+                                    const cached = JSON.parse(cachedLyric)
+                                    if (cached.yrc) this.parseYrcLyrics(cached.yrc, cached.ytlrc || '')
+                                    if (cached.lrc) this.parseLyrics(cached.lrc, cached.tlrc || '')
+                                    this.lyricSource = 'qq'
+                                    console.log(`--- [Lyric] QQ 缓存命中: ${normalized.name}`)
+                                    return
+                                } catch (e) { /* ignore */ }
+                            }
+                            // 2. 无缓存：通过 IPC 静默匹配 QQ 歌词源(不弹窗)
+                            //    searchAndFetchQQ 内部用歌名+歌手+时长匹配,命中后直接返回 lrc/yrc/trans
+                            const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
+                            const cleanArtist = String(normalized.artist).replace(/未知歌手|Unknown Artist/g, '').trim()
+                            if (bridge && bridge.getQQLyric) {
+                                try {
+                                    const res = await bridge.getQQLyric({
+                                        songName: normalized.name,
+                                        artist: cleanArtist,
+                                        duration: normalized.duration
+                                    })
+                                    if (res && res.matched && (res.lrc || res.yrc)) {
+                                        if (res.yrc) this.parseYrcLyrics(res.yrc, res.trans || '')
+                                        if (res.lrc) this.parseLyrics(res.lrc, res.trans || '')
+                                        this.lyricSource = 'qq'
+                                        // 写入缓存
+                                        try {
+                                            localStorage.setItem(cacheKey, JSON.stringify({
+                                                lrc: res.lrc || '',
+                                                yrc: res.yrc || '',
+                                                tlrc: res.trans || '',
+                                                ytlrc: res.trans || ''
+                                            }))
+                                        } catch (e) { /* ignore */ }
+                                        console.log(`--- [Lyric] QQ 自动匹配成功: ${normalized.name}`)
+                                        return
+                                    }
+                                } catch (e) {
+                                    console.warn('[Lyric] QQ 自动匹配异常:', e.message)
+                                }
+                            }
+                            // 3. QQ 匹配失败：尝试网易云 API 回退(用歌名+歌手搜索,取第一条歌词)
+                            try {
+                                const searchRes = await cloudSearch({
+                                    keywords: `${normalized.name} ${cleanArtist}`.trim(),
+                                    limit: 5
+                                })
+                                const neteaseSong = searchRes?.body?.result?.songs?.[0]
+                                if (neteaseSong && neteaseSong.id) {
+                                    const lyricRes = await getNewLyric(neteaseSong.id)
+                                    const lrc = lyricRes?.lrc?.lyric || ''
+                                    const yrc = lyricRes?.yrc?.lyric || ''
+                                    const tlc = lyricRes?.tlyric?.lyric || ''
+                                    if (yrc) {
+                                        this.parseYrcLyrics(yrc, tlc)
+                                        this.lyricSource = 'netease'
+                                    } else if (lrc) {
+                                        this.parseLyrics(lrc, tlc)
+                                        this.lyricSource = 'netease'
+                                    }
+                                    if (lrc || yrc) {
+                                        // 写入缓存
+                                        try {
+                                            localStorage.setItem(cacheKey, JSON.stringify({
+                                                lrc, yrc, tlrc: tlc, ytlrc: tlc
+                                            }))
+                                        } catch (e) { /* ignore */ }
+                                        console.log(`--- [Lyric] QQ 歌曲走网易云回退成功: ${normalized.name}`)
+                                        return
+                                    }
+                                }
+                            } catch (e) {
+                                console.warn('[Lyric] 网易云回退失败:', e.message)
+                            }
+                            // 4. 都失败：显示"纯音乐"(和网易云无歌词时的表现一致,不弹窗)
+                            console.log(`--- [Lyric] QQ 歌曲无歌词,显示纯音乐: ${normalized.name}`)
+                            this.lyrics = [{ time: 0, text: '纯音乐，请欣赏' }]
+                            this.yrcLyrics = null
+                            this.lyricSource = ''
+                        } catch (err) {
+                            console.error('[Lyric] QQ lyric error:', err)
+                            if (!this.lyrics.length) this.lyrics = []
+                        }
+                    })()
+                } else if (isLocal && song.path) {
                     const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
                     let hasLocalLyric = false
                     let hasLocalYrc = false
@@ -673,6 +865,12 @@ export const usePlayerStore = defineStore('player', {
         async checkIfLiked(id) {
             this.isLiked = false
             if (!id) return
+            // QQ 平台：使用本地收藏列表（QQ API 无喜欢接口）
+            if (this.currentSong?.platform === 'qq') {
+                const liked = JSON.parse(localStorage.getItem('qq_liked_songs') || '[]')
+                this.isLiked = liked.some(s => (s.songmid || s.id) === (this.currentSong.songmid || id))
+                return
+            }
             const { useUserStore } = await import('./user')
             const user = useUserStore()
             if (user.isLoggedIn) {
@@ -681,6 +879,13 @@ export const usePlayerStore = defineStore('player', {
         },
         async toggleLike() {
             if (!this.currentSong.id) return
+            // QQ 平台:线上红心收藏需要前端动态 sign 参数(QQ 音乐反爬限制)
+            // 桌面端无法实现 sign 计算,红心状态仅显示线上"我喜欢"歌单的同步结果
+            // 点击红心时提示用户去官方 App 操作,不修改本地状态
+            if (this.currentSong.platform === 'qq') {
+                useMessageStore().info('QQ 音乐红心请前往 QQ 音乐官方 App 操作', 3000)
+                return
+            }
             const { useUserStore } = await import('./user')
             const user = useUserStore()
             if (!user.isLoggedIn) { useMessageStore().warning('请先登录后再进行收藏'); return }
@@ -749,8 +954,8 @@ export const usePlayerStore = defineStore('player', {
             this.audio.currentTime = time
         },
         setVolume(vol) {
-            this.volume = vol
-            if (this.audio) this.audio.volume = vol / 100
+            this.volume = Math.max(0, Math.min(500, vol))
+            this._applyVolume()
         },
         _preloadNextSong() {
             if (this.playlist.length === 0) return
@@ -763,11 +968,37 @@ export const usePlayerStore = defineStore('player', {
                 this._preloadAudio = null
             }
             const nextSong = this.playlist[nextIndex]
-            if (nextSong && nextSong.id && !String(nextSong.id).startsWith('local-')) {
-                const preload = new Audio()
-                preload.crossOrigin = 'anonymous'
-                preload.preload = 'auto'
-                this._preloadAudio = preload    // 保存引用，切歌时清理
+            if (!nextSong || !nextSong.id) return
+            const isLocal = String(nextSong.id).startsWith('local-')
+            if (isLocal) return // 本地歌曲不预加载（路径协议已注册，加载快）
+            const isQQ = nextSong.platform === 'qq' || !!nextSong.songmid
+            const preload = new Audio()
+            preload.crossOrigin = 'anonymous'
+            preload.preload = 'auto'
+            this._preloadAudio = preload
+            if (isQQ) {
+                // QQ 歌曲：通过 IPC 获取播放地址（需传 cookie）
+                Promise.all([
+                    import('../api/qq'),
+                    import('./qq-user')
+                ]).then(([{ qqSongPlay }, { useQQUserStore }]) => {
+                    const songmid = nextSong.songmid || nextSong.id
+                    const cookie = useQQUserStore().cookie || ''
+                    return qqSongPlay(songmid, '128', cookie)
+                }).then(res => {
+                    if (this._preloadAudio !== preload) return
+                    const data = res?.data || res
+                    const songmid = nextSong.songmid || nextSong.id
+                    // 真实返回结构：{ data: { playUrl: { [songmid]: { url, error } } } }
+                    const playUrlEntry = data?.playUrl?.[songmid] || data?.playUrl?.[String(songmid)] || {}
+                    const url = playUrlEntry?.url || data?.url || data?.midurlinfo?.[0]?.purl
+                    if (url && typeof url === 'string') {
+                        preload.src = url.startsWith('http') ? url : `https:${url}`
+                        preload.load()
+                    }
+                }).catch(e => console.error('[Preload] QQ song error:', e))
+            } else {
+                // 网易云歌曲
                 import('../api').then(({ getSongUrl }) => {
                     getSongUrl(nextSong.id, this.quality, this.immerseType).then(res => {
                         // 切歌后可能已过期，检查引用是否仍然有效
@@ -1306,11 +1537,33 @@ export const usePlayerStore = defineStore('player', {
         setQuality(q) {
             this.quality = q
             localStorage.setItem('music_quality', q)
+            // QQ 平台音质独立处理：320/128 二选一，无沉浸声型
+            if (this.currentSong?.platform === 'qq') {
+                if (this.currentSong.id && this.isPlaying) {
+                    const currentTime = this.currentTime
+                    const songName = this.currentSong.name
+                    this.playSong(this.currentSong, [], { suppressQualityPrompt: true }).then(() => {
+                        this.seek(currentTime)
+                        useMessageStore().success(`${songName} 已切换音质`)
+                    }).catch(() => {
+                        useMessageStore().error('切换音质失败，请稍后重试')
+                    })
+                } else {
+                    useMessageStore().success('已设置默认音质')
+                }
+                return
+            }
             if (this.currentSong && this.currentSong.id && !String(this.currentSong.id).startsWith('local-') && this.isPlaying) {
                 const currentTime = this.currentTime
-                this.playSong(this.currentSong).then(() => {
+                const songName = this.currentSong.name
+                this.playSong(this.currentSong, [], { suppressQualityPrompt: true }).then(() => {
                     this.seek(currentTime)
+                    useMessageStore().success(`${songName} 已切换至 ${qualityLabel(q)} 音质`)
+                }).catch(() => {
+                    useMessageStore().error(`切换 ${qualityLabel(q)} 音质失败，请稍后重试`)
                 })
+            } else {
+                useMessageStore().success(`已设置默认音质为 ${qualityLabel(q)}`)
             }
         },
         setImmerseType(t) {
@@ -1586,6 +1839,115 @@ export const usePlayerStore = defineStore('player', {
                 if (this.eqFilters[index]) {
                     this.eqFilters[index].gain.value = gain
                 }
+            }
+        },
+
+        // ========== QQ 平台扩展 actions ==========
+
+        // QQ 单曲详情补全：用 qqSongInfo 拉取完整信息（picUrl、专辑、时长等）
+        // 用于 SongDetail 等需要完整元数据的场景
+        async fetchQQSongDetail(songmid) {
+            if (!songmid) return null
+            try {
+                const res = await qqSongInfo(songmid)
+                const data = res?.data || res
+                const song = data?.songInfo || data?.info || data?.data || data
+                if (song) {
+                    return normalizeQQSong(song)
+                }
+                return null
+            } catch (e) {
+                console.error('[QQ] fetchQQSongDetail error:', e)
+                return null
+            }
+        },
+
+        // QQ 批量歌曲信息补全：用于歌单/专辑/排行榜批量获取真实播放信息
+        // songs: [{ songmid }] 或 [songmid]；返回补全后的 song 对象数组
+        async fetchQQBatchSongInfo(songs) {
+            if (!Array.isArray(songs) || !songs.length) return []
+            const mids = songs.map(s => (typeof s === 'string' ? s : (s.songmid || s.id))).filter(Boolean)
+            if (!mids.length) return []
+            try {
+                const res = await qqBatchSongInfo(mids)
+                const data = res?.data || res
+                const list = data?.songList || data?.list || data?.songs || data?.info || []
+                if (Array.isArray(list) && list.length) {
+                    return list.map(normalizeQQSong).filter(Boolean)
+                }
+                return []
+            } catch (e) {
+                console.error('[QQ] fetchQQBatchSongInfo error:', e)
+                return []
+            }
+        },
+
+        // QQ 下载：通过 qqDownload 拉取高品质 URL，再调用主进程 download-song 落盘
+        // 优先尝试 320 高品质，失败回退 128 标准
+        // 必须传 cookie，否则 QQ 服务器返回空 URL
+        async downloadQQSong(song) {
+            if (!song || !(song.songmid || song.id)) {
+                useMessageStore().error('无效的 QQ 歌曲，无法下载')
+                return { success: false, error: 'invalid song' }
+            }
+            const songmid = song.songmid || song.id
+            // 从 qqUserStore 获取 cookie
+            const { useQQUserStore } = await import('./qq-user')
+            const qqUserStore = useQQUserStore()
+            const cookie = qqUserStore.cookie || ''
+            // 本地收藏歌曲已有 url 时直接复用
+            let url = song.url
+            if (!url) {
+                const tryQualities = ['320', '128']
+                let lastError = ''
+                for (const q of tryQualities) {
+                    try {
+                        const res = await qqDownload(songmid, q, cookie)
+                        const data = res?.data || res
+                        // 真实返回结构：{ data: { playUrl: { [songmid]: { url, error } } } }
+                        const playUrlEntry = data?.playUrl?.[songmid] || data?.playUrl?.[String(songmid)] || {}
+                        const playUrl = playUrlEntry?.url || data?.url || data?.midurlinfo?.[0]?.purl
+                        if (playUrl && typeof playUrl === 'string') {
+                            url = playUrl.startsWith('http') ? playUrl : `https:${playUrl}`
+                            useMessageStore().info(`正在下载 QQ 音乐（${q === '320' ? '高品 320' : '标准 128'}）...`)
+                            break
+                        }
+                        if (playUrlEntry?.error) lastError = playUrlEntry.error
+                    } catch (e) {
+                        console.error('[QQ] download quality', q, 'error:', e)
+                    }
+                }
+            }
+            if (!url) {
+                if (!cookie) {
+                    useMessageStore().error(`下载失败：[${song.name || songmid}] 请先登录 QQ 音乐账号`)
+                } else {
+                    useMessageStore().error(`下载失败：[${song.name || songmid}] ${lastError || '由于版权或 VIP 限制，QQ 音乐资源不可用'}`)
+                }
+                return { success: false, error: 'no url' }
+            }
+            const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
+            if (!bridge || !bridge.invoke) {
+                useMessageStore().error('下载失败：IPC 桥不可用')
+                return { success: false, error: 'no bridge' }
+            }
+            try {
+                const res = await bridge.invoke('download-song', {
+                    url,
+                    name: song.name || '未知歌曲',
+                    artist: song.artist || (song.ar ? song.ar.map(a => a.name).join('/') : ''),
+                    picUrl: song.picUrl || song.al?.picUrl || ''
+                })
+                if (res && res.success) {
+                    useMessageStore().success('QQ 音乐下载并保存成功！')
+                } else if (res && !res.canceled) {
+                    useMessageStore().error(`下载失败：${res.error || '未知错误'}`)
+                }
+                return res || { success: false }
+            } catch (err) {
+                console.error('[QQ] download error:', err)
+                useMessageStore().error('下载任务开启失败：' + (err.message || '网络或环境异常'))
+                return { success: false, error: err.message }
             }
         }
     }
