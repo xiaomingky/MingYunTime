@@ -57,3 +57,7 @@ v2.1.0.patch
 # 后端服务与官网源码(独立部署,不上传到本仓库)
 server/
 website/
+
+# 临时测试文件
+test-*.js
+explorer.html

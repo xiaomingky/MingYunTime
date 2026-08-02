@@ -2,20 +2,41 @@ import { defineStore } from 'pinia'
 import request, { getSongUrl, getLyric, getNewLyric, cloudSearch } from '../api'
 import { qqSongPlay, qqLyric, qqDownload, qqSongInfo, qqBatchSongInfo, normalizeQQSong } from '../api/qq'
 import { useMessageStore } from './message'
+import { getCurrentPlatform } from '../api'
 
-// 音质 level -> 中文名 映射
-const QUALITY_LABELS = {
+// 网易云音质 level -> 中文名 映射（已实测：jymaster/sky/dolby 均映射成 jyeffect，故移除）
+const NETEASE_QUALITY_LABELS = {
     standard: '标准',
     higher: '较高',
     exhigh: '极高',
     lossless: '无损',
     hires: 'Hi-Res',
-    jyeffect: '高清环绕声',
-    jymaster: '超清母带',
-    sky: '沉浸环绕声',
-    dolby: '杜比全景声'
+    jyeffect: '高清环绕声'
 }
-const qualityLabel = (lv) => QUALITY_LABELS[lv] || lv
+// QQ 音乐真实音质映射（已实测：API 仅支持 128/320/m4a/flac）
+const QQ_QUALITY_LABELS = {
+    '128': '标准',
+    '320': '高品',
+    m4a: '标准 AAC',
+    flac: '无损'
+}
+// QQ 音质回退链：所选音质无资源时按序尝试
+const QQ_QUALITY_FALLBACK = {
+    flac: ['flac', '320', '128'],
+    '320': ['320', '128'],
+    m4a: ['m4a', '128'],
+    '128': ['128', '320']
+}
+const isQQPlatform = () => getCurrentPlatform() === 'qq'
+const qualityLabel = (lv) => (isQQPlatform() ? QQ_QUALITY_LABELS : NETEASE_QUALITY_LABELS)[lv] || lv
+// 按平台读取对应的 localStorage 音质（网易云 music_quality / QQ qq_music_quality）
+const readInitialQuality = () => {
+    const key = isQQPlatform() ? 'qq_music_quality' : 'music_quality'
+    const val = localStorage.getItem(key)
+    if (isQQPlatform()) return val && QQ_QUALITY_LABELS[val] ? val : '128'
+    // 网易云：校验值是否仍在有效列表中（清理已移除的 sky/jymaster/dolby 等旧值）
+    return val && NETEASE_QUALITY_LABELS[val] ? val : 'standard'
+}
 
 export const usePlayerStore = defineStore('player', {
     state: () => ({
@@ -67,7 +88,7 @@ export const usePlayerStore = defineStore('player', {
         currentDeviceId: localStorage.getItem('audio_device_id') || '',
         recentSongs: JSON.parse(localStorage.getItem('recent_songs') || '[]'),
         localSongs: JSON.parse(localStorage.getItem('local_songs') || '[]'),
-        quality: localStorage.getItem('music_quality') || 'standard',
+        quality: readInitialQuality(),
         // 沉浸环绕声(level=sky)的子类型：'c51'(5.1环绕,默认) / 'aac'
         immerseType: localStorage.getItem('music_immerse_type') || 'c51',
         playbackRate: parseFloat(localStorage.getItem('playback_rate') || '1'),
@@ -354,13 +375,13 @@ export const usePlayerStore = defineStore('player', {
                 if (isQQ && !url) {
                     // QQ 音乐：通过 IPC 调用 qq:song-play 获取播放地址
                     // 必须传 cookie，否则 QQ 服务器返回空 URL + "暂无播放链接"
-                    // 音质优先级：320 -> 128
+                    // 音质按用户选择 + 回退链尝试（实测 API 支持 128/320/m4a/flac/ape）
                     const songmid = song.songmid || song.id
                     // 从 qqUserStore 获取 cookie（QQ 播放链接需要登录态）
                     const { useQQUserStore } = await import('./qq-user')
                     const qqUserStore = useQQUserStore()
                     const cookie = qqUserStore.cookie || ''
-                    const tryQualities = ['320', '128']
+                    const tryQualities = QQ_QUALITY_FALLBACK[this.quality] || ['128', '320']
                     let lastError = ''
                     for (const q of tryQualities) {
                         try {
@@ -371,7 +392,13 @@ export const usePlayerStore = defineStore('player', {
                             const playUrl = playUrlEntry?.url || data?.url || data?.midurlinfo?.[0]?.purl
                             if (playUrl && typeof playUrl === 'string') {
                                 url = playUrl.startsWith('http') ? playUrl : `https:${playUrl}`
-                                useMessageStore().info(`当前播放音质：${q === '320' ? '高品 320' : '标准 128'}`)
+                                if (!options.suppressQualityPrompt) {
+                                    if (q !== this.quality) {
+                                        useMessageStore().info(`当前音质无资源，已回退到：${qualityLabel(q)}`)
+                                    } else {
+                                        useMessageStore().info(`当前播放音质：${qualityLabel(q)}`)
+                                    }
+                                }
                                 break
                             }
                             // 记录错误信息（如"暂无播放链接"）
@@ -391,14 +418,14 @@ export const usePlayerStore = defineStore('player', {
                         return
                     }
                 } else if (!url && !isLocal && !isCloud) {
-                    // 沉浸环绕声型等高阶音质多数歌曲无资源，逐级回退保证可播放
-                    const surroundFallback = ['jyeffect', 'jymaster', 'sky', 'dolby', 'hires']
+                    // Hi-Res/高清环绕声等高阶音质多数歌曲无资源，逐级回退保证可播放
+                    const highFallback = ['jyeffect', 'hires', 'lossless']
                     let tryLevels = [this.quality]
-                    if (surroundFallback.includes(this.quality)) {
+                    if (highFallback.includes(this.quality)) {
                         tryLevels = [this.quality, 'lossless', 'exhigh', 'standard']
                     }
                     for (const lv of tryLevels) {
-                        const res = await getSongUrl(song.id, lv, this.immerseType)
+                        const res = await getSongUrl(song.id, lv)
                         const songData = res.data?.[0] || res?.[0]
                         if (songData?.url) {
                             url = songData.url
@@ -984,7 +1011,7 @@ export const usePlayerStore = defineStore('player', {
                 ]).then(([{ qqSongPlay }, { useQQUserStore }]) => {
                     const songmid = nextSong.songmid || nextSong.id
                     const cookie = useQQUserStore().cookie || ''
-                    return qqSongPlay(songmid, '128', cookie)
+                    return qqSongPlay(songmid, this.quality || '128', cookie)
                 }).then(res => {
                     if (this._preloadAudio !== preload) return
                     const data = res?.data || res
@@ -1000,7 +1027,7 @@ export const usePlayerStore = defineStore('player', {
             } else {
                 // 网易云歌曲
                 import('../api').then(({ getSongUrl }) => {
-                    getSongUrl(nextSong.id, this.quality, this.immerseType).then(res => {
+                    getSongUrl(nextSong.id, this.quality).then(res => {
                         // 切歌后可能已过期，检查引用是否仍然有效
                         if (this._preloadAudio === preload) {
                             const url = res.data?.[0]?.url
@@ -1536,20 +1563,21 @@ export const usePlayerStore = defineStore('player', {
         },
         setQuality(q) {
             this.quality = q
-            localStorage.setItem('music_quality', q)
-            // QQ 平台音质独立处理：320/128 二选一，无沉浸声型
+            // QQ 与网易云音质独立存储，避免互相覆盖
+            localStorage.setItem(isQQPlatform() ? 'qq_music_quality' : 'music_quality', q)
+            // QQ 平台：5 种真实音质（128/320/m4a/flac/ape），无沉浸声型
             if (this.currentSong?.platform === 'qq') {
                 if (this.currentSong.id && this.isPlaying) {
                     const currentTime = this.currentTime
                     const songName = this.currentSong.name
                     this.playSong(this.currentSong, [], { suppressQualityPrompt: true }).then(() => {
                         this.seek(currentTime)
-                        useMessageStore().success(`${songName} 已切换音质`)
+                        useMessageStore().success(`${songName} 已切换至 ${qualityLabel(q)} 音质`)
                     }).catch(() => {
                         useMessageStore().error('切换音质失败，请稍后重试')
                     })
                 } else {
-                    useMessageStore().success('已设置默认音质')
+                    useMessageStore().success(`已设置默认音质为 ${qualityLabel(q)}`)
                 }
                 return
             }
@@ -1564,17 +1592,6 @@ export const usePlayerStore = defineStore('player', {
                 })
             } else {
                 useMessageStore().success(`已设置默认音质为 ${qualityLabel(q)}`)
-            }
-        },
-        setImmerseType(t) {
-            this.immerseType = t
-            localStorage.setItem('music_immerse_type', t)
-            // 仅在当前为沉浸环绕声时重新加载
-            if (this.quality === 'sky' && this.currentSong && this.currentSong.id && !String(this.currentSong.id).startsWith('local-') && this.isPlaying) {
-                const currentTime = this.currentTime
-                this.playSong(this.currentSong).then(() => {
-                    this.seek(currentTime)
-                })
             }
         },
         setPlaybackRate(rate) {
@@ -1898,7 +1915,7 @@ export const usePlayerStore = defineStore('player', {
             // 本地收藏歌曲已有 url 时直接复用
             let url = song.url
             if (!url) {
-                const tryQualities = ['320', '128']
+                const tryQualities = QQ_QUALITY_FALLBACK[this.quality] || ['128', '320']
                 let lastError = ''
                 for (const q of tryQualities) {
                     try {
@@ -1909,7 +1926,7 @@ export const usePlayerStore = defineStore('player', {
                         const playUrl = playUrlEntry?.url || data?.url || data?.midurlinfo?.[0]?.purl
                         if (playUrl && typeof playUrl === 'string') {
                             url = playUrl.startsWith('http') ? playUrl : `https:${playUrl}`
-                            useMessageStore().info(`正在下载 QQ 音乐（${q === '320' ? '高品 320' : '标准 128'}）...`)
+                            useMessageStore().info(`正在下载 QQ 音乐（${qualityLabel(q)}）...`)
                             break
                         }
                         if (playUrlEntry?.error) lastError = playUrlEntry.error

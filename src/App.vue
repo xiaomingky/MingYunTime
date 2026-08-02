@@ -143,37 +143,33 @@ const getFooterCoverUrl = () => {
     return picUrl
 }
 
-// 音质选项：主菜单 + 沉浸环绕声型分组（选中后展开子类型）
+// 网易云真实音质选项（已实测：6 档真实，jymaster/sky/dolby 全部映射成 jyeffect 故不显示）
 // 参考 API: /song/url/v1 的 level 参数
-const qualityLabels = {
+const neteaseQualityLabels = {
     standard: '标准',
     higher: '较高',
     exhigh: '极高',
     lossless: '无损',
-    hires: 'Hi-Res'
+    hires: 'Hi-Res',
+    jyeffect: '高清环绕声'
 }
-// 沉浸环绕声型子类型（仅在选中分组时额外提供）
-const surroundQualities = {
-    jyeffect: '高清环绕声',
-    jymaster: '超清母带',
-    sky: '沉浸环绕声',
-    dolby: '杜比全景声'
+
+// QQ 音乐真实音质选项（已实测：API 仅支持这 4 种,master/atmos/ape 不可用）
+// 对应 @sansenjian/qq-music-api 的 quality 参数: 128/320/m4a/flac
+const qqQualityLabels = {
+    '128': '标准',
+    '320': '高品',
+    m4a: '标准 AAC',
+    flac: '无损'
 }
-const surroundKeys = Object.keys(surroundQualities)
-const isSurroundQuality = (key) => surroundKeys.includes(key)
+// 根据当前平台动态切换音质选项
+const qualityLabels = computed(() => platformStore.isQQ ? qqQualityLabels : neteaseQualityLabels)
 // 顶部 badge 显示的短标签
 const qualityBadgeLabel = computed(() => {
     const q = playerStore.quality
-    if (surroundQualities[q]) return surroundQualities[q]
-    return qualityLabels[q] || '标准'
+    if (platformStore.isQQ) return qqQualityLabels[q] || '标准'
+    return neteaseQualityLabels[q] || '标准'
 })
-const showSurroundSubmenu = ref(false)
-// 沉浸环绕声(level=sky)的 immerseType 子类型：仅 level=sky 时生效
-const immerseLabels = {
-    c51: 'C51',
-    aac: 'AAC'
-}
-const showImmerseMenu = ref(false)
 
 const toggleUserMenu = () => {
   showUserMenu.value = !showUserMenu.value
@@ -1155,7 +1151,7 @@ const openGithub = () => {
         </div>
 
         <div class="quality-selector-container">
-            <div class="quality-badge clickable" @click="showQualityMenu = !showQualityMenu; showSurroundSubmenu = isSurroundQuality(playerStore.quality)">
+            <div class="quality-badge clickable" @click="showQualityMenu = !showQualityMenu">
                 {{ qualityBadgeLabel }}
             </div>
 
@@ -1170,53 +1166,9 @@ const openGithub = () => {
                     {{ label }}
                     <Check v-if="playerStore.quality === key" :size="14" />
                 </div>
-                <div class="quality-divider"></div>
-                <div
-                    class="quality-option quality-has-sub"
-                    :class="{ active: isSurroundQuality(playerStore.quality) }"
-                    @click="showSurroundSubmenu = !showSurroundSubmenu"
-                    @mouseenter="showSurroundSubmenu = true"
-                >
-                    <span>沉浸环绕声型</span>
-                    <ChevronRight :size="14" />
-                </div>
-                <!-- 沉浸环绕声子类型（额外类型） -->
-                <transition name="surround-sub">
-                    <div v-if="showSurroundSubmenu" class="surround-submenu">
-                        <div
-                            v-for="(label, key) in surroundQualities"
-                            :key="key"
-                            class="quality-option"
-                            :class="{ active: playerStore.quality === key }"
-                            @click="playerStore.setQuality(key); showQualityMenu = false; showSurroundSubmenu = false"
-                        >
-                            {{ label }}
-                            <Check v-if="playerStore.quality === key" :size="14" />
-                        </div>
-                    </div>
-                </transition>
             </div>
         </div>
 
-        <!-- 沉浸环绕声(level=sky)额外的 immerseType 选择器：c51/aac -->
-        <div v-if="playerStore.quality === 'sky'" class="immerse-selector-container">
-            <div class="quality-badge immerse-badge clickable" @click="showImmerseMenu = !showImmerseMenu">
-                {{ immerseLabels[playerStore.immerseType] || 'C51' }}
-            </div>
-            <div v-if="showImmerseMenu" class="quality-menu no-drag">
-                <div
-                    v-for="(label, key) in immerseLabels"
-                    :key="key"
-                    class="quality-option"
-                    :class="{ active: playerStore.immerseType === key }"
-                    @click="playerStore.setImmerseType(key); showImmerseMenu = false"
-                >
-                    {{ label }}
-                    <Check v-if="playerStore.immerseType === key" :size="14" />
-                </div>
-            </div>
-        </div>
-        
         <ListMusic :size="18" class="clickable hover-red" @click="playerStore.showPlaylist = !playerStore.showPlaylist" />
       </div>
     </footer>
@@ -1999,59 +1951,5 @@ const openGithub = () => {
 .quality-option.active {
     color: var(--primary-color);
     font-weight: bold;
-}
-
-.quality-divider {
-    height: 1px;
-    background: #eee;
-    margin: 4px 8px;
-}
-
-.quality-has-sub {
-    color: #333;
-}
-
-.quality-has-sub.active {
-    color: var(--primary-color);
-    font-weight: bold;
-}
-
-/* 沉浸环绕声子菜单：内联展开 */
-.surround-submenu {
-    padding: 2px 0 0 0;
-    background: #fafafa;
-    border-top: 1px solid #f0f0f0;
-}
-
-.surround-submenu .quality-option {
-    font-size: 12px;
-    padding: 8px 15px 8px 22px;
-}
-
-/* 展开过渡 */
-.surround-sub-enter-active,
-.surround-sub-leave-active {
-    transition: opacity 0.18s ease, max-height 0.2s ease;
-    overflow: hidden;
-    max-height: 200px;
-}
-
-.surround-sub-enter-from,
-.surround-sub-leave-to {
-    opacity: 0;
-    max-height: 0;
-}
-
-/* immerseType 选择器：仅在 level=sky 时显示 */
-.immerse-selector-container {
-    position: relative;
-    z-index: 100;
-    margin-left: -6px;
-}
-
-.immerse-badge {
-    border-color: var(--primary-color);
-    color: var(--primary-color);
-    background: rgba(236, 65, 65, 0.06);
 }
 </style>
