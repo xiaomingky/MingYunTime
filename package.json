@@ -64,7 +64,19 @@
     ],
     "extraResources": [
       "font/**",
-      "resources/**"
+      "resources/**",
+      {
+        "from": "electron/qq-styletext-polyfill.cjs",
+        "to": "qq-styletext-polyfill.cjs"
+      },
+      {
+        "from": "node_modules/@sansenjian/qq-music-api/dist",
+        "to": "qq-music-api/dist"
+      },
+      {
+        "from": "node_modules/@sansenjian/qq-music-api/package.json",
+        "to": "qq-music-api/package.json"
+      }
     ],
     "fileAssociations": [
       {

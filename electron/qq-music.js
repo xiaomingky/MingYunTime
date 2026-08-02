@@ -446,12 +446,12 @@ function resolveQQMusicAppPath() {
         // 开发态:项目根 node_modules - 优先 CommonJS 版本
         path.join(process.cwd(), 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.cjs'),
         path.join(process.cwd(), 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.js'),
-        // 打包态:app.asar 解包后的 node_modules
+        // 打包态:extraResources 复制到 resources/qq-music-api/dist(推荐方案,不依赖 asar 解包)
+        path.join(process.resourcesPath || '', 'qq-music-api', 'dist', 'app.cjs'),
+        path.join(process.resourcesPath || '', 'qq-music-api', 'dist', 'app.js'),
+        // 打包态:app.asar 解包后的 node_modules(兼容旧配置)
         path.join(process.resourcesPath || '', 'app.asar.unpacked', 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.cjs'),
-        path.join(process.resourcesPath || '', 'app.asar.unpacked', 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.js'),
-        // 打包态:直接在 resources 下
-        path.join(process.resourcesPath || '', 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.cjs'),
-        path.join(process.resourcesPath || '', 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.js')
+        path.join(process.resourcesPath || '', 'app.asar.unpacked', 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.js')
     ]
     for (const p of candidates) {
         try {
@@ -475,11 +475,30 @@ export function startQQMusicAPI() {
         return
     }
 
-    // 子进程运行时选择：
-    // - 优先用系统 node（v24+ 支持 util.styleText）
-    // - @sansenjian/qq-music-api 内部使用了 Node 22.13+ 的 util.styleText API
-    // - Electron 22 内置 Node 16 不支持该 API，直接用 process.execPath 启动会报错
-    // - 打包态系统 node 可能不存在，此时回退到 Electron execPath
+    // 解析 styleText polyfill 路径(与 qq-music.js 同目录)
+    // @sansenjian/qq-music-api 调用 node_util.styleText(Node 22.13+ API),
+    // Electron 22 内置 Node 16 缺失该 API 会导致子进程崩溃。
+    // 通过 NODE_OPTIONS=--require 预加载 polyfill,给 util.styleText 打补丁,
+    // 这样无论系统 Node 还是 Electron 内置 Node 都能正常运行。
+    const polyfillPath = (() => {
+        // 开发态:与 qq-music.js 同目录(electron/)
+        const devPath = path.join(process.cwd(), 'electron', 'qq-styletext-polyfill.cjs')
+        if (fs.existsSync(devPath)) return devPath
+        // 打包态:extraResources 复制到 resources/qq-styletext-polyfill.cjs
+        const packedPath = path.join(process.resourcesPath || '', 'qq-styletext-polyfill.cjs')
+        if (fs.existsSync(packedPath)) return packedPath
+        // 兜底:__dirname(打包后 main.js 在 app.asar 内)
+        try {
+            const dirPath = path.dirname(fileURLToPath(import.meta.url))
+            const sameDir = path.join(dirPath, 'qq-styletext-polyfill.cjs')
+            if (fs.existsSync(sameDir)) return sameDir
+        } catch (e) { /* ignore */ }
+        return devPath
+    })()
+
+    // 优先用系统 Node(v24+ 原生支持 styleText,无需 polyfill);
+    // 系统不存在 Node 时用 Electron 内置 Node 16 + polyfill 启动。
+    // polyfill 保证用户机器无需安装 Node 也能运行 QQ 音乐 API。
     const systemNode = (() => {
         try {
             const nodePath = execSync('node -e "process.stdout.write(process.execPath)"', { shell: true, encoding: 'utf-8', timeout: 3000 }).trim()
@@ -488,8 +507,16 @@ export function startQQMusicAPI() {
         return null
     })()
 
-    qqProcess = spawn(systemNode || process.execPath, [appPath], {
-        env: { ...process.env, PORT: '3200' },
+    const nodeBin = systemNode || process.execPath
+    // 构造 NODE_OPTIONS:系统 Node 24+ 无需 polyfill;Electron Node 16 必须加 polyfill
+    const nodeOptions = systemNode ? [] : [`--require=${polyfillPath}`]
+    const env = { ...process.env, PORT: '3200' }
+    if (nodeOptions.length > 0) {
+        env.NODE_OPTIONS = [env.NODE_OPTIONS, ...nodeOptions].filter(Boolean).join(' ')
+    }
+
+    qqProcess = spawn(nodeBin, [appPath], {
+        env,
         stdio: 'pipe',
         windowsHide: true
     })
