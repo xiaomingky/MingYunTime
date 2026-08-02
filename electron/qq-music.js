@@ -511,8 +511,21 @@ export function startQQMusicAPI() {
     // 原因:NODE_OPTIONS 会被 Node 按空格分词,安装路径含空格(如 "C:\Program Files\...")
     // 或中文时,polyfill 路径会被切断,导致子进程崩溃、QQ API 服务起不来。
     // 作为 args 数组元素时,Node 直接拿到完整字符串,不会被空格分词。
+    //
+    // NODE_PATH 设置:打包态依赖放在 resources/qq-music-api/libs/(非 node_modules,
+    // 因为 electron-builder 会忽略 node_modules 目录)。Node 默认只从 node_modules 查找
+    // 模块,必须通过 NODE_PATH 环境变量指向 libs,否则 require('axios') 会 MODULE_NOT_FOUND。
+    // dev 态不设 NODE_PATH,Node 从项目根 node_modules 正常查找。
     const nodeBin = process.execPath
     const env = { ...process.env, PORT: '3200', ELECTRON_RUN_AS_NODE: '1' }
+    // 打包态:设置 NODE_PATH 指向 libs 目录
+    const libsPath = path.join(process.resourcesPath || '', 'qq-music-api', 'libs')
+    try {
+        if (fs.existsSync(libsPath)) {
+            env.NODE_PATH = libsPath
+            console.log('[QQ API] NODE_PATH:', libsPath)
+        }
+    } catch (e) { /* ignore */ }
 
     console.log('[QQ API] spawn:', nodeBin, appPath)
     console.log('[QQ API] polyfill (as argv):', polyfillPath)

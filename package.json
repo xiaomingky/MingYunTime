@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "3.0.2",
+  "version": "3.0.0",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -64,7 +64,26 @@
     ],
     "extraResources": [
       "font/**",
-      "resources/**",
+      {
+        "from": "resources/aria2c.exe",
+        "to": "aria2c.exe"
+      },
+      {
+        "from": "resources/ffmpeg.exe",
+        "to": "ffmpeg.exe"
+      },
+      {
+        "from": "resources/qq-music-api/dist",
+        "to": "qq-music-api/dist"
+      },
+      {
+        "from": "resources/qq-music-api/libs",
+        "to": "qq-music-api/libs"
+      },
+      {
+        "from": "resources/qq-music-api/package.json",
+        "to": "qq-music-api/package.json"
+      },
       {
         "from": "electron/qq-styletext-polyfill.cjs",
         "to": "qq-styletext-polyfill.cjs"

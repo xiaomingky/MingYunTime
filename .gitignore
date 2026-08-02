@@ -12,6 +12,8 @@ release_v170/
 release_v171/
 
 # QQ 音乐 API 打包副本(由 scripts/ensure-qq-music-dist.cjs 同步生成)
+# 注意:extraResources 已改用显式 {from,to} 配置(见 package.json),
+# 不再受 .gitignore 过滤影响,因此可安全忽略整个生成目录。
 resources/qq-music-api/
 
 # 敏感文件
