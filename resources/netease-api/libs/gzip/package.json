@@ -1,0 +1,14 @@
+{
+  "name": "gzip",
+  "version": "0.1.0",
+  "description": "GZIP in js",
+  "main": "src/gzip.js",
+  "scripts": {
+    "test": "mocha"
+  },
+  "keywords": [
+    "gzip"
+  ],
+  "author": "Connor Atherton",
+  "license": "MIT"
+}

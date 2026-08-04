@@ -1,0 +1,195 @@
+{
+	"name": "@sansenjian/qq-music-api",
+	"version": "2.4.0",
+	"packageManager": "npm@11.14.1",
+	"workspaces": [
+		"packages/mcp"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"description": "QQ Music API - QQ 音乐 API koa2 实现",
+	"type": "module",
+	"main": "dist/index.cjs",
+	"module": "dist/index.js",
+	"types": "dist/index.d.cts",
+	"exports": {
+		".": {
+			"import": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.js"
+			},
+			"require": {
+				"types": "./dist/index.d.cts",
+				"default": "./dist/index.cjs"
+			}
+		},
+		"./services": {
+			"import": {
+				"types": "./dist/services.d.mts",
+				"default": "./dist/services.js"
+			},
+			"require": {
+				"types": "./dist/services.d.cts",
+				"default": "./dist/services.cjs"
+			}
+		},
+		"./sdk": {
+			"import": {
+				"types": "./dist/sdk.d.mts",
+				"default": "./dist/sdk.js"
+			},
+			"require": {
+				"types": "./dist/sdk.d.cts",
+				"default": "./dist/sdk.cjs"
+			}
+		}
+	},
+	"bin": {
+		"qq-music-api": "dist/cli.js"
+	},
+	"files": [
+		"dist",
+		"dist/app.js",
+		"dist/app.cjs",
+		"dist/app.d.cts",
+		"dist/app.d.mts",
+		"dist/cli.js",
+		"dist/cli.cjs",
+		"dist/cli.d.ts",
+		"dist/index.js",
+		"dist/index.cjs",
+		"dist/index.d.cts",
+		"dist/index.d.mts",
+		"dist/sdk.js",
+		"dist/sdk.cjs",
+		"dist/sdk.d.cts",
+		"dist/sdk.d.mts",
+		"dist/sdk.d.ts",
+		"dist/services.js",
+		"dist/services.cjs",
+		"dist/services.d.cts",
+		"dist/services.d.mts",
+		"dist/services.d.ts",
+		"dist/app.d.ts",
+		"dist/index.d.ts",
+		"dist/config",
+		"dist/koaApp.d.ts",
+		"dist/middlewares",
+		"dist/services",
+		"dist/package.json",
+		"dist/controllers",
+		"dist/routes",
+		"dist/util",
+		"dist/types",
+		"docs-dist",
+		"public",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE"
+	],
+	"lint-staged": {
+		"*.ts": [
+			"oxlint --fix",
+			"prettier --write"
+		],
+		"*.{js,cjs,mjs}": [
+			"prettier --write"
+		]
+	},
+	"scripts": {
+		"dev": "tsx src/app.ts",
+		"build": "npm run build:core && npm run build:mcp",
+		"build:core": "vite build && tsc --emitDeclarationOnly && node scripts/fix-cjs-declarations.js",
+		"build:mcp": "npm --workspace @sansenjian/qq-music-api-mcp run build",
+		"start": "node dist/app.js",
+		"mcp": "npm --workspace @sansenjian/qq-music-api-mcp run start",
+		"mcp:dev": "npm --workspace @sansenjian/qq-music-api-mcp run dev",
+		"vercel-build": "npm run build:core && npm run docs:build && (cp -r public dist/ 2>/dev/null || true)",
+		"docs:build": "node scripts/generate-version.js && vitepress build docs",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:coverage": "vitest run --coverage",
+		"test:verbose": "vitest run --reporter=verbose",
+		"test:unit": "vitest run tests/unit",
+		"test:flags": "tsx scripts/run-tests-with-flags.ts all",
+		"test:flags:unit": "tsx scripts/run-tests-with-flags.ts unit",
+		"docs:dev": "vitepress dev docs --port 9611",
+		"docs:preview": "vitepress preview docs",
+		"commit-push": "./scripts/commit-push.sh",
+		"changelog": "node scripts/generate-changelog.js",
+		"version": "npm run changelog && git add CHANGELOG.md",
+		"release": "node scripts/bump-version.js",
+		"lint": "oxlint",
+		"lint:fix": "oxlint --fix",
+		"format": "prettier --write --tab-width=2 \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.{js,ts,cjs,mjs}\" \"plugins/**/*.ts\" \"*.config.{js,ts,mjs}\" \"docs/.vitepress/config.mjs\" \"package.json\" \".oxlintrc.json\"",
+		"build:local-images": "node ./scripts/build-images.js local",
+		"build:remote-images": "node ./scripts/build-images.js remote",
+		"build:images": "npm run build:local-images && npm run build:remote-images",
+		"run:images": "docker run -d --name qq-music-api -p 3200:3200 qq-music-api ",
+		"deps:inspect": "node-modules-inspector --port 9999",
+		"deps:build": "node-modules-inspector build --outDir .node-modules-inspector"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+ssh://git@github.com/sansenjian/qq-music-api.git"
+	},
+	"keywords": [
+		"QQ 音乐",
+		"音乐",
+		"QQ 音乐 koa2",
+		"qq-music-api"
+	],
+	"author": "sansenjian",
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/sansenjian/qq-music-api/issues"
+	},
+	"homepage": "https://github.com/sansenjian/qq-music-api#readme",
+	"dependencies": {
+		"@koa/router": "^15.5.0",
+		"axios": "^1.16.1",
+		"koa": "^2.16.4"
+	},
+	"devDependencies": {
+		"@commitlint/cli": "^20.5.3",
+		"@commitlint/config-conventional": "^20.5.3",
+		"@types/koa": "^3.0.3",
+		"@types/koa__router": "^12.0.5",
+		"@types/node": "^25.3.3",
+		"@types/supertest": "^7.2.0",
+		"@vitest/coverage-v8": "^4.1.6",
+		"husky": "^9.0.0",
+		"lint-staged": "^16.4.0",
+		"node-modules-inspector": "^1.4.2",
+		"nodemon": "^3.1.14",
+		"oxc-transform": "^0.132.0",
+		"oxlint": "^1.65.0",
+		"prettier": "^3.8.3",
+		"sinon": "^21.0.1",
+		"supertest": "^7.2.2",
+		"tsx": "^4.22.3",
+		"typescript": "6.0.3",
+		"vite": "^8.0.13",
+		"vitepress": "^2.0.0-alpha.17",
+		"vitest": "^4.1.6",
+		"vue": "^3.5.29"
+	},
+	"overrides": {
+		"anymatch": {
+			"picomatch": "^2.3.2"
+		},
+		"brace-expansion": "^5.0.6",
+		"fast-uri": "^3.1.2",
+		"lodash": "^4.18.1",
+		"readdirp": {
+			"picomatch": "^2.3.2"
+		},
+		"yaml": "^2.9.0",
+		"semver": "7.8.0"
+	},
+	"engines": {
+		"node": "^20.17.0 || >=22.9.0",
+		"npm": "^11.0.0"
+	}
+}
