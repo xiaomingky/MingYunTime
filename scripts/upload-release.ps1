@@ -10,11 +10,11 @@ Write-Host "token 已加载 (长度=$($token.Length))"
 
 $owner = "xiaomingky"
 $repo = "MingYunTime"
-$tag = "v3.0.1"
+$tag = "v3.1.1"
 $headers = @{ Authorization = "token $token"; Accept = "application/vnd.github+json" }
 
 # Release notes：用 `n（反引号n）在双引号字符串中表示换行
-$releaseNotes = "## v3.0.1 音质系统升级`n`n### 网易云音乐（6档真实音质）`n- 标准 / 较高 / 极高 / 无损 / Hi-Res / 高清环绕声`n- 移除 jymaster/sky/dolby（实测均映射成 jyeffect）`n`n### QQ音乐（4档真实音质）`n- 标准(128) / 高品(320) / 标准AAC(m4a) / 无损(flac)`n- 移除 ape/master/atmos（API 不支持）`n`n### 其他`n- 两平台音质独立 localStorage 存储，互不覆盖`n- 沉浸环绕声子菜单和 immerseType 选择器移除`n- playSong/preload/downloadQQSong 使用用户选择音质+回退链`n- 修复 QQ API 打包后服务无法启动的问题（依赖未打包）"
+$releaseNotes = "## v3.1.1 更新内容`n`n### 新增功能`n- 酷狗概念版新增「领取 VIP」入口：领取当天 VIP、3 小时时长(每天最多 8 次)、升级畅听 VIP，并展示 VIP 状态与当月已领天数`n- 酷狗歌手主页歌曲列表新增封面显示`n`n### 交互优化`n- 酷狗 / QQ 音乐所有歌曲列表改为双击播放`n- 主页 Banner 翻页按钮改为漂浮圆形，鼠标移入时显现`n- 平台切换下拉框字体缩小，顺序：网易云 → 酷狗概念版 → QQ 音乐`n- 歌曲详情页移除歌词变色开关，歌词高亮恢复固定黑色`n- 官方云盘仅网易云平台显示`n`n### 按平台区分`n- 最近播放按当前平台展示`n- 搜索历史按平台独立记录(网易云/酷狗/QQ 互不干扰)`n`n### 界面修复`n- VIP 标识移到歌名右侧(搜索/发现/歌单/歌手/专辑/我喜欢)`n- 酷狗 VIP 标识更换为内置 SVG 官方风格图标(原域名失效)`n`n### 性能与安全`n- 关闭 F12 开发者控制台快捷键`n- 移除后台终端大量日志(API 子进程 stdout 静默，仅保留错误日志)"
 
 # 1. 检查是否已有该 tag 的 release
 Write-Host "=== 1. 检查现有 release ==="
@@ -41,12 +41,12 @@ try {
 if (-not $releaseId) { Write-Host "ERROR: 无 releaseId"; exit 1 }
 
 # 2. 上传安装包
-$exePath = "f:\xiangmu\music\release\茗韵时光 Setup 3.0.1.exe"
+$exePath = "f:\xiangmu\music\release\茗韵时光 Setup 3.1.1.exe"
 if (-not (Test-Path $exePath)) { Write-Host "ERROR: 安装包不存在 $exePath"; exit 1 }
 $fileSize = (Get-Item $exePath).Length
 Write-Host "`n=== 2. 上传安装包 ($([math]::Round($fileSize/1MB,2)) MB) ==="
 
-$fileName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.0.1.exe")
+$fileName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.1.1.exe")
 $uploadUrl = "https://uploads.github.com/repos/$owner/$repo/releases/$releaseId/assets?name=$fileName"
 Write-Host "上传到: $uploadUrl"
 
@@ -73,10 +73,10 @@ try {
 }
 
 # 3. 上传 blockmap（可选）
-$bmapPath = "f:\xiangmu\music\release\茗韵时光 Setup 3.0.1.exe.blockmap"
+$bmapPath = "f:\xiangmu\music\release\茗韵时光 Setup 3.1.1.exe.blockmap"
 if (Test-Path $bmapPath) {
     Write-Host "`n=== 3. 上传 blockmap ==="
-    $bmapName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.0.1.exe.blockmap")
+    $bmapName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.1.1.exe.blockmap")
     $bmapUrl = "https://uploads.github.com/repos/$owner/$repo/releases/$releaseId/assets?name=$bmapName"
     try {
         $bmapResult = Invoke-RestMethod -Uri $bmapUrl -Headers $uploadHeaders -Method Post -InFile $bmapPath -TimeoutSec 120
