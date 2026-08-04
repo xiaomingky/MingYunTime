@@ -2008,6 +2008,18 @@ onMounted(() => {
      -webkit-text-fill-color: transparent;
 }
 
+/* yrc-text 包含逐词 yrc-word 子元素：子级自带 background-clip:text 梯度，
+   父级再套一层会导致 --wp=0 时子级灰色与父级黑色层叠，歌词变浅灰。
+   此处禁用父级背景，由每个 yrc-word 自行控制渐变 */
+.main-text.yrc-text,
+.lyric-line.active .main-text.yrc-text,
+.is-cover-mode .lyric-line.active .main-text.yrc-text {
+     background: none !important;
+     -webkit-background-clip: unset !important;
+     background-clip: unset !important;
+     -webkit-text-fill-color: unset !important;
+}
+
 .is-cover-mode .lyric-line.active .main-text {
      background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.55) var(--progress));
      -webkit-background-clip: text;

@@ -262,7 +262,9 @@ watch(lyricMode, () => {
 })
 
 // 鼠标追踪：精确检测是否在可交互区域上 → 控制穿透
+// 关键优化：缓存上次发送状态，仅状态变化时才发 IPC，避免每帧调用 setIgnoreMouseEvents 导致窗口闪烁
 let ignoreMouseTimer = null
+let lastInteractive = null
 const onMouseMove = (e) => {
     if (ignoreMouseTimer) return
     ignoreMouseTimer = requestAnimationFrame(() => {
@@ -274,6 +276,9 @@ const onMouseMove = (e) => {
         } else {
             interactive = !!el?.closest('.widget-card, .floating-actions')
         }
+        // 仅状态变化时发送 IPC，避免反复调用 setIgnoreMouseEvents 导致闪烁
+        if (interactive === lastInteractive) return
+        lastInteractive = interactive
         const b = getBridge()
         if (b?.send) b.send('lyric-card-hover', interactive)
     })
