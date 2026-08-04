@@ -203,7 +203,6 @@ async function getHome() {
     try {
       const data = await getHomeSingle(sid)
       if (data.latest.length > 0 || data.hot.length > 0) {
-        console.log(`[Anime] 首页成功(${SOURCES[sid].label}): latest=${data.latest.length}, hot=${data.hot.length}`)
         return data
       }
     } catch (e) {
@@ -260,7 +259,7 @@ async function search(keyword) {
     try {
       const data = await searchSingle(sid, keyword)
       if (data.length > 0) {
-        console.log(`[Anime] 搜索成功(${SOURCES[sid].label}): ${data.length} 条`)
+
         return data
       }
     } catch (e) {
@@ -360,7 +359,7 @@ async function getDetail(sourceId, id) {
     try {
       const data = await getDetailSingle(sid, id)
       if (data.title && data.routes.length > 0) {
-        console.log(`[Anime] 详情故障转移到 ${SOURCES[sid].label}`)
+
         return data
       }
     } catch (e) { /* 继续尝试 */ }
@@ -395,7 +394,7 @@ async function parsePlay(sourceId, episodeUrl, scheme = 1) {
         if (parseUrl) {
           const playUrl = String(player.url).replace(/\\\//g, '/')
           const iframeUrl = parseUrl + encodeURIComponent(playUrl)
-          console.log(`[Anime] 方案一解析成功(${SOURCES[sid].label}): from=${player.from} -> iframe`)
+
           return { success: true, url: iframeUrl, type: 'iframe', scheme: 1 }
         }
         // from 不在映射表，降级到方案二逻辑
@@ -405,7 +404,7 @@ async function parsePlay(sourceId, episodeUrl, scheme = 1) {
       if (player && player.url && /^https?:\/\//.test(player.url)) {
         const playUrl = String(player.url).replace(/\\\//g, '/')
         if (/\.(m3u8|mp4|flv|m4v|webm)(\?|$)/i.test(playUrl)) {
-          console.log(`[Anime] 方案二解析成功(${SOURCES[sid].label}): 直链提取 ${playUrl.slice(0, 60)}`)
+
           return { success: true, url: playUrl, type: 'm3u8', scheme: 2 }
         }
       }
@@ -413,12 +412,12 @@ async function parsePlay(sourceId, episodeUrl, scheme = 1) {
       // 方案二降级：正则找 m3u8
       const m3u8Match = html.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/)
       if (m3u8Match) {
-        console.log(`[Anime] 方案二解析成功(${SOURCES[sid].label}): m3u8 正则`)
+
         return { success: true, url: m3u8Match[1].replace(/\\\//g, '/'), type: 'm3u8', scheme: 2 }
       }
 
       // 最终兜底：iframe 直接嵌入整页（樱花原生 Artplayer）
-      console.log(`[Anime] 播放解析(${SOURCES[sid].label}): iframe 整页嵌入`)
+
       return { success: true, url: url, type: 'iframe' }
     } catch (e) {
       console.warn(`[Anime] 播放解析失败(${sid}): ${e.message}`)
@@ -472,4 +471,4 @@ ipcMain.handle('anime:parse-playurl', async (_, { source, episodeUrl, scheme }) 
   }
 })
 
-console.log('[Anime] 模块已加载（3线路：推荐/经典/备用，方案一=iframe快速解析(默认) + 方案二=m3u8直链）')
+

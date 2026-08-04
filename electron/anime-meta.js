@@ -258,15 +258,9 @@ async function doSearch(keyword, threshold) {
   scored.sort((a, b) => b.sim - a.sim)
 
   const best = scored[0]
-  console.log(`[AnimeMeta] 候选 TOP3 for "${keyword}" (origSeason=${origSeason}):`)
-  scored.slice(0, 3).forEach((s, i) => {
-    console.log(`  #${i + 1} sim=${s.sim.toFixed(2)} season=${s.bgmSeason} title="${s.bgmTitle}"`)
-  })
   if (best.sim < threshold) {
-    console.log(`[AnimeMeta] 标题不匹配: "${keyword}" vs "${best.bgmTitle}" (sim=${best.sim.toFixed(2)}, threshold=${threshold})`)
     return null
   }
-  console.log(`[AnimeMeta] 匹配: "${keyword}" -> "${best.bgmTitle}" (sim=${best.sim.toFixed(2)})`)
   return best.item
 }
 
@@ -433,7 +427,6 @@ async function refreshMetaInBackground(title, cacheKey) {
     }
     setCached(cacheKey, meta)
     setDiskCached(cacheKey, meta)
-    console.log(`[AnimeMeta] 后台刷新完成: ${title}`)
   } catch (e) {
     console.warn(`[AnimeMeta] 后台刷新失败: ${e.message}`)
   } finally {
@@ -462,4 +455,4 @@ ipcMain.handle('anime:meta:related', async (_, { bgmId }) => {
   }
 })
 
-console.log('[AnimeMeta] 模块已加载（Bangumi API，含重试+持久缓存）')
+

@@ -146,7 +146,6 @@ async function fetchQQUserInfo(cookie, uin) {
             if (/svip/i.test(icon)) { isVip = true; vipLevel = 2; vipIcon = icon; break }
             if (/sui\d/i.test(icon) || /vip/i.test(icon)) { isVip = true; vipLevel = 1; vipIcon = icon; break }
         }
-        console.log(`[QQ Web Login] getUserDetail 用户信息: nickname=${nickname || '(空)'}, avatar=${avatarUrl ? '已获取' : '未获取'}, vip=${isVip}(lv${vipLevel}), lvinfo=${lvinfoArr.length}项, uin=${uin}`)
         return { nickname, avatarUrl, isVip, vipLevel, vipIcon }
     } catch (e) {
         console.error('[QQ Web Login] fetchQQUserInfo error:', e.message)
@@ -378,9 +377,6 @@ async function openQQWebLogin(parentWin) {
                         c.domain?.includes('qq.com')
                     )
                     const hasKeyst = qqCookies.some(c => c.name === 'qm_keyst')
-                    // 调试日志:便于排查(隐藏敏感值)
-                    const cookieNames = qqCookies.map(c => c.name).sort()
-                    console.log(`[QQ Web Login] polling: ${qqCookies.length} cookies, hasKeyst=${hasKeyst}, names=${cookieNames.slice(0, 30).join(',')}${cookieNames.length > 30 ? '...' : ''}`)
                     if (hasKeyst) {
                         // 等待 1.5s 让所有 cookie 写入完成(避免漏掉后续写入的 cookie)
                         await new Promise(r => setTimeout(r, 1500))
@@ -398,7 +394,6 @@ async function openQQWebLogin(parentWin) {
                         let { nickname, avatarUrl } = await fetchQQUserInfo(cookieStr, uin)
                         // 兜底:接口失败时显示"已登录",头像留空(前端显示默认占位)
                         if (!nickname) nickname = '已登录'
-                        console.log(`[QQ Web Login] 登录成功, uin=${uin || '(空)'}, nickname=${nickname}, avatar=${avatarUrl ? '已获取' : '未获取'}, cookie 数量=${finalQqCookies.length}`)
                         finish({
                             success: true,
                             cookie: cookieStr,
@@ -496,8 +491,6 @@ export function startQQMusicAPI() {
         } catch (e) { /* ignore */ }
         return packedPath
     })()
-    console.log('[QQ API] polyfill path:', polyfillPath)
-
     // 统一用 Electron 内置 Node(process.execPath)+ polyfill 启动子进程。
     // 不再依赖系统 Node,原因:
     //   1. 用户机器可能装了旧版 Node(如 v18)不支持 styleText,不加 polyfill 会崩溃
@@ -523,12 +516,8 @@ export function startQQMusicAPI() {
     try {
         if (fs.existsSync(libsPath)) {
             env.NODE_PATH = libsPath
-            console.log('[QQ API] NODE_PATH:', libsPath)
         }
     } catch (e) { /* ignore */ }
-
-    console.log('[QQ API] spawn:', nodeBin, appPath)
-    console.log('[QQ API] polyfill (as argv):', polyfillPath)
 
     qqProcess = spawn(nodeBin, [`--require=${polyfillPath}`, appPath], {
         env,
@@ -536,16 +525,10 @@ export function startQQMusicAPI() {
         windowsHide: true
     })
 
-    qqProcess.stdout?.on('data', (d) => {
-        const msg = d.toString().trim()
-        if (msg) console.log('[QQ API]', msg)
-    })
-    qqProcess.stderr?.on('data', (d) => {
-        const msg = d.toString().trim()
-        if (msg) console.error('[QQ API ERR]', msg)
-    })
+    // 不再转发子进程 stdout/stderr 到终端(避免大量日志刷屏)
+    qqProcess.stdout?.on('data', () => {})
+    qqProcess.stderr?.on('data', () => {})
     qqProcess.on('exit', (code) => {
-        console.warn('[QQ API] process exited, code:', code)
         qqProcess = null
         // 异常退出自动重启(5 秒后)
         if (code !== 0 && code !== null) {

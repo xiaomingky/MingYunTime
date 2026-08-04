@@ -179,22 +179,19 @@ The built installer will be in the `release/` folder.
 
 ## ⚙️ Configuration
 
-### 1. Netease Cloud Music API
+### 1. Three-Platform Music APIs
 
-This project integrates the Netease Cloud Music API. You need to configure an API server URL. Either:
-- **Self-host**: Deploy [NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi) and get your API URL
-- **Or use a shared API URL** from someone else (just paste it in)
+This project integrates **Netease Cloud Music**, **KuGou Concept Edition** and **QQ Music** APIs (login, playback, search, playlists, etc.). The platform APIs are built on the following open-source projects — thanks to their authors:
 
-Open `src/api/index.js` and change the `baseURL` at **line 4**:
+| Platform | Project | Repository |
+|----------|---------|------------|
+| Netease Cloud Music | NeteaseCloudMusicApiEnhanced | https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced |
+| KuGou Concept Edition | KuGouMusicApi | https://github.com/MakcRe/KuGouMusicApi |
+| QQ Music | qq-music-api | https://github.com/sansenjian/qq-music-api |
 
-```js
-// src/api/index.js  line 4
-const request = axios.create({
-    baseURL: 'https://your-netease-api-server.com',  // ← Your API URL (self-hosted or shared)
-    timeout: 30000,
-    withCredentials: true
-})
-```
+Each platform API is started locally by the Electron main process as a child process (Netease 3100 / KuGou 3300 / QQ 3200), with automatic restart on failure or fallback to online backup lines — no manual configuration required.
+
+If you want to self-host, deploy one of the projects above and change the server URL in `src/api/index.js` (Netease) or `src/api/kugou.js` (KuGou).
 
 ### 2. DeepSeek API Key
 

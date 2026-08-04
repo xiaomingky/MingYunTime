@@ -16,6 +16,14 @@ release_v171/
 # 不再受 .gitignore 过滤影响,因此可安全忽略整个生成目录。
 resources/qq-music-api/
 
+# 酷狗音乐 API 源码(由 git clone 下载)和打包副本(由 scripts/ensure-kugou-music-api.cjs 生成)
+resources/kugou-music-api-src/
+resources/kugou-music-api/
+
+# 网易云音乐 API 源码和打包副本(由 scripts/ensure-netease-api.cjs 生成)
+resources/netease-api-src/
+resources/netease-api/
+
 # 敏感文件
 token
 *.env
@@ -42,6 +50,7 @@ yarn-error.log*
 # 临时文件
 .release-notes.md
 .tmp_*.html
+.tmp_*.json
 _*.html
 kg_tail.txt
 kg_temp.py

@@ -9,43 +9,26 @@ import { useUserStore } from '../store/user'
 import { useMessageStore } from '../store/message'
 import { useQQUserStore } from '../store/qq-user'
 import { qqOperSonglist } from '../api/qq'
+import { kugouCommentSong, kugouSongDetail } from '../api/kugou'
+import { useKugouUserStore } from '../store/kugou-user'
+import KugouComment from '../components/KugouComment.vue'
 
 const playerStore = usePlayerStore()
 const userStore = useUserStore()
 const messageStore = useMessageStore()
 const qqUserStore = useQQUserStore()
+const kugouUserStore = useKugouUserStore()
 const router = useRouter()
 // 是否 QQ 平台歌曲(QQ 歌曲评论用 QQComment 组件,不走网易云 getCommentNew)
 const isQQSong = computed(() => playerStore.currentSong.platform === 'qq' || !!playerStore.currentSong.songmid)
+// 是否酷狗概念版平台歌曲
+const isKugouSong = computed(() => playerStore.currentSong.platform === 'kugou' || !!playerStore.currentSong.hash)
+// 非网易云歌曲(用于统一隐藏网易云专属功能:歌单管理、云盘等)
+const isNonNeteaseSong = computed(() => isQQSong.value || isKugouSong.value)
 const lyricFontSize = ref(32)
 const showGifCover = ref(localStorage.getItem('song_detail_show_gif_cover') !== 'false')
 // 歌词设置项默认折叠收起
 const showLyricSettings = ref(false)
-// 歌词颜色是否跟随桌面歌词所选颜色
-const lyricColorFollow = ref(localStorage.getItem('song_detail_lyric_color_follow') === 'true')
-
-const toggleLyricColorFollow = () => {
-    lyricColorFollow.value = !lyricColorFollow.value
-    localStorage.setItem('song_detail_lyric_color_follow', lyricColorFollow.value)
-}
-
-// 当前歌词高亮颜色：开启跟随时使用桌面歌词所选颜色，否则使用黑色
-const activeLyricColor = computed(() => {
-    return lyricColorFollow.value ? (playerStore.desktopLyricColor || '#000000') : '#000000'
-})
-
-// 将十六进制颜色转为带透明度的 rgba
-const hexToRgba = (hex, alpha) => {
-    if (!hex || hex[0] !== '#') return `rgba(0,0,0,${alpha})`
-    let h = hex.slice(1)
-    if (h.length === 3) h = h.split('').map(c => c + c).join('')
-    const r = parseInt(h.slice(0, 2), 16)
-    const g = parseInt(h.slice(2, 4), 16)
-    const b = parseInt(h.slice(4, 6), 16)
-    return `rgba(${r},${g},${b},${alpha})`
-}
-
-const inactiveLyricColor = computed(() => hexToRgba(activeLyricColor.value, 0.2))
 
 // 切换歌曲时重置歌词滚动到开头
 watch(() => playerStore.currentSong.id, () => {
@@ -453,6 +436,11 @@ const playOnlineMv = () => {
     playerStore.playOnlineMv()
 }
 
+const playKugouMv = () => {
+    showMvMenu.value = false
+    playerStore.playKugouMv()
+}
+
 const playMvCandidate = (mv) => {
     playerStore.playMvCandidate(mv)
 }
@@ -485,8 +473,13 @@ const handleDownload = async () => {
     }
 
     // QQ 平台歌曲：走 playerStore.downloadQQSong 统一处理（qqDownload 拉高品质 URL + IPC 落盘）
-    if (playerStore.currentSong.platform === 'qq' || playerStore.currentSong.songmid) {
+    if (isQQSong.value) {
         await playerStore.downloadQQSong(playerStore.currentSong)
+        return
+    }
+    // 酷狗概念版平台歌曲：走 playerStore.downloadKugouSong 统一处理
+    if (isKugouSong.value) {
+        await playerStore.downloadKugouSong(playerStore.currentSong)
         return
     }
 
@@ -593,6 +586,12 @@ const fetchComments = async (reset = true) => {
             if (list.length > 0) {
                 commentCursor.value = res?.data?.lasthotcommentid || list[list.length - 1].commentId || ''
             }
+        } else if (isKugouSong.value) {
+            // 酷狗歌曲评论由 KugouComment 组件独立加载(只读),此处跳过内置评论逻辑
+            commentLoading.value = false
+            commentHasMore.value = false
+            comments.value = []
+            return
         } else {
             // 网易云/本地歌曲评论
             const res = await getCommentNew({
@@ -780,6 +779,21 @@ const handleAddToPlaylist = async (pid) => {
     }
 }
 
+// 酷狗平台: 添加当前歌曲到指定歌单
+const handleAddToKugouPlaylist = async (listid) => {
+    if (addingToPlaylist.value) return
+    addingToPlaylist.value = true
+    try {
+        const song = playerStore.currentSong
+        const ok = await kugouUserStore.addSongToPlaylist(listid, song)
+        if (ok) {
+            showPlaylistSelector.value = false
+        }
+    } finally {
+        addingToPlaylist.value = false
+    }
+}
+
 // 字体与颜色设置
 const fonts = ref([])
 const fontOptions = computed(() => {
@@ -853,7 +867,6 @@ onMounted(() => {
             <div class="song-name-container">
                 <h1 class="song-name">
                     {{ playerStore.currentSong.name }}
-                    <span v-if="playerStore.currentSong.fee === 1 || (isQQSong && playerStore.currentSong.isVip)" class="vip-badge-song">VIP</span>
                 </h1>
             </div>
                 <div class="song-info">
@@ -866,22 +879,40 @@ onMounted(() => {
            <div class="action-item" :class="{ active: playerStore.isLiked }" @click="playerStore.toggleLike()">
               <Heart :size="22" :fill="playerStore.isLiked ? '#EC4141' : 'none'" :color="playerStore.isLiked ? '#EC4141' : 'currentColor'" />
            </div>
-           <!-- QQ 平台取消歌单管理,仅网易云显示添加到歌单 -->
+           <!-- QQ 平台取消歌单管理,网易云和酷狗显示添加到歌单 -->
            <div v-if="!isQQSong" class="action-item" @click="showPlaylistSelector = true"><Plus :size="24" /></div>
            <div class="action-item" @click="handleDownload"><Download :size="22" /></div>
-           <div class="action-item" @click="handleShare"><Share2 :size="22" /></div>
+           <div v-if="!isNonNeteaseSong" class="action-item" @click="handleShare"><Share2 :size="22" /></div>
+           <!-- 评论按钮:所有平台显示 -->
            <div class="action-item" @click="handleComment"><MessageSquare :size="22" /></div>
         </div>
 
-        <!-- Playlist Selector Modal (仅网易云平台) -->
-        <div v-if="showPlaylistSelector && !isQQSong" class="playlist-selector-overlay" @click="showPlaylistSelector = false">
+        <!-- Playlist Selector Modal (网易云 + 酷狗) -->
+        <div v-if="showPlaylistSelector" class="playlist-selector-overlay" @click="showPlaylistSelector = false">
             <div class="playlist-selector-modal" @click.stop>
                 <div class="modal-header">
                     <h3>收藏到歌单</h3>
                     <X :size="20" class="clickable" @click="showPlaylistSelector = false" />
                 </div>
                 <div class="modal-body">
+                    <!-- 酷狗平台: 显示酷狗歌单 -->
+                    <template v-if="isKugouSong">
+                        <div
+                            v-for="p in kugouUserStore.playlists.filter(pl => pl.isMine && pl.id !== kugouUserStore.likedPlaylistId)"
+                            :key="p.id"
+                            class="playlist-item clickable"
+                            @click="handleAddToKugouPlaylist(p.id)"
+                        >
+                            <div class="cover">
+                                <img v-if="p.coverImgUrl" :src="p.coverImgUrl" />
+                                <Heart v-else :size="20" :fill="'#EC4141'" :color="'#EC4141'" />
+                            </div>
+                            <div class="name">{{ p.name }}</div>
+                            <div class="count">{{ p.songCount || 0 }}首</div>
+                        </div>
+                    </template>
                     <!-- 网易云平台: 原有逻辑 -->
+                    <template v-else>
                         <div
                             v-for="p in userStore.playlists.filter(pl => pl.userId === userStore.profile?.userId)"
                             :key="p.id"
@@ -894,6 +925,7 @@ onMounted(() => {
                             <div class="name">{{ p.name }}</div>
                             <div class="count">{{ p.trackCount }}首</div>
                         </div>
+                    </template>
                 </div>
             </div>
         </div>
@@ -987,17 +1019,11 @@ onMounted(() => {
                            <Plus :size="14" class="clickable" @click="lyricFontSize = lyricFontSize + 2" />
                         </div>
                     </div>
-                    <div class="group">
-                        <span class="label">歌词变色</span>
-                        <div class="switch-track" :class="{ active: lyricColorFollow }" @click="toggleLyricColorFollow" title="开启后歌词颜色跟随上方颜色选择器">
-                            <div class="switch-thumb"></div>
-                        </div>
-                    </div>
                 </div>
             </transition>
         </div>
 
-        <div class="lyric-wrapper" ref="lyricContainer" :class="['mode-' + lyricMode, { 'color-follow': lyricColorFollow }]" :style="{ '--active-color': activeLyricColor, '--active-color-faded': inactiveLyricColor }">
+        <div class="lyric-wrapper" ref="lyricContainer" :class="'mode-' + lyricMode">
           <div class="lyric-track">
               <div 
                 v-for="(line, index) in displayLyrics" 
@@ -1044,15 +1070,24 @@ onMounted(() => {
       <!-- Comment Section -->
       <div class="right-comments" v-show="showCommentPanel">
           <div class="comments-header">
-              <span class="title">歌曲评论 ({{ totalComments }})</span>
+              <span class="title">歌曲评论 <span v-if="!isKugouSong">({{ totalComments }})</span></span>
               <button class="close-panel-btn" @click="showCommentPanel = false">返回歌词</button>
           </div>
+          <!-- 酷狗平台:使用 KugouComment 组件(只读) -->
+          <div v-if="isKugouSong && playerStore.currentSong.mixsongid" class="comments-list">
+              <KugouComment
+                  :id="playerStore.currentSong.mixsongid"
+                  type="song"
+              />
+          </div>
+          <div v-else-if="isKugouSong" class="no-comment">该歌曲暂无评论信息</div>
           <!-- QQ 平台:评论(只读,不支持发送/点赞/删除) -->
           <!-- 网易云/本地歌曲评论:完整评论逻辑(支持发送/点赞/删除) -->
+          <template v-else-if="!isKugouSong">
           <div class="comments-toolbar">
-              <button v-if="!isQQSong" class="sort-btn" :class="{ active: commentSortType === 3 }" @click="switchCommentSort(3)">按时间</button>
+              <button v-if="!isNonNeteaseSong" class="sort-btn" :class="{ active: commentSortType === 3 }" @click="switchCommentSort(3)">按时间</button>
               <button class="sort-btn" :class="{ active: commentSortType === 2 }" @click="switchCommentSort(2)">按热度</button>
-              <button v-if="!isQQSong" class="sort-btn" :class="{ active: commentSortType === 1 }" @click="switchCommentSort(1)">推荐</button>
+              <button v-if="!isNonNeteaseSong" class="sort-btn" :class="{ active: commentSortType === 1 }" @click="switchCommentSort(1)">推荐</button>
               <span v-if="isQQSong" class="sort-btn" style="cursor:default;opacity:0.6">最新评论</span>
           </div>
           <div class="comments-list" ref="commentsListRef" @scroll="onCommentsScroll">
@@ -1071,7 +1106,7 @@ onMounted(() => {
                           </div>
                           <div class="bottom-info">
                               <span class="time">{{ formatDate(comment.time) }}</span>
-                              <div v-if="!isQQSong" class="comment-actions">
+                              <div v-if="!isNonNeteaseSong" class="comment-actions">
                                   <button class="action-btn like-btn" :class="{ liked: comment.liked }" @click="toggleLike(comment)" :title="comment.liked ? '取消点赞' : '点赞'">
                                       <ThumbsUp :size="14" :fill="comment.liked ? 'currentColor' : 'none'" />
                                       <span v-if="comment.likedCount">{{ comment.likedCount }}</span>
@@ -1095,7 +1130,7 @@ onMounted(() => {
                   <div v-else-if="!commentHasMore && comments.length > 0" class="comment-loading">没有更多评论了</div>
                   <div v-if="!commentLoading && comments.length === 0" class="no-comment">暂无评论，快来抢沙发吧</div>
               </div>
-              <div v-if="!isQQSong" class="comment-input-box">
+              <div v-if="!isNonNeteaseSong" class="comment-input-box">
                   <div v-if="replyTarget" class="reply-banner">
                       <span>回复 @{{ replyTarget.user.nickname }}</span>
                       <button class="cancel-reply" @click="cancelReply"><X :size="14" /></button>
@@ -1114,6 +1149,7 @@ onMounted(() => {
                       </button>
                   </div>
               </div>
+          </template>
       </div>
     </div>
 
@@ -1177,7 +1213,8 @@ onMounted(() => {
 
 .song-detail-overlay.show {
   top: 0;
-  transform: translateZ(0);
+  /* 注意：不要在这里加 transform（如 translateZ(0)），
+     会导致 -webkit-app-region: drag 顶部拖动区域命中失效（时灵时不灵） */
   pointer-events: auto;
 }
 
@@ -1964,7 +2001,8 @@ onMounted(() => {
 }
 
 .lyric-line.active .main-text {
-     background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.15) var(--progress));
+     /* 未填充部分保持 0.5 可读性,避免新激活行进度极低时整行过浅 */
+     background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.5) var(--progress));
      -webkit-background-clip: text;
      background-clip: text;
      -webkit-text-fill-color: transparent;

@@ -2,7 +2,7 @@
 
 > **本项目完全由 AI (Claude Code) 创作** | [English Version](README_EN.md)
 
-一款精美的桌面音乐播放器，基于 **Vue 3** + **Electron** 构建，集成网易云音乐 API，支持在线音乐播放/搜索/歌单管理，并内置**动漫观看**、**影视播放**、**统一下载中心**与 **B站视频解析**模块（HLS 流播放 + Bangumi 元信息聚合 + DASH 高画质合并）。
+一款精美的桌面音乐播放器，基于 **Vue 3** + **Electron** 构建，集成 **网易云音乐 / 酷狗概念版 / QQ 音乐** 三大平台 API，支持在线音乐播放/搜索/歌单管理，并内置**动漫观看**、**影视播放**、**统一下载中心**与 **B站视频解析**模块（HLS 流播放 + Bangumi 元信息聚合 + DASH 高画质合并）。
 
 ---
 
@@ -198,22 +198,19 @@ npm run build
 
 ## ⚙️ 配置说明
 
-### 1. 网易云音乐 API
+### 1. 三平台音乐 API
 
-本项目集成网易云音乐 API，需配置 API 服务地址。你可以：
-- **自己部署**：[NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi)，部署后获得你的 API 地址
-- **或使用他人分享的成品 API 地址**（直接填入即可）
+本项目集成 **网易云音乐**、**酷狗概念版**、**QQ 音乐** 三大平台的 API（登录、播放、搜索、歌单等）。各平台 API 均基于以下开源项目构建，感谢这些项目的作者：
 
-打开 `src/api/index.js`，修改第 **4 行** 的 `baseURL`：
+| 平台 | 开源项目 | 项目地址 |
+|------|---------|---------|
+| 网易云音乐 | NeteaseCloudMusicApiEnhanced | https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced |
+| 酷狗概念版 | KuGouMusicApi | https://github.com/MakcRe/KuGouMusicApi |
+| QQ 音乐 | qq-music-api | https://github.com/sansenjian/qq-music-api |
 
-```js
-// src/api/index.js  第 4 行
-const request = axios.create({
-    baseURL: 'https://your-netease-api-server.com',  // ← 改为你的 API 地址（自己部署的或他人成品）
-    timeout: 30000,
-    withCredentials: true
-})
-```
+各平台 API 由 Electron 主进程在本地启动子进程（网易云 3100 / 酷狗 3300 / QQ 3200 端口），失败时自动重启或回退在线备用线路，无需手动配置。
+
+如你需要自建 API 服务，可部署上述开源项目后修改 `src/api/index.js`（网易云）或 `src/api/kugou.js`（酷狗）中的服务地址。
 
 ### 2. DeepSeek API Key（英文解析）
 
@@ -249,18 +246,25 @@ const request = axios.create({
 music/
 ├── electron/            # Electron 主进程
 │   ├── main.js          # 窗口管理、IPC 处理、B站解析/登录、协议注册
+│   ├── qq-music.js      # QQ 音乐 API 子进程（3200 端口）
+│   ├── kugou-music.js   # 酷狗概念版 API 子进程（3300 端口）
+│   ├── netease-api.js   # 网易云 API 子进程（3100 端口）
+│   ├── lyric-providers.js  # 多平台歌词搜索（QQ/酷狗）
 │   ├── anime.js         # 动漫模块 IPC（樱花动漫解析）
 │   ├── anime-meta.js    # Bangumi 元信息聚合 + 标题相似度匹配
 │   ├── movie.js         # 影视模块 IPC（神马电影网解析）
 │   └── download-manager.js  # 统一下载管理器（aria2c + ffmpeg + 128 并发）
-├── resources/           # 打包的 aria2c.exe + ffmpeg.exe（下载引擎）
+├── resources/           # 打包的 aria2c.exe + ffmpeg.exe + 三平台 API
+├── scripts/             # 构建辅助脚本（ensure API 资源）
 ├── src/
 │   ├── api/index.js     # API 客户端 (axios)
-│   ├── store/           # Pinia 状态管理 (player、user、message)
+│   ├── api/kugou.js     # 酷狗概念版 API 封装
+│   ├── api/qq.js        # QQ 音乐 API 封装
+│   ├── store/           # Pinia 状态管理 (player、user、message、qq-user、kugou-user)
 │   ├── router/          # Vue Router 路由
 │   ├── views/           # 页面组件
-│   │   ├── Discovery.vue      # 发现音乐
-│   │   ├── Search.vue         # 搜索
+│   │   ├── Discovery.vue      # 发现音乐（网易云）
+│   │   ├── Search.vue         # 搜索（网易云）
 │   │   ├── SongDetail.vue     # 歌曲详情/全屏歌词
 │   │   ├── PlaylistDetail.vue # 歌单详情管理
 │   │   ├── AlbumDetail.vue    # 专辑详情
@@ -274,14 +278,17 @@ music/
 │   │   ├── Movie.vue          # 影视主页（神马电影网）
 │   │   ├── MovieDetail.vue    # 影视详情页（多线路播放）
 │   │   ├── Downloads.vue      # 统一下载中心
-│   │   └── DesktopLyrics.vue  # 桌面歌词窗口
+│   │   ├── DesktopLyrics.vue  # 桌面歌词窗口
+│   │   ├── qq/               # QQ 音乐平台视图（发现/搜索/歌单/专辑/歌手/我喜欢）
+│   │   └── kugou/            # 酷狗概念版平台视图（发现/搜索/歌单/专辑/歌手/我喜欢）
 │   ├── components/      # 共享组件
 │   │   ├── EnglishAnalysis.vue  # AI 英文歌词解析
 │   │   ├── EqPanel.vue          # 均衡器面板
-│   │   ├── LoginModal.vue       # 登录弹窗
+│   │   ├── LoginModal.vue       # 登录弹窗（三平台登录）
+│   │   ├── KugouComment.vue     # 酷狗歌曲评论
 │   │   ├── MvPlayer.vue         # MV 播放器
 │   │   └── Toast.vue            # 通知提示
-│   ├── style.css        # 全局样式 + CSS 变量
+│   ├── style.css        # 全局样式 + CSS 变量（三平台主题）
 │   ├── App.vue          # 根组件（布局外壳）
 │   └── main.js          # 应用入口
 ├── showimage/           # README 截图

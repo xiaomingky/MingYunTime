@@ -35,6 +35,21 @@
     --active-bg: #E0F0E7;
 }
 
+/* 酷狗概念版主题：蓝白（在 #app 或 body 上设置 data-platform="kugou" 即可生效） */
+[data-platform="kugou"] {
+    --primary-color: #2CA2F5;
+    --header-bg: #2CA2F5;
+    --bg-main: #FFFFFF;
+    --bg-sidebar: #F5F9FC;
+    --bg-footer: #FFFFFF;
+    --border-color: #DCEAF5;
+    --text-main: #1F3A4D;
+    --text-secondary: #4A6B82;
+    --text-light: #8FA8BC;
+    --hover-bg: #E8F4FD;
+    --active-bg: #D6EBFB;
+}
+
 * {
     box-sizing: border-box;
     margin: 0;
@@ -396,6 +411,40 @@ footer.footer {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.song-name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.vip-badge-footer {
+    font-size: 9px;
+    color: var(--primary-color, #c20c0c);
+    border: 1px solid var(--primary-color, #c20c0c);
+    padding: 0 3px;
+    border-radius: 2px;
+    height: 14px;
+    line-height: 12px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+/* 酷狗歌曲列表通用 VIP 标签（细边框样式,仿网易云,酷狗主题配色 #2CA2F5） */
+.kugou-vip-tag {
+    font-size: 10px;
+    color: #2CA2F5;
+    border: 1px solid rgba(44, 162, 245, 0.7);
+    padding: 0 3px;
+    border-radius: 2px;
+    line-height: 12px;
+    flex-shrink: 0;
+    margin-left: 6px;
+    vertical-align: middle;
+    align-self: center;
+    background: transparent;
 }
 
 .artist-name {

@@ -110,7 +110,7 @@ onMounted(loadLiked)
         <div v-if="error" class="qq-error">{{ error }}</div>
 
         <div class="qq-song-list" v-if="likedSongs.length">
-            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
+            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="qq-song-item" @dblclick="playSong(s)">
                 <span class="qq-song-index">{{ i + 1 }}</span>
                 <img
                     v-if="s.picUrl"

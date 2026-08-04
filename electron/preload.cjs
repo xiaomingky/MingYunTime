@@ -1,8 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-// 诊断标记
-console.log('--- [Preload] Script execution started (CJS Mode)');
-
 const bridgeAPI = {
     on: (channel, callback) => {
         const subscription = (event, ...args) => callback(event, ...args)
@@ -22,6 +19,8 @@ const bridgeAPI = {
     searchMultiLyric: ({ songName, artist }) => ipcRenderer.invoke('search-multi-lyric', { songName, artist }),
     fetchLyricByCandidate: (candidate) => ipcRenderer.invoke('fetch-lyric-by-candidate', candidate),
     getQQLyric: ({ songName, artist, duration }) => ipcRenderer.invoke('get-qq-lyric', { songName, artist, duration }),
+    // 酷狗歌词：按 hash 直接获取（不走搜索匹配，与 searchMultiLyric 不同）
+    getKugouLyric: ({ hash }) => ipcRenderer.invoke('get-kugou-lyric', { hash }),
     findLocalMv: (params) => ipcRenderer.invoke('find-local-mv', params),
     saveEnglishAnalysis: (data) => ipcRenderer.invoke('save-english-analysis', data),
     loadEnglishAnalysis: (songPath) => ipcRenderer.invoke('load-english-analysis', songPath),
@@ -108,7 +107,6 @@ try {
     contextBridge.exposeInMainWorld('ipcHandler', bridgeAPI)
     contextBridge.exposeInMainWorld('ipcRenderer', bridgeAPI)
     contextBridge.exposeInMainWorld('electron', bridgeAPI)
-    console.log('--- [Preload] Bridge exposed successfully to window.__ELECTRON_BRIDGE__')
 } catch (e) {
     console.error('--- [Preload] Failed to expose bridge:', e)
 }

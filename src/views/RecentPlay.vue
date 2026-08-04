@@ -1,10 +1,13 @@
 <script setup>
+import { computed } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
+import { usePlatformStore } from '../store/platform'
 import { Play, Trash2 } from 'lucide-vue-next'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
+const platformStore = usePlatformStore()
 
 const formatTime = (seconds) => {
   if (!seconds) return '00:00'
@@ -12,6 +15,15 @@ const formatTime = (seconds) => {
   const s = Math.floor(seconds % 60)
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
+
+// 最近播放按当前平台过滤(本地/云盘歌曲所有平台都显示)
+const filteredRecentSongs = computed(() => {
+    const cur = platformStore.current
+    return playerStore.recentSongs.filter(s => {
+        if (!s.platform || s.platform === 'local') return true
+        return s.platform === cur
+    })
+})
 
 const clearRecent = async () => {
     if (await messageStore.confirm('确定要清空最近播放记录吗？', '清空记录')) {
@@ -26,10 +38,10 @@ const clearRecent = async () => {
     <div class="view-header">
       <div class="title-row">
         <h1 class="title">最近播放</h1>
-        <span class="count">共 {{ playerStore.recentSongs.length }} 首</span>
+        <span class="count">共 {{ filteredRecentSongs.length }} 首</span>
       </div>
       <div class="actions">
-        <button class="play-all-btn" @click="playerStore.playSong(playerStore.recentSongs[0], playerStore.recentSongs)">
+        <button class="play-all-btn" @click="playerStore.playSong(filteredRecentSongs[0], filteredRecentSongs)">
           <Play :size="16" fill="white" /> 播放全部
         </button>
         <button class="clear-btn" @click="clearRecent">
@@ -48,11 +60,11 @@ const clearRecent = async () => {
       </div>
       
       <div 
-        v-for="(song, index) in playerStore.recentSongs" 
+        v-for="(song, index) in filteredRecentSongs" 
         :key="song.id" 
         class="track-item"
         :class="{ active: playerStore.currentSong.id === song.id }"
-        @dblclick="playerStore.playSong(song, playerStore.recentSongs)"
+        @dblclick="playerStore.playSong(song, filteredRecentSongs)"
       >
         <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
         <div class="col-title">
@@ -63,7 +75,7 @@ const clearRecent = async () => {
         <div class="col-duration">{{ formatTime(song.duration) }}</div>
       </div>
       
-      <div v-if="playerStore.recentSongs.length === 0" class="empty-state">
+      <div v-if="filteredRecentSongs.length === 0" class="empty-state">
         暂无播放记录
       </div>
     </div>

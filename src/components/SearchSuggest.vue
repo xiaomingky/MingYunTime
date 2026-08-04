@@ -4,7 +4,10 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Search, Clock, Trash2, Flame, X, ArrowUpRight, TrendingUp, Loader2 } from 'lucide-vue-next'
 import { useSearchHistoryStore } from '../store/searchHistory'
+import { usePlatformStore } from '../store/platform'
 import { cloudSearch, animeSearch, movieSearch } from '../api'
+import { qqSearch, normalizeQQSong } from '../api/qq'
+import { kugouSearch, normalizeKugouSong } from '../api/kugou'
 
 const props = defineProps({
     module: { type: String, required: true }, // music | anime | movie | video
@@ -14,10 +17,16 @@ const props = defineProps({
 const emit = defineEmits(['select', 'clear-history', 'remove-item', 'select-item'])
 
 const historyStore = useSearchHistoryStore()
+const platformStore = usePlatformStore()
 
-const history = computed(() => historyStore.getHistory(props.module))
-const suggestions = computed(() => historyStore.getSuggestions(props.module, props.query))
-const hotKeywords = computed(() => historyStore.getHotKeywords(props.module))
+// 音乐模块按当前平台细分历史(music-netease/music-kugou/music-qq),互不干扰
+const historyModule = computed(() =>
+    props.module === 'music' ? `music-${platformStore.current}` : props.module
+)
+
+const history = computed(() => historyStore.getHistory(historyModule.value))
+const suggestions = computed(() => historyStore.getSuggestions(historyModule.value, props.query))
+const hotKeywords = computed(() => historyStore.getHotKeywords(historyModule.value))
 
 // ===== 您可能再找：实时搜索结果（输入时触发，300ms 防抖） =====
 const liveResults = ref([])        // 实时搜索结果列表
@@ -33,16 +42,44 @@ async function doLiveSearch(kw) {
     try {
         const module = props.module
         if (module === 'music') {
-            // type=1 单曲
-            const res = await cloudSearch(kw, 1)
-            const songs = res?.result?.songs || res?.songs || []
-            liveResults.value = songs.slice(0, 6).map(s => ({
-                id: s.id,
-                name: s.name,
-                sub: (s.ar || s.artists || []).map(a => a.name).join(' / '),
-                cover: s.al?.picUrl || s.album?.picUrl || '',
-                type: 'song'
-            }))
+            // 根据当前平台调用相应的搜索 API
+            if (platformStore.isQQ) {
+                // QQ 音乐：catZhida=0 表示搜索歌曲
+                const res = await qqSearch(kw, 6, 1, 0)
+                const data = res?.data || res
+                const list = data?.list || data?.song?.list || data?.songlist?.list || []
+                const songs = (Array.isArray(list) ? list : []).map(normalizeQQSong).filter(Boolean)
+                liveResults.value = songs.slice(0, 6).map(s => ({
+                    id: s.id,
+                    name: s.name,
+                    sub: s.artist || '',
+                    cover: s.picUrl || '',
+                    type: 'song'
+                }))
+            } else if (platformStore.isKugou) {
+                // 酷狗：type=song 搜索单曲
+                const res = await kugouSearch(kw, 1, 6, 'song')
+                const list = res?.data?.lists || res?.data?.info || res?.data?.list || []
+                const songs = (Array.isArray(list) ? list : []).map(normalizeKugouSong).filter(Boolean)
+                liveResults.value = songs.slice(0, 6).map(s => ({
+                    id: s.id,
+                    name: s.name,
+                    sub: s.artist || '',
+                    cover: s.picUrl || '',
+                    type: 'song'
+                }))
+            } else {
+                // 网易云：type=1 单曲
+                const res = await cloudSearch(kw, 1)
+                const songs = res?.result?.songs || res?.songs || []
+                liveResults.value = songs.slice(0, 6).map(s => ({
+                    id: s.id,
+                    name: s.name,
+                    sub: (s.ar || s.artists || []).map(a => a.name).join(' / '),
+                    cover: s.al?.picUrl || s.album?.picUrl || '',
+                    type: 'song'
+                }))
+            }
         } else if (module === 'video') {
             // type=1004 MV
             const res = await cloudSearch(kw, 1004)
@@ -120,11 +157,11 @@ function selectLiveItem(item) {
 
 function removeItem(kw, e) {
     e.stopPropagation()
-    historyStore.removeHistory(props.module, kw)
+    historyStore.removeHistory(historyModule.value, kw)
 }
 
 function clearAll() {
-    historyStore.clearHistory(props.module)
+    historyStore.clearHistory(historyModule.value)
     emit('clear-history')
 }
 </script>

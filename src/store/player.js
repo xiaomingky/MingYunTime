@@ -1,6 +1,10 @@
 import { defineStore } from 'pinia'
 import request, { getSongUrl, getLyric, getNewLyric, cloudSearch } from '../api'
 import { qqSongPlay, qqLyric, qqDownload, qqSongInfo, qqBatchSongInfo, normalizeQQSong } from '../api/qq'
+import {
+    kugouSongUrl, kugouSongUrlNew, kugouSongDetail, normalizeKugouSong,
+    kugouVideoUrl, kugouSongMv, kugouVideoDetail, kugouSearch
+} from '../api/kugou'
 import { useMessageStore } from './message'
 import { getCurrentPlatform } from '../api'
 
@@ -27,14 +31,45 @@ const QQ_QUALITY_FALLBACK = {
     m4a: ['m4a', '128'],
     '128': ['128', '320']
 }
+// 酷狗概念版真实音质（已查 KuGouMusicApi song_url.js 源码确认）
+const KUGOU_QUALITY_LABELS = {
+    '128': '标准',
+    '320': '高品',
+    flac: '无损',
+    high: 'Hi-Res',
+    viper_atmos: '蝰蛇全景声',
+    viper_clear: '蝰蛇清澈',
+    super: '超品'
+}
+// 酷狗音质回退链：所选音质无资源时按序尝试
+const KUGOU_QUALITY_FALLBACK = {
+    flac: ['flac', '320', '128'],
+    high: ['high', 'flac', '320', '128'],
+    viper_atmos: ['viper_atmos', 'flac', '320', '128'],
+    viper_clear: ['viper_clear', 'flac', '320', '128'],
+    super: ['super', 'flac', '320', '128'],
+    '320': ['320', '128'],
+    '128': ['128', '320']
+}
 const isQQPlatform = () => getCurrentPlatform() === 'qq'
-const qualityLabel = (lv) => (isQQPlatform() ? QQ_QUALITY_LABELS : NETEASE_QUALITY_LABELS)[lv] || lv
-// 按平台读取对应的 localStorage 音质（网易云 music_quality / QQ qq_music_quality）
+const isKugouPlatform = () => getCurrentPlatform() === 'kugou'
+const qualityLabel = (lv) => {
+    if (isQQPlatform()) return QQ_QUALITY_LABELS[lv] || lv
+    if (isKugouPlatform()) return KUGOU_QUALITY_LABELS[lv] || lv
+    return NETEASE_QUALITY_LABELS[lv] || lv
+}
+// 按平台读取对应的 localStorage 音质（网易云 music_quality / QQ qq_music_quality / 酷狗 kugou_music_quality）
 const readInitialQuality = () => {
-    const key = isQQPlatform() ? 'qq_music_quality' : 'music_quality'
-    const val = localStorage.getItem(key)
-    if (isQQPlatform()) return val && QQ_QUALITY_LABELS[val] ? val : '128'
+    if (isQQPlatform()) {
+        const val = localStorage.getItem('qq_music_quality')
+        return val && QQ_QUALITY_LABELS[val] ? val : '128'
+    }
+    if (isKugouPlatform()) {
+        const val = localStorage.getItem('kugou_music_quality')
+        return val && KUGOU_QUALITY_LABELS[val] ? val : '128'
+    }
     // 网易云：校验值是否仍在有效列表中（清理已移除的 sky/jymaster/dolby 等旧值）
+    const val = localStorage.getItem('music_quality')
     return val && NETEASE_QUALITY_LABELS[val] ? val : 'standard'
 }
 
@@ -76,7 +111,8 @@ export const usePlayerStore = defineStore('player', {
         currentMvPlayType: '', // 播放类型提示：m3u8/flv/live/direct，优先于 URL 后缀判断
         mvSearchCandidates: [], // 网易云 MV 搜索结果（供 UI 选择）
         showMvSearchPicker: false, // 是否显示 MV 选择弹层
-        showDesktopLyrics: localStorage.getItem('show_desktop_lyrics') === 'true',
+        // 启动时默认不自动开启桌面歌词（即使上次开启过），需用户手动点击开关
+        showDesktopLyrics: false,
         desktopLyricFont: '',
         desktopLyricColor: '#00E5FF',
         // 桌面歌词模式：'complex' 复杂模式（封面+控制+歌词）/ 'simple' 简约模式（仅歌词）
@@ -371,6 +407,7 @@ export const usePlayerStore = defineStore('player', {
                 const isLocal = typeof song.id === 'string' && song.id.startsWith('local-')
                 const isCloud = typeof song.id === 'string' && song.id.startsWith('cloud-')
                 const isQQ = song.platform === 'qq' || (song.songmid && !isLocal && !isCloud)
+                const isKugou = song.platform === 'kugou' || (song.hash && !isLocal && !isCloud && !isQQ)
 
                 if (isQQ && !url) {
                     // QQ 音乐：通过 IPC 调用 qq:song-play 获取播放地址
@@ -416,6 +453,279 @@ export const usePlayerStore = defineStore('player', {
                         }
                         this.next()
                         return
+                    }
+                } else if (isKugou && !url) {
+                    // 酷狗概念版：旧版 /song/url 优先（新版 /song/url/new 存在音频加密无法解码）
+                    const hash = song.hash || song.id
+                    const album_audio_id = song.album_audio_id || ''
+                    const album_id = song.album_id || ''
+                    let resolvedUrl = ''
+                    let resolvedQuality = ''
+                    const fallbackList = KUGOU_QUALITY_FALLBACK[this.quality] || ['128', '320']
+                    // 实测 /song/url 响应字段：
+                    //   url: [ "http://...", "http://..." ]  ← 数组，不是字符串
+                    //   backupUrl: [ "http://..." ]
+                    //   errcode: 20028 + error:"本次请求需要验证" 表示 dfid 缺失
+                    //   status:1 表示成功
+                    const pickKugouUrl = (data) => {
+                        if (!data) return ''
+                        // 响应可能是 { data: { url, ... } } 或扁平 { url, ... }
+                        const d = data?.data && typeof data.data === 'object' ? data.data : data
+                        // url 字段可能是数组或字符串
+                        const u = d.url || d.urls
+                        if (Array.isArray(u) && u.length) {
+                            const first = u[0]
+                            return typeof first === 'string' ? first : (first?.url || '')
+                        }
+                        if (typeof u === 'string' && u) return u
+                        // backupUrl 数组兜底
+                        if (Array.isArray(d.backupUrl) && d.backupUrl.length) {
+                            return d.backupUrl[0] || ''
+                        }
+                        // 兼容 urls[0].url 结构
+                        if (Array.isArray(d.urls) && d.urls[0]?.url) {
+                            return d.urls[0].url
+                        }
+                        return ''
+                    }
+                    // 1. 旧版逐档请求（可正常播放）
+                    let lastKugouErr = ''
+                    const { useKugouUserStore } = await import('./kugou-user')
+                    const hasVip = !!useKugouUserStore()?.profile?.isVip
+                    console.log(`[Kugou] 开始播放: name=${song.name}, hash=${hash}, quality=${this.quality}, hasVip=${hasVip}, album_audio_id=${album_audio_id}, album_id=${album_id}`)
+                    for (const q of fallbackList) {
+                        try {
+                            const oldRes = await kugouSongUrl(hash, q, album_id, album_audio_id)
+                            const oldData = oldRes?.data || oldRes
+                            // 打印完整请求参数和响应,便于排查 status:2 url_exists:false 问题
+                            console.log(`[Kugou] /song/url 请求参数: hash=${hash}, quality=${q}, album_id=${album_id}, album_audio_id=${album_audio_id}`)
+                            console.log(`[Kugou] /song/url quality=${q} 完整响应:`, JSON.stringify(oldData).substring(0, 500))
+                            console.log(`[Kugou] /song/url quality=${q} 响应摘要:`, JSON.stringify({
+                                errcode: oldData?.errcode,
+                                error: oldData?.error,
+                                status: oldData?.status,
+                                url_exists: !!pickKugouUrl(oldData),
+                                is_trial: oldData?.is_trial,
+                                free_part: oldData?.free_part
+                            }))
+                            // 检查是否需要验证（dfid 缺失）
+                            if (oldData?.errcode === 20028 || oldData?.error?.includes('需要验证')) {
+                                console.warn('[Kugou] /song/url 需要验证，dfid 可能缺失，跳过此档')
+                                lastKugouErr = '需要验证(dfid缺失)'
+                                continue
+                            }
+                            // 记录错误信息（VIP/版权限制等）
+                            if (oldData?.errcode && oldData.errcode !== 0) {
+                                lastKugouErr = `errcode=${oldData.errcode}` + (oldData?.error ? `(${oldData.error})` : '')
+                                console.warn(`[Kugou] /song/url quality=${q} errcode=${oldData.errcode}:`, oldData?.error || '')
+                            }
+                            const u = pickKugouUrl(oldData)
+                            if (u) {
+                                resolvedUrl = u.startsWith('http') ? u : `https:${u}`
+                                resolvedQuality = q
+                                break
+                            }
+                        } catch (e) {
+                            console.error('[Kugou] song/url error:', e)
+                        }
+                    }
+                    // 1.5 当带 album_audio_id 全部失败时,尝试不传 album_audio_id 重试
+                    // 实测: 传 album_audio_id 会触发版权限制(status:3 url_exists:false)
+                    //       不传 album_audio_id 反而能获取到 URL(status:1 url_exists:true)
+                    // 原因: album_audio_id 触发了严格的版权校验,不传则用 hash 直接匹配资源
+                    if (!resolvedUrl && album_audio_id) {
+                        console.log('[Kugou] 带 album_audio_id 全部失败,尝试不传 album_audio_id 重试...')
+                        for (const q of fallbackList) {
+                            try {
+                                const r = await kugouSongUrl(hash, q, album_id, '')
+                                const d = r?.data || r
+                                console.log(`[Kugou] 无album_audio_id /song/url quality=${q} 响应摘要:`, JSON.stringify({
+                                    status: d?.status,
+                                    url_exists: !!pickKugouUrl(d)
+                                }))
+                                const u = pickKugouUrl(d)
+                                if (u) {
+                                    resolvedUrl = u.startsWith('http') ? u : `https:${u}`
+                                    resolvedQuality = q
+                                    console.log(`[Kugou] 不传 album_audio_id 播放成功,使用 ${q} 音质`)
+                                    break
+                                }
+                            } catch (e) {
+                                console.error('[Kugou] 无album_audio_id song/url error:', e)
+                            }
+                        }
+                    }
+                    // 1.6 hash 修正：当所有音质都失败时，可能是 hash 指向了错误版本
+                    // 实测：歌单返回的 hash 可能对应"俄语/英语"版本（trans_param.language 不匹配）
+                    // 用 album_audio_id 重新搜索，找到正确版本的 hash
+                    if (!resolvedUrl && album_audio_id) {
+                        try {
+                            console.log('[Kugou] hash 修正: 用歌名重新搜索获取正确 hash...')
+                            // 用歌名搜索，从结果中找到 album_audio_id 匹配的歌曲
+                            const searchRes = await kugouSearch(song.name, 1, 30, 'song')
+                            const searchData = searchRes?.data || searchRes
+                            const searchList = searchData?.info || searchData?.songs || searchData?.list || []
+                            // 优先找 album_audio_id 完全匹配的歌曲
+                            const matched = (Array.isArray(searchList) ? searchList : []).find(s =>
+                                String(s.Audioid || s.album_audio_id || '') === String(album_audio_id)
+                            )
+                            if (matched) {
+                                const newHash = matched.FileHash || matched.hash || ''
+                                if (newHash && newHash !== hash) {
+                                    console.log(`[Kugou] hash 修正: ${hash} → ${newHash} (album_audio_id=${album_audio_id})`)
+                                    // 用新 hash 重试 /song/url
+                                    for (const q of fallbackList) {
+                                        try {
+                                            const r = await kugouSongUrl(newHash, q, album_id, album_audio_id)
+                                            const d = r?.data || r
+                                            console.log(`[Kugou] hash修正后 /song/url quality=${q} 响应:`, JSON.stringify({
+                                                status: d?.status,
+                                                errcode: d?.errcode,
+                                                url_exists: !!pickKugouUrl(d)
+                                            }))
+                                            if (d?.errcode === 20028) { continue }
+                                            const u = pickKugouUrl(d)
+                                            if (u) {
+                                                resolvedUrl = u.startsWith('http') ? u : `https:${u}`
+                                                resolvedQuality = q
+                                                // 更新 song 的 hash，后续播放/下载用新 hash
+                                                song.hash = newHash
+                                                this.currentSong.hash = newHash
+                                                console.log(`[Kugou] hash 修正成功,使用新 hash 播放 ${q}`)
+                                                break
+                                            }
+                                        } catch (e) {
+                                            console.error('[Kugou] hash修正后 song/url error:', e)
+                                        }
+                                    }
+                                } else if (newHash === hash) {
+                                    console.log('[Kugou] hash 修正: 搜索到的 hash 与原 hash 相同,跳过')
+                                }
+                            } else {
+                                console.log('[Kugou] hash 修正: 搜索结果中未找到 album_audio_id 匹配的歌曲')
+                            }
+                        } catch (e) {
+                            console.warn('[Kugou] hash 修正失败:', e.message)
+                        }
+                    }
+                    // 1.6 旧版+hash修正都失败：尝试试听版本
+                    if (!resolvedUrl) {
+                        try {
+                            const trialRes = await kugouSongUrl(hash, '128', album_id, album_audio_id, '30')
+                            const trialData = trialRes?.data || trialRes
+                            const u = pickKugouUrl(trialData)
+                            if (u) {
+                                resolvedUrl = u.startsWith('http') ? u : `https:${u}`
+                                resolvedQuality = '128(试听)'
+                                console.warn('[Kugou] 仅获取到试听版本，可能是 VIP 权限未生效或 cookie 失效')
+                            }
+                        } catch (e) {
+                            console.warn('[Kugou] free_part trial failed:', e.message)
+                        }
+                    }
+                    // 2. 旧版全部失败，尝试新版获取新 hash,再用新 hash 调旧版 /song/url
+                    // 关键发现: /song/url/new 返回的 hash 可能与原始 hash 不同(指向可播放版本)
+                    // 需要用新 hash 重新调 /song/url 才能获取播放 URL
+                    if (!resolvedUrl) {
+                        try {
+                            const newRes = await kugouSongUrlNew(hash, album_audio_id)
+                            const newData = newRes?.data || newRes
+                            console.log('[Kugou] /song/url/new 完整响应:', JSON.stringify(newData).substring(0, 500))
+
+                            // 2a. 先尝试直接从 /song/url/new 响应中提取 URL
+                            const newEntry = Array.isArray(newData) ? newData[0] : (newData?.[hash] || newData?.info?.[hash] || newData)
+                            const newUrls = newEntry?.urls || newEntry?.qualities || []
+                            console.log('[Kugou] /song/url/new 解析到 urls 数量:', Array.isArray(newUrls) ? newUrls.length : 0)
+                            for (const q of fallbackList) {
+                                const found = newUrls.find(u => (u.quality === q || u.hash_quality === q) && u.url)
+                                if (found?.url) {
+                                    resolvedUrl = found.url
+                                    resolvedQuality = q
+                                    console.log(`[Kugou] /song/url/new 成功获取 ${q} 音质 URL`)
+                                    break
+                                }
+                            }
+
+                            // 2b. 如果直接提取 URL 失败,提取新 hash 用旧版 /song/url 重试
+                            if (!resolvedUrl) {
+                                // /song/url/new 响应可能是数组 [{hash, info, ...}] 或对象
+                                const items = Array.isArray(newData) ? newData : [newEntry]
+                                for (const item of items) {
+                                    const newHash = item?.hash || item?.info?.hash || ''
+                                    // 新 hash 必须与原 hash 不同才有意义
+                                    if (newHash && newHash !== hash) {
+                                        console.log(`[Kugou] /song/url/new 返回新 hash: ${hash} → ${newHash}, 重新调 /song/url`)
+                                        for (const q of fallbackList) {
+                                            try {
+                                                const r = await kugouSongUrl(newHash, q, album_id, album_audio_id)
+                                                const d = r?.data || r
+                                                console.log(`[Kugou] 新hash /song/url quality=${q} 响应:`, JSON.stringify({
+                                                    status: d?.status,
+                                                    url_exists: !!pickKugouUrl(d)
+                                                }))
+                                                const u = pickKugouUrl(d)
+                                                if (u) {
+                                                    resolvedUrl = u.startsWith('http') ? u : `https:${u}`
+                                                    resolvedQuality = q
+                                                    song.hash = newHash
+                                                    this.currentSong.hash = newHash
+                                                    console.log(`[Kugou] 新 hash 播放成功,使用 ${q} 音质`)
+                                                    break
+                                                }
+                                            } catch (e) {
+                                                console.error('[Kugou] 新hash song/url error:', e)
+                                            }
+                                        }
+                                        // 新 hash 带 album_audio_id 失败,尝试不传 album_audio_id
+                                        if (!resolvedUrl) {
+                                            console.log('[Kugou] 新hash 带 album_audio_id 失败,尝试不传...')
+                                            for (const q of fallbackList) {
+                                                try {
+                                                    const r = await kugouSongUrl(newHash, q, album_id, '')
+                                                    const d = r?.data || r
+                                                    const u = pickKugouUrl(d)
+                                                    if (u) {
+                                                        resolvedUrl = u.startsWith('http') ? u : `https:${u}`
+                                                        resolvedQuality = q
+                                                        song.hash = newHash
+                                                        this.currentSong.hash = newHash
+                                                        console.log(`[Kugou] 新hash 不传 album_audio_id 播放成功,使用 ${q} 音质`)
+                                                        break
+                                                    }
+                                                } catch (e) {
+                                                    console.error('[Kugou] 新hash 无album_audio_id error:', e)
+                                                }
+                                            }
+                                        }
+                                        if (resolvedUrl) break
+                                    }
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('[Kugou] song/url/new fallback failed:', e.message)
+                        }
+                    }
+                    if (!resolvedUrl) {
+                        // 不自动 next，避免列表全是 VIP 时无限跳过
+                        let errMsg = '酷狗资源不可用'
+                        if (lastKugouErr) {
+                            errMsg += `（${lastKugouErr}）`
+                        } else if (hasVip) {
+                            errMsg += '（该歌曲可能为独家版权,请尝试在酷狗官方 App 播放）'
+                        } else {
+                            errMsg += '（可能需要 VIP 或版权限制）'
+                        }
+                        useMessageStore().error(`播放失败：[${song.name}] ${errMsg}`)
+                        this.isPlaying = false
+                        return
+                    }
+                    url = resolvedUrl
+                    if (!options.suppressQualityPrompt) {
+                        if (resolvedQuality !== this.quality) {
+                            useMessageStore().info(`当前音质无资源，已回退到：${qualityLabel(resolvedQuality)}`)
+                        } else {
+                            useMessageStore().info(`当前播放音质：${qualityLabel(resolvedQuality)}`)
+                        }
                     }
                 } else if (!url && !isLocal && !isCloud) {
                     // Hi-Res/高清环绕声等高阶音质多数歌曲无资源，逐级回退保证可播放
@@ -470,7 +780,14 @@ export const usePlayerStore = defineStore('player', {
                     albummid: song.albummid || '',
                     albumid: song.albumid || 0,
                     album: song.album || song.al?.name || '',
-                    vid: song.vid || ''
+                    vid: song.vid || '',
+                    // 酷狗歌曲字段:收藏/评论/播放需要 hash/album_audio_id/mixsongid/album_id
+                    hash: song.hash || '',
+                    album_audio_id: song.album_audio_id || '',
+                    mixsongid: song.mixsongid || '',
+                    album_id: song.album_id || song.albumid || '',
+                    isVip: song.isVip || false,
+                    mvHash: song.mvHash || ''
                 }
 
                 if (!normalized.al.picUrl) {
@@ -522,7 +839,60 @@ export const usePlayerStore = defineStore('player', {
                 // - 线上歌曲：缓存 → QQ匹配 → 网易云回退
                 // - QQ 歌曲：静默自动加载(和网易云同规格,不弹窗)
                 //   流程:缓存 → QQ 歌词源自动匹配 → 网易云 API 回退 → 都失败显示"纯音乐"
-                if (isQQ) {
+                // - 酷狗歌曲：静默走酷狗歌词源 IPC（按 hash 直接获取，不走 QQ 优先）
+                if (isKugou) {
+                    ;(async () => {
+                        try {
+                            const hash = song.hash || song.id
+                            const cacheKey = `lyric_cache_kugou_${hash}`
+                            // 1. 先读 localStorage 缓存
+                            const cachedLyric = localStorage.getItem(cacheKey)
+                            if (cachedLyric) {
+                                try {
+                                    const cached = JSON.parse(cachedLyric)
+                                    if (cached.yrc) this.parseYrcLyrics(cached.yrc, cached.ytlrc || cached.trans || '')
+                                    if (cached.lrc) this.parseLyrics(cached.lrc, cached.tlrc || cached.trans || '')
+                                    this.lyricSource = 'kugou'
+                                    console.log(`--- [Lyric] Kugou 缓存命中: ${normalized.name}`)
+                                    return
+                                } catch (e) { /* ignore */ }
+                            }
+                            // 2. 调 IPC getKugouLyric(hash) 静默获取
+                            const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
+                            if (bridge && bridge.getKugouLyric) {
+                                try {
+                                    const res = await bridge.getKugouLyric({ hash })
+                                    if (res && (res.lrc || res.yrc)) {
+                                        if (res.yrc) this.parseYrcLyrics(res.yrc, res.trans || '')
+                                        if (res.lrc) this.parseLyrics(res.lrc, res.trans || '')
+                                        this.lyricSource = 'kugou'
+                                        // 写入缓存
+                                        try {
+                                            localStorage.setItem(cacheKey, JSON.stringify({
+                                                lrc: res.lrc || '',
+                                                yrc: res.yrc || '',
+                                                tlrc: res.trans || '',
+                                                ytlrc: res.trans || ''
+                                            }))
+                                        } catch (e) { /* ignore */ }
+                                        console.log(`--- [Lyric] Kugou 自动获取成功: ${normalized.name}`)
+                                        return
+                                    }
+                                } catch (e) {
+                                    console.warn('[Lyric] Kugou IPC 异常:', e.message)
+                                }
+                            }
+                            // 3. 都失败：显示"纯音乐"(不弹窗,与 QQ 一致)
+                            console.log(`--- [Lyric] Kugou 歌曲无歌词,显示纯音乐: ${normalized.name}`)
+                            this.lyrics = [{ time: 0, text: '纯音乐，请欣赏' }]
+                            this.yrcLyrics = null
+                            this.lyricSource = ''
+                        } catch (err) {
+                            console.error('[Lyric] Kugou lyric error:', err)
+                            if (!this.lyrics.length) this.lyrics = []
+                        }
+                    })()
+                } else if (isQQ) {
                     ;(async () => {
                         try {
                             const songmid = song.songmid || song.id
@@ -725,8 +1095,9 @@ export const usePlayerStore = defineStore('player', {
                             }
                         }))
                     }
-                } else if (song.id) {
+                } else if (song.id && !isKugou) {
                     // 检查 Electron 本地文件缓存（优先级最高，支持离线）
+                    // 注：kugou 歌曲已在 isKugou 分支处理，此处跳过避免误走 QQ 优先
                     const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
                     let fileCacheLoaded = false
                     
@@ -898,6 +1269,17 @@ export const usePlayerStore = defineStore('player', {
                 this.isLiked = liked.some(s => (s.songmid || s.id) === (this.currentSong.songmid || id))
                 return
             }
+            // 酷狗平台：通过 likedSongsHashes 判断
+            if (this.currentSong?.platform === 'kugou') {
+                const { useKugouUserStore } = await import('./kugou-user')
+                const kugouUser = useKugouUserStore()
+                // likedSongsHashes 为空时异步拉取一次
+                if (kugouUser.isLoggedIn && kugouUser.likedPlaylistId && kugouUser.likedSongsHashes.length === 0) {
+                    await kugouUser.fetchLikedSongs()
+                }
+                this.isLiked = kugouUser.isSongLiked(this.currentSong.hash)
+                return
+            }
             const { useUserStore } = await import('./user')
             const user = useUserStore()
             if (user.isLoggedIn) {
@@ -911,6 +1293,30 @@ export const usePlayerStore = defineStore('player', {
             // 点击红心时提示用户去官方 App 操作,不修改本地状态
             if (this.currentSong.platform === 'qq') {
                 useMessageStore().info('QQ 音乐红心请前往 QQ 音乐官方 App 操作', 3000)
+                return
+            }
+            // 酷狗平台：通过"我喜欢"歌单操作
+            if (this.currentSong.platform === 'kugou') {
+                const { useKugouUserStore } = await import('./kugou-user')
+                const kugouUser = useKugouUserStore()
+                const ok = await kugouUser.toggleLikeSong({
+                    ...this.currentSong,
+                    isLiked: this.isLiked
+                })
+                if (ok) {
+                    this.isLiked = !this.isLiked
+                    // 同步更新 likedSongsHashes
+                    const hash = this.currentSong.hash
+                    if (hash) {
+                        if (this.isLiked) {
+                            if (!kugouUser.likedSongsHashes.includes(hash)) {
+                                kugouUser.likedSongsHashes.push(hash)
+                            }
+                        } else {
+                            kugouUser.likedSongsHashes = kugouUser.likedSongsHashes.filter(h => h !== hash)
+                        }
+                    }
+                }
                 return
             }
             const { useUserStore } = await import('./user')
@@ -999,6 +1405,7 @@ export const usePlayerStore = defineStore('player', {
             const isLocal = String(nextSong.id).startsWith('local-')
             if (isLocal) return // 本地歌曲不预加载（路径协议已注册，加载快）
             const isQQ = nextSong.platform === 'qq' || !!nextSong.songmid
+            const isKugou = nextSong.platform === 'kugou' || (!!nextSong.hash && !isQQ)
             const preload = new Audio()
             preload.crossOrigin = 'anonymous'
             preload.preload = 'auto'
@@ -1024,6 +1431,44 @@ export const usePlayerStore = defineStore('player', {
                         preload.load()
                     }
                 }).catch(e => console.error('[Preload] QQ song error:', e))
+            } else if (isKugou) {
+                // 酷狗歌曲预加载：旧版 /song/url 优先（新版有加密无法解码）
+                import('../api/kugou').then(({ kugouSongUrl }) => {
+                    const hash = nextSong.hash || nextSong.id
+                    const fallbackList = KUGOU_QUALITY_FALLBACK[this.quality] || ['128', '320']
+                    // /song/url 响应 url 是数组（不是字符串），backupUrl 是备用数组
+                    const pickPreloadUrl = (data) => {
+                        if (!data) return ''
+                        const u = data.url
+                        if (Array.isArray(u) && u.length) return u[0] || ''
+                        if (typeof u === 'string' && u) return u
+                        if (Array.isArray(data.backupUrl) && data.backupUrl.length) return data.backupUrl[0] || ''
+                        if (Array.isArray(data.urls) && data.urls[0]?.url) return data.urls[0].url
+                        return ''
+                    }
+                    // 逐档请求旧版，拿到第一个有 url 的就用于预加载
+                    return (async () => {
+                        for (const q of fallbackList) {
+                            try {
+                                const res = await kugouSongUrl(hash, q, nextSong.album_id || '', nextSong.album_audio_id || '')
+                                const data = res?.data || res
+                                // 检查是否需要验证（dfid 缺失）
+                                if (data?.errcode === 20028 || data?.error?.includes('需要验证')) continue
+                                const u = pickPreloadUrl(data)
+                                if (u) {
+                                    return u.startsWith('http') ? u : `https:${u}`
+                                }
+                            } catch (e) { /* continue */ }
+                        }
+                        return ''
+                    })()
+                }).then(u => {
+                    if (this._preloadAudio !== preload) return
+                    if (u) {
+                        preload.src = u
+                        preload.load()
+                    }
+                }).catch(e => console.error('[Preload] Kugou song error:', e))
             } else {
                 // 网易云歌曲
                 import('../api').then(({ getSongUrl }) => {
@@ -1514,9 +1959,82 @@ export const usePlayerStore = defineStore('player', {
         },
         // 自动模式（旧调用入口）：先本地，找不到再线上
         async playMvAuto() {
+            // 酷狗平台优先用酷狗 MV API
+            const isKugou = this.currentSong?.platform === 'kugou' || !!this.currentSong?.hash
+            if (isKugou && this.currentSong?.album_audio_id) {
+                const ok = await this.playKugouMv()
+                if (ok) return
+            }
             const ok = await this.playLocalMv()
             if (ok) return
             await this.playOnlineMv()
+        },
+        // 酷狗 MV 播放：用 /kmr/audio/mv 拿 mv hash，再调 /video/url 拿播放地址
+        // 返回 true 表示已开始播放
+        async playKugouMv() {
+            const song = this.currentSong
+            if (!song?.name) return false
+            const album_audio_id = song.album_audio_id || ''
+            if (!album_audio_id) {
+                useMessageStore().warning('该歌曲缺少 album_audio_id，无法获取酷狗 MV')
+                return false
+            }
+            // 暂停音乐
+            if (this.isPlaying) {
+                this.audio.pause()
+                this.isPlaying = false
+            }
+            try {
+                // 1. /kmr/audio/mv 拿 MV 信息（含 mv hash）
+                const mvRes = await kugouSongMv(album_audio_id, 'mkv,h264,h265,authors')
+                const mvData = mvRes?.data?.[0] || mvRes?.data?.[album_audio_id] || mvRes?.data || {}
+                // mv hash 可能在 mvhash / video_hash / hash 字段
+                const mvHash = mvData?.mvhash || mvData?.video_hash || mvData?.hash || mvData?.mkv?.[0]?.hash || ''
+                const mvId = mvData?.videoid || mvData?.id || ''
+                if (!mvHash && !mvId) {
+                    useMessageStore().warning('酷狗未找到该歌曲的 MV')
+                    return false
+                }
+                // 2. 用 mv hash 调 /video/url 拿播放地址
+                let videoUrl = ''
+                if (mvHash) {
+                    const urlRes = await kugouVideoUrl(mvHash)
+                    const urlData = urlRes?.data || urlRes || {}
+                    // url 可能是数组或字符串
+                    const u = urlData?.url
+                    if (Array.isArray(u) && u.length) videoUrl = u[0]
+                    else if (typeof u === 'string' && u) videoUrl = u
+                    else if (Array.isArray(urlData?.backupUrl) && urlData.backupUrl.length) videoUrl = urlData.backupUrl[0]
+                }
+                // 3. 如果有 mvId 但没拿到 url，尝试 /video/detail 拿更高清的 hash
+                if (!videoUrl && mvId) {
+                    const detailRes = await kugouVideoDetail(mvId)
+                    const detailData = detailRes?.data?.[0] || detailRes?.data || {}
+                    const higherHash = detailData?.hash || detailData?.sd_hash || detailData?.hd_hash || ''
+                    if (higherHash) {
+                        const urlRes2 = await kugouVideoUrl(higherHash)
+                        const urlData2 = urlRes2?.data || urlRes2 || {}
+                        const u2 = urlData2?.url
+                        if (Array.isArray(u2) && u2.length) videoUrl = u2[0]
+                        else if (typeof u2 === 'string' && u2) videoUrl = u2
+                        else if (Array.isArray(urlData2?.backupUrl) && urlData2.backupUrl.length) videoUrl = urlData2.backupUrl[0]
+                    }
+                }
+                if (!videoUrl) {
+                    useMessageStore().warning('酷狗 MV 资源不可用（可能 VIP 或版权限制）')
+                    return false
+                }
+                this.currentMvUrl = videoUrl.startsWith('http') ? videoUrl : `https:${videoUrl}`
+                this.currentMvId = mvId || mvHash
+                this.currentMvTitle = song.name + ' - MV'
+                this.currentMvPlayType = 'kugou'
+                this.showMvPlayer = true
+                return true
+            } catch (e) {
+                console.error('[Kugou MV] play error:', e)
+                useMessageStore().error('酷狗 MV 播放失败：' + (e.message || '未知错误'))
+                return false
+            }
         },
         addToRecent(song) {
             const index = this.recentSongs.findIndex(s => s.id === song.id)
@@ -1563,10 +2081,29 @@ export const usePlayerStore = defineStore('player', {
         },
         setQuality(q) {
             this.quality = q
-            // QQ 与网易云音质独立存储，避免互相覆盖
-            localStorage.setItem(isQQPlatform() ? 'qq_music_quality' : 'music_quality', q)
-            // QQ 平台：5 种真实音质（128/320/m4a/flac/ape），无沉浸声型
+            // 三平台音质独立存储，避免互相覆盖
+            const key = isQQPlatform() ? 'qq_music_quality'
+                : isKugouPlatform() ? 'kugou_music_quality'
+                : 'music_quality'
+            localStorage.setItem(key, q)
+            // QQ 平台：4 种真实音质（128/320/m4a/flac），无沉浸声型
             if (this.currentSong?.platform === 'qq') {
+                if (this.currentSong.id && this.isPlaying) {
+                    const currentTime = this.currentTime
+                    const songName = this.currentSong.name
+                    this.playSong(this.currentSong, [], { suppressQualityPrompt: true }).then(() => {
+                        this.seek(currentTime)
+                        useMessageStore().success(`${songName} 已切换至 ${qualityLabel(q)} 音质`)
+                    }).catch(() => {
+                        useMessageStore().error('切换音质失败，请稍后重试')
+                    })
+                } else {
+                    useMessageStore().success(`已设置默认音质为 ${qualityLabel(q)}`)
+                }
+                return
+            }
+            // 酷狗概念版：7 档真实音质（128/320/flac/high/viper_atmos/viper_clear/super）
+            if (this.currentSong?.platform === 'kugou') {
                 if (this.currentSong.id && this.isPlaying) {
                     const currentTime = this.currentTime
                     const songName = this.currentSong.name
@@ -1963,6 +2500,124 @@ export const usePlayerStore = defineStore('player', {
                 return res || { success: false }
             } catch (err) {
                 console.error('[QQ] download error:', err)
+                useMessageStore().error('下载任务开启失败：' + (err.message || '网络或环境异常'))
+                return { success: false, error: err.message }
+            }
+        },
+
+        // 酷狗下载：默认走新版 /song/url/new 拿高品质 URL，失败回退旧版逐档请求
+        // 然后调用主进程 download-song 落盘（与 QQ/网易云使用同一通道）
+        async downloadKugouSong(song) {
+            if (!song || !(song.hash || song.id)) {
+                useMessageStore().error('无效的酷狗歌曲，无法下载')
+                return { success: false, error: 'invalid song' }
+            }
+            const hash = song.hash || song.id
+            const album_audio_id = song.album_audio_id || ''
+            const album_id = song.album_id || ''
+
+            // 0. 优先复用当前播放 URL（避免重复请求被限流/URL 过期）
+            // 播放时获取的 URL 有时效性，下载同一首歌时直接复用
+            if (this.currentSong?.hash === hash && this.audio?.src && this.audio.src.startsWith('http')) {
+                console.log('[Kugou Download] 复用当前播放 URL:', this.audio.src.substring(0, 60) + '...')
+                const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
+                if (bridge && bridge.invoke) {
+                    useMessageStore().info(`正在下载酷狗音乐（${qualityLabel(this.quality)}）...`)
+                    try {
+                        const res = await bridge.invoke('download-song', {
+                            url: this.audio.src,
+                            name: song.name || '未知歌曲',
+                            artist: song.artist || (song.ar ? song.ar.map(a => a.name).join('/') : ''),
+                            picUrl: song.picUrl || song.al?.picUrl || ''
+                        })
+                        if (res && res.success) {
+                            useMessageStore().success('酷狗音乐下载并保存成功！')
+                        } else if (res && !res.canceled) {
+                            useMessageStore().error(`下载失败：${res.error || '未知错误'}`)
+                        }
+                        return res || { success: false }
+                    } catch (err) {
+                        console.error('[Kugou Download] 复用播放URL失败，回退正常流程:', err.message)
+                    }
+                }
+            }
+
+            // 1. 旧版逐档请求优先（新版 /song/url/new 有音频加密无法解码）
+            let url = ''
+            let qualityUsed = this.quality
+            const fallbackList = KUGOU_QUALITY_FALLBACK[this.quality] || ['128', '320']
+            console.log(`[Kugou Download] 开始下载: name=${song.name}, hash=${hash}, 当前音质=${this.quality}, 回退链=[${fallbackList.join(',')}]`)
+            // /song/url 响应中 url 是数组（不是字符串），backupUrl 是备用数组
+            const pickKugouDlUrl = (data) => {
+                if (!data) return ''
+                const u = data.url
+                if (Array.isArray(u) && u.length) return u[0] || ''
+                if (typeof u === 'string' && u) return u
+                if (Array.isArray(data.backupUrl) && data.backupUrl.length) return data.backupUrl[0] || ''
+                if (Array.isArray(data.urls) && data.urls[0]?.url) return data.urls[0].url
+                return ''
+            }
+            for (const q of fallbackList) {
+                try {
+                    const oldRes = await kugouSongUrl(hash, q, album_id, album_audio_id)
+                    const data = oldRes?.data || oldRes
+                    console.log(`[Kugou Download] /song/url quality=${q} errcode=${data?.errcode}, url_exists=${!!pickKugouDlUrl(data)}`)
+                    // 检查是否需要验证（dfid 缺失）
+                    if (data?.errcode === 20028 || data?.error?.includes('需要验证')) {
+                        continue
+                    }
+                    const u = pickKugouDlUrl(data)
+                    if (u) {
+                        url = u.startsWith('http') ? u : `https:${u}`
+                        qualityUsed = q
+                        break
+                    }
+                } catch (e) { /* continue */ }
+            }
+
+            // 2. 旧版全部失败，尝试新版兜底（可能加密无法解码，仅作最后尝试）
+            if (!url) {
+                try {
+                    const newRes = await kugouSongUrlNew(hash, album_audio_id)
+                    const data = newRes?.data || newRes
+                    const entry = data?.[hash] || data?.info?.[hash] || data
+                    const urls = entry?.urls || entry?.qualities || []
+                    for (const q of fallbackList) {
+                        const found = urls.find(u => (u.quality === q || u.hash_quality === q) && u.url)
+                        if (found?.url) { url = found.url; qualityUsed = q; break }
+                    }
+                } catch (e) {
+                    console.warn('[Kugou Download] new url fallback failed:', e.message)
+                }
+            }
+
+            if (!url) {
+                useMessageStore().error(`下载失败：[${song.name || hash}] 酷狗资源不可用（可能 VIP 或版权限制）`)
+                return { success: false, error: 'no url' }
+            }
+
+            useMessageStore().info(`正在下载酷狗音乐（${qualityLabel(qualityUsed)}）...`)
+
+            const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
+            if (!bridge || !bridge.invoke) {
+                useMessageStore().error('下载失败：IPC 桥不可用')
+                return { success: false, error: 'no bridge' }
+            }
+            try {
+                const res = await bridge.invoke('download-song', {
+                    url,
+                    name: song.name || '未知歌曲',
+                    artist: song.artist || (song.ar ? song.ar.map(a => a.name).join('/') : ''),
+                    picUrl: song.picUrl || song.al?.picUrl || ''
+                })
+                if (res && res.success) {
+                    useMessageStore().success('酷狗音乐下载并保存成功！')
+                } else if (res && !res.canceled) {
+                    useMessageStore().error(`下载失败：${res.error || '未知错误'}`)
+                }
+                return res || { success: false }
+            } catch (err) {
+                console.error('[Kugou] download error:', err)
                 useMessageStore().error('下载任务开启失败：' + (err.message || '网络或环境异常'))
                 return { success: false, error: err.message }
             }

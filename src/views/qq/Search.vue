@@ -287,7 +287,7 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
             <div class="qq-search-content" v-loading="loading">
                 <!-- 歌曲 -->
                 <div v-if="activeTab === 'song'" class="qq-song-list">
-                    <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
+                    <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @dblclick="playSong(s)">
                         <span class="qq-song-index">{{ i + 1 }}</span>
                         <img v-if="s.picUrl" :src="s.picUrl" class="qq-song-cover" loading="lazy" />
                         <div class="qq-song-info">

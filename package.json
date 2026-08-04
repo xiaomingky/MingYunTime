@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "3.0.1",
+  "version": "3.1.1",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "set NODE_OPTIONS=--max-old-space-size=256 && vite",
     "dev:light": "set NODE_OPTIONS=--max-old-space-size=192 && vite",
-    "build": "node scripts/ensure-qq-music-dist.cjs && vite build && electron-builder",
+    "build": "node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && vite build && electron-builder",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -87,6 +87,14 @@
       {
         "from": "electron/qq-styletext-polyfill.cjs",
         "to": "qq-styletext-polyfill.cjs"
+      },
+      {
+        "from": "resources/kugou-music-api",
+        "to": "kugou-music-api"
+      },
+      {
+        "from": "resources/netease-api",
+        "to": "netease-api"
       }
     ],
     "fileAssociations": [

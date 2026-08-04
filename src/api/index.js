@@ -16,6 +16,12 @@ export const PLATFORMS = {
         label: 'QQ 音乐',
         themeColor: '#31C27C',
         icon: 'qq'
+    },
+    kugou: {
+        key: 'kugou',
+        label: '酷狗概念版',
+        themeColor: '#2CA2F5',
+        icon: 'kugou'
     }
 }
 
@@ -23,17 +29,23 @@ export const getCurrentPlatform = () => localStorage.getItem('current_platform')
 export const setCurrentPlatform = (key) => localStorage.setItem('current_platform', key)
 export const isQQPlatform = () => getCurrentPlatform() === 'qq'
 export const isNeteasePlatform = () => getCurrentPlatform() === 'netease'
+export const isKugouPlatform = () => getCurrentPlatform() === 'kugou'
 
 // API 线路配置：用户可在关闭选项下拉框中切换
-// 主线路：VITE_API_BASE_URL 环境变量配置（默认 https://api.xiaomingky.cn）
-// 推荐线路：https://api2.xiaomingky.cn/
-// 备用线路：https://api3.xiaomingky.cn/
+// 主线路：本地自部署的 NeteaseCloudMusicApiEnhanced（http://localhost:3100，由 Electron 主进程启动）
+// 推荐线路：在线备用 https://api.xiaomingky.cn/
+// 备用线路：https://api2.xiaomingky.cn/
 // 切换后写入 localStorage: 'api_line'，优先级高于环境变量
+// 主线路为本地服务，启动时若不可用会自动回退到在线线路
+const NETEASE_LOCAL_BASE = 'http://localhost:3100'
 export const API_LINES = [
-    { key: 'main', label: '主线路', url: import.meta.env.VITE_API_BASE_URL || '' },
+    { key: 'main', label: '主线路', url: NETEASE_LOCAL_BASE },
     { key: 'recommended', label: '推荐线路', url: 'https://api2.xiaomingky.cn/' },
     { key: 'backup', label: '备用线路', url: 'https://api3.xiaomingky.cn/' }
 ]
+
+// 本地服务可用性标记（启动时假设可用，首次连接失败后标记为不可用）
+let _neteaseLocalAvailable = true
 
 function getCurrentApiBaseUrl() {
     const savedKey = localStorage.getItem('api_line')
@@ -50,12 +62,34 @@ const request = axios.create({
     withCredentials: true
 })
 
+// 启动时异步检测本地服务可用性
+;(async () => {
+    try {
+        const res = await fetch(`${NETEASE_LOCAL_BASE}/search/hot`, {
+            signal: AbortSignal.timeout(3000)
+        })
+        if (res.ok) {
+            _neteaseLocalAvailable = true
+            console.log('[NetEase API] 使用本地自部署服务:', NETEASE_LOCAL_BASE)
+        } else {
+            throw new Error('local not ok')
+        }
+    } catch (e) {
+        _neteaseLocalAvailable = false
+        const onlineUrl = API_LINES.find(l => l.key === 'recommended')?.url || API_LINES[1].url
+        request.defaults.baseURL = onlineUrl
+        console.warn('[NetEase API] 本地服务不可用,回退到在线线路:', onlineUrl)
+    }
+})()
+
 // 运行时切换 API 线路（无需刷新页面，立即生效）
 export function switchApiLine(lineKey) {
     const line = API_LINES.find(l => l.key === lineKey)
     if (!line) return false
     localStorage.setItem('api_line', lineKey)
     request.defaults.baseURL = line.url
+    // 切换到主线路时重置本地可用性标记，允许再次检测
+    if (lineKey === 'main') _neteaseLocalAvailable = true
     return true
 }
 
@@ -114,6 +148,23 @@ request.interceptors.response.use(
         return data
     },
     error => {
+        // 本地服务连接失败时自动切换到在线线路并重试一次
+        const currentBase = request.defaults.baseURL || ''
+        if (_neteaseLocalAvailable && currentBase.startsWith('http://localhost')) {
+            if (error.code === 'ECONNREFUSED' || error.code === 'ECONNABORTED' ||
+                (error.message && error.message.includes('Network Error'))) {
+                console.warn('[NetEase API] 本地服务连接失败,切换到在线线路')
+                _neteaseLocalAvailable = false
+                const onlineUrl = API_LINES.find(l => l.key === 'recommended')?.url || API_LINES[1].url
+                request.defaults.baseURL = onlineUrl
+                const config = error.config
+                if (config && !config._retried) {
+                    config._retried = true
+                    config.baseURL = onlineUrl
+                    return request(config)
+                }
+            }
+        }
         // 如果后端返回了错误但依然有 body (比如 400 提示验证码已发送)
         if (error.response && error.response.data) {
             return error.response.data

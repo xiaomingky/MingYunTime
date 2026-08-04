@@ -3,7 +3,7 @@ import { PLATFORMS, getCurrentPlatform, setCurrentPlatform } from '../api'
 
 // 平台切换 Store
 // 维护当前平台状态，提供切换方法（切换后由调用方触发页面刷新）
-// 平台隔离：网易云登录态在 music_cookie/user_profile，QQ 登录态在 qq_cookie/qq_profile
+// 平台隔离：网易云登录态在 music_cookie/user_profile，QQ 登录态在 qq_cookie/qq_profile，酷狗登录态在 kugou_cookie/kugou_profile
 export const usePlatformStore = defineStore('platform', {
     state: () => ({
         current: getCurrentPlatform(),
@@ -12,6 +12,7 @@ export const usePlatformStore = defineStore('platform', {
     getters: {
         isNetease: (state) => state.current === 'netease',
         isQQ: (state) => state.current === 'qq',
+        isKugou: (state) => state.current === 'kugou',
         currentPlatform: (state) => PLATFORMS[state.current] || PLATFORMS.netease,
         themeColor: (state) => (PLATFORMS[state.current] || PLATFORMS.netease).themeColor
     },

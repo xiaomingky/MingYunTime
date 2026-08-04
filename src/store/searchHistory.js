@@ -67,7 +67,9 @@ export const useSearchHistoryStore = defineStore('searchHistory', () => {
     }
 
     // 获取某模块的热门推荐
+    // 音乐模块按平台细分(music-netease/music-kugou/music-qq),热门词回退到 music
     function getHotKeywords(module) {
+        if (module && module.startsWith('music-')) return HOT_KEYWORDS['music'] || []
         return HOT_KEYWORDS[module] || []
     }
 

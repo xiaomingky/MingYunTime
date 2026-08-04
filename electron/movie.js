@@ -240,7 +240,6 @@ async function getHome(sourceId) {
     sections.hot = sections.latest.slice(0, 18)
     sections.ranking = sections.latest.slice(0, 10)
 
-    console.log(`[Movie] ${src.label}首页: latest=${sections.latest.length}`)
     return {
       latest: sections.latest.slice(0, 30),
       hot: sections.hot,
@@ -431,4 +430,4 @@ ipcMain.handle('movie:parse-playurl', async (_, { source, episodeUrl }) => {
   }
 })
 
-console.log('[Movie] 模块已加载（1源：神马电影 smdyu.com）')
+

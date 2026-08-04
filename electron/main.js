@@ -35,9 +35,12 @@ import './movie.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
 import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload } from './download-manager.js'
 // 多平台歌词搜索（QQ + 酷狗）—— 必须用静态 import，否则 vite 打包后 dist-electron 下找不到模块
-import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ } from './lyric-providers.js'
+import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ, getKugouLyric } from './lyric-providers.js'
 // QQ 音乐 API 子进程(@sansenjian/qq-music-api,监听 3200 端口)
 import { startQQMusicAPI, stopQQMusicAPI } from './qq-music.js'
+// 酷狗音乐 API 子进程(KuGouMusicApi,监听 3300 端口,platform=lite 概念版)
+import { startKugouMusicAPI, stopKugouMusicAPI } from './kugou-music.js'
+import { startNeteaseAPI, stopNeteaseAPI } from './netease-api.js'
 
 // --- Win7 兼容性初始化 ---
 if (process.platform === 'win32') {
@@ -642,6 +645,16 @@ ipcMain.handle('get-qq-lyric', async (_, { songName, artist, duration }) => {
     }
 })
 
+// 线上歌曲用：酷狗歌词直接获取（按 hash，不走搜索匹配）
+ipcMain.handle('get-kugou-lyric', async (_, { hash }) => {
+    try {
+        if (!hash) return { lrc: '', yrc: '', trans: '' }
+        return await getKugouLyric(hash)
+    } catch (err) {
+        return { lrc: '', yrc: '', trans: '', error: err.message }
+    }
+})
+
 // 保存英文解析缓存（本地歌曲旁边存 .analysis.json）
 ipcMain.handle('save-english-analysis', async (_, { songPath, analysis }) => {
     try {
@@ -693,7 +706,6 @@ ipcMain.handle('save-online-lyric', async (_, { songId, songName, artist, lrc, t
         ].join('\n')
         
         fs.writeFileSync(filePath, meta + content, 'utf8')
-        console.log(`[LyricCache] 已保存歌词: ${fileName}`)
         return { success: true, path: filePath }
     } catch (err) { 
         console.error('[LyricCache] 保存失败:', err)
@@ -739,7 +751,6 @@ ipcMain.handle('save-online-english-analysis', async (_, { songId, songName, art
         const filePath = path.join(analysisDir, fileName)
         
         fs.writeFileSync(filePath, JSON.stringify(analysis, null, 2), 'utf8')
-        console.log(`[AnalysisCache] 已保存解析: ${fileName}`)
         return { success: true, path: filePath }
     } catch (err) { 
         console.error('[AnalysisCache] 保存失败:', err)
@@ -2403,7 +2414,6 @@ function checkForUpdates() {
                 const encodedFileName = encodeURIComponent(`茗韵时光 Setup ${latestVersion}.exe`)
                 const directDownload = `https://github.com/xiaomingky/MingYunTime/releases/download/${tag}/${encodedFileName}`
                 const downloadUrl = asset?.browser_download_url || directDownload
-                console.log('[Update] latest:', tag, 'current:', currentVersion)
                 if (latestVersion && latestVersion !== currentVersion) {
                     win?.webContents.send('update-available', tag, notes, downloadUrl)
                 } else {
@@ -2423,6 +2433,10 @@ function checkForUpdates() {
 app.whenReady().then(() => {
     // --- 启动 QQ 音乐 API 子进程(监听 3200 端口) ---
     startQQMusicAPI()
+    // --- 启动酷狗音乐 API 子进程(监听 3300 端口,概念版 platform=lite) ---
+    startKugouMusicAPI()
+    // --- 启动网易云 API 子进程(NeteaseCloudMusicApiEnhanced,监听 3100 端口) ---
+    startNeteaseAPI()
 
     // --- Electron 22 兼容性协议注册 (Win7 支持) ---
 
@@ -3017,17 +3031,13 @@ async function saveMP3Metadata(songPath, metadata, coverBuf, coverMime, lyrics) 
     if (coverBuf && coverBuf.length > 0) {
         try {
             await writeMP3CoverWithFfmpeg(songPath, coverBuf, coverMime)
-            console.log('[saveMP3Metadata] cover written (ffmpeg APIC):', { mime: coverMime, size: coverBuf.length })
         } catch (e) {
             // ffmpeg 失败时 fallback 到手动构建标准 APIC frame
-            console.warn('[saveMP3Metadata] ffmpeg cover failed, fallback to manual APIC:', e.message)
             writeMP3CoverStandard(songPath, coverBuf, coverMime)
-            console.log('[saveMP3Metadata] cover written (manual APIC fallback):', { mime: coverMime, size: coverBuf.length })
         }
         // 验证封面是否真的写入
         try {
-            const read = NodeID3.read(songPath)
-            console.log('[saveMP3Metadata] verify after write:', { hasImage: !!read.image, imageMime: read.image?.mime, imageSize: read.image?.imageBuffer?.length })
+            NodeID3.read(songPath)
         } catch (e) {
             console.warn('[saveMP3Metadata] verify read failed:', e.message)
         }
@@ -3354,7 +3364,6 @@ async function compressCoverForVorbis(coverBuf) {
             if (b64Len < 28000) {
                 return buf
             }
-            console.log(`[vorbis-cover] preset ${preset.scale}x q${preset.q} -> ${buf.length}B (b64~${b64Len}), still too large, trying next`)
         }
         // 所有预设都不够小，返回最后一个结果（最小那个）
         return fs.readFileSync(outPath)
@@ -3433,7 +3442,6 @@ function injectFlacComments(filePath, updates) {
         const id3Size = ((buf[6] & 0x7F) << 21) | ((buf[7] & 0x7F) << 14) |
                        ((buf[8] & 0x7F) << 7) | (buf[9] & 0x7F)
         flacStart = 10 + id3Size
-        console.log('[injectFlacComments] 检测到 ID3v2 前置标签,已移除:', { id3Size, flacStart })
     }
     if (buf.length < flacStart + 4 || buf.toString('latin1', flacStart, flacStart + 4) !== 'fLaC') {
         throw new Error('非有效 FLAC 文件')
@@ -3562,7 +3570,7 @@ ipcMain.handle('write-upload-file', async (_, { filePath, metadata, coverDataUrl
         const coverMime = getCoverMime(coverDataUrl)
         let coverBuf = await resizeCover(coverDataUrl)
         if (actualFmt && actualFmt !== ext.replace('.', '') && actualFmt !== 'm4a') {
-            console.log('[write-upload-file] 格式与扩展名不符,按实际格式处理:', { ext, actualFmt, filePath })
+            // 格式与扩展名不符,按实际格式处理
         }
         // MP3：NodeID3 写文本标签 + ffmpeg 写标准 APIC frame（确保跨应用兼容）
         if (fmt === 'mp3') {
@@ -3582,7 +3590,6 @@ ipcMain.handle('write-upload-file', async (_, { filePath, metadata, coverDataUrl
                     writeMP3CoverStandard(filePath, coverBuf, coverMime)
                 }
             }
-            console.log('[write-upload-file] MP3 written OK:', { title: tags.title, coverMime, coverSize: coverBuf?.length, hasLyrics: !!lyrics })
             return { success: true, path: filePath }
         }
         // OGG/OPUS：完全用二进制注入 Vorbis comment（不经过 ffmpeg，不压缩，支持原始大封面+歌词）
@@ -3593,11 +3600,9 @@ ipcMain.handle('write-upload-file', async (_, { filePath, metadata, coverDataUrl
             if (metadata?.album) updates.ALBUM = metadata.album
             if (coverBuf) {
                 updates.METADATA_BLOCK_PICTURE = buildVorbisCoverBase64(coverBuf, coverMime)
-                console.log('[write-upload-file] OGG inject cover (no ffmpeg, no compress):', { size: coverBuf.length, mime: coverMime, b64Len: updates.METADATA_BLOCK_PICTURE.length })
             }
             if (lyrics) updates.LYRICS = lyrics
             injectOggComments(filePath, updates)
-            console.log('[write-upload-file] OGG comment injected OK (pure binary, no ffmpeg)')
             return { success: true, path: filePath }
         }
         // FLAC：纯二进制注入 Vorbis comment + PICTURE 块
@@ -3612,10 +3617,8 @@ ipcMain.handle('write-upload-file', async (_, { filePath, metadata, coverDataUrl
             if (lyrics) updates.LYRICS = lyrics
             if (coverBuf) {
                 updates.METADATA_BLOCK_PICTURE = buildFlacPictureBlock(coverBuf, coverMime)
-                console.log('[write-upload-file] FLAC inject cover:', { size: coverBuf.length, mime: coverMime })
             }
             injectFlacComments(filePath, updates)
-            console.log('[write-upload-file] FLAC injected OK')
             return { success: true, path: filePath }
         }
         // FLAC/M4A/WAV 等：ffmpeg attached_pic 方式
@@ -3766,7 +3769,6 @@ ipcMain.handle('cloud-upload', async (event, { filePath, filename, cookie, apiBa
             }
         } else {
             sendProgress(100, '秒传命中，完成导入...')
-            console.log('[cloud-upload] 秒传命中（MD5 已存在），songId 可能是之前上传的同内容文件')
         }
         // 4. 完成导入（带重试，服务器处理上传数据需要时间）
         // complete 始终传 song/artist/album（参考官方示例实现）
@@ -3793,7 +3795,6 @@ ipcMain.handle('cloud-upload', async (event, { filePath, filename, cookie, apiBa
             console.error('[cloud-upload] complete final failed:', completeRes?.data)
             return { success: false, error: completeRes?.data?.message || completeRes?.data?.msg || '导入失败' }
         }
-        console.log('[cloud-upload] upload success:', { songId, resourceId, needUpload })
         return { success: true, songId, resourceId, needUpload: !!needUpload }
     } catch (err) {
         console.error('Cloud upload error:', err)
@@ -3814,7 +3815,7 @@ ipcMain.handle('save-song-metadata', async (_, { songPath, metadata, coverDataUr
             return { success: false, error: `暂不支持 ${ext} 格式（实际 ${actualFmt || '未知'}）的元数据写入（支持 MP3/FLAC/OGG/WAV/M4A 等）` }
         }
         if (actualFmt && actualFmt !== ext.replace('.', '') && actualFmt !== 'm4a') {
-            console.log('[save-song-metadata] 格式与扩展名不符,按实际格式处理:', { ext, actualFmt, songPath })
+            // 格式与扩展名不符,按实际格式处理
         }
 
         // 备份原文件
@@ -3884,7 +3885,6 @@ ipcMain.handle('download-cover-for-song', async (_, { songPath, coverUrl }) => {
         const songBase = path.basename(songPath, path.extname(songPath))
         const coverPath = path.join(songDir, songBase + '.jpg')
         fs.writeFileSync(coverPath, Buffer.from(response.data))
-        console.log('[Cover] 封面已保存:', coverPath)
         return { success: true, coverPath }
     } catch (err) {
         console.error('[Cover] 下载封面失败:', err.message)
@@ -3919,6 +3919,10 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
     // 退出前停止 QQ 音乐 API 子进程
     stopQQMusicAPI()
+    // 退出前停止酷狗音乐 API 子进程
+    stopKugouMusicAPI()
+    // 退出前停止网易云 API 子进程
+    stopNeteaseAPI()
 })
 
 app.on('activate', () => {

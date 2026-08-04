@@ -15,14 +15,15 @@ import ConfirmModal from './components/ConfirmModal.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import EqPanel from './components/EqPanel.vue'
 import LyricSelector from './components/LyricSelector.vue'
-import { 
-  Search, 
-  ChevronLeft, 
-  ChevronRight, 
-  Mic, 
-  Settings, 
-  Minus, 
-  Square, 
+import {
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  Mic,
+  Settings,
+  Minus,
+  Square,
   X,
   Music,
   Tv,
@@ -50,13 +51,23 @@ import {
   Film,
   MonitorPlay,
   Sparkles,
-  Zap
+  Zap,
+  CheckSquare,
+  Trash2
 } from 'lucide-vue-next'
 import SearchSuggest from './components/SearchSuggest.vue'
 import { useSearchHistoryStore } from './store/searchHistory'
 import { usePlatformStore } from './store/platform'
 import { useQQUserStore } from './store/qq-user'
+import { useKugouUserStore } from './store/kugou-user'
 import { API_LINES, switchApiLine } from './api'
+import {
+    kugouYouthVip,
+    kugouYouthDayVip,
+    kugouYouthDayVipUpgrade,
+    kugouYouthMonthVipRecord,
+    kugouYouthUnionVip
+} from './api/kugou'
 import CustomSelect from './components/CustomSelect.vue'
 
 const router = useRouter()
@@ -67,15 +78,27 @@ const messageStore = useMessageStore()
 const searchHistoryStore = useSearchHistoryStore()
 const platformStore = usePlatformStore()
 const qqUserStore = useQQUserStore()
+const kugouUserStore = useKugouUserStore()
 
-// 当前平台的登录态（根据平台自动选择 userStore 或 qqUserStore）
-const activeUserStore = computed(() => platformStore.isQQ ? qqUserStore : userStore)
+// 当前平台的登录态（根据平台自动选择 userStore / qqUserStore / kugouUserStore）
+const activeUserStore = computed(() =>
+    platformStore.isQQ ? qqUserStore
+    : platformStore.isKugou ? kugouUserStore
+    : userStore
+)
 // 当前平台的"已登录"状态
-const isLoggedIn = computed(() => platformStore.isQQ ? qqUserStore.isLoggedIn : userStore.isLoggedIn)
+const isLoggedIn = computed(() =>
+    platformStore.isQQ ? qqUserStore.isLoggedIn
+    : platformStore.isKugou ? kugouUserStore.isLoggedIn
+    : userStore.isLoggedIn
+)
 // 当前平台的用户头像
 const avatarUrl = computed(() => {
     if (platformStore.isQQ) {
         return qqUserStore.profile?.avatarUrl || ''
+    }
+    if (platformStore.isKugou) {
+        return kugouUserStore.profile?.avatarUrl || ''
     }
     return userStore.profile?.avatarUrl || ''
 })
@@ -83,6 +106,9 @@ const avatarUrl = computed(() => {
 const nickname = computed(() => {
     if (platformStore.isQQ) {
         return qqUserStore.profile?.nickname || '未登录'
+    }
+    if (platformStore.isKugou) {
+        return kugouUserStore.profile?.nickname || '未登录'
     }
     return userStore.isLoggedIn ? (userStore.profile?.nickname || '网易云用户') : '未登录'
 })
@@ -99,11 +125,191 @@ const showQualityMenu = ref(false)
 const showDonate = ref(false)
 const showLockModal = ref(false)
 const pendingProtectedPath = ref('')
-// QQ Cookie 查看弹窗(可复制)
+// Cookie/Token 查看弹窗(可复制，QQ 与酷狗共用)
 const showCookieModal = ref(false)
 const cookieCopied = ref(false)
+// 酷狗概念版领取 VIP 弹窗
+const showYouthVipModal = ref(false)
+const youthVipLoading = ref(false)
+const youthVipClaiming = ref(false)
+const youthVipUpgrading = ref(false)
+const youthVipInfo = ref(null)
+const youthMonthRecord = ref([])
+const youthVipActionMsg = ref('')
+// 打开领取 VIP 弹窗并加载状态
+const openYouthVipModal = async () => {
+    showYouthVipModal.value = true
+    youthVipActionMsg.value = ''
+    await refreshYouthVipInfo()
+}
+// 刷新 VIP 状态 + 当月已领取天数
+const refreshYouthVipInfo = async () => {
+    youthVipLoading.value = true
+    try {
+        const [unionRes, recordRes] = await Promise.allSettled([
+            kugouYouthUnionVip(),
+            kugouYouthMonthVipRecord()
+        ])
+        if (unionRes.status === 'fulfilled' && unionRes.value) {
+            youthVipInfo.value = unionRes.value?.data || unionRes.value
+        } else {
+            youthVipInfo.value = null
+        }
+        if (recordRes.status === 'fulfilled' && recordRes.value) {
+            const rd = recordRes.value?.data || recordRes.value
+            youthMonthRecord.value = Array.isArray(rd) ? rd : (rd?.list || rd?.records || [])
+        } else {
+            youthMonthRecord.value = []
+        }
+    } catch (e) {
+        console.error('[Kugou Youth Vip] 加载状态失败:', e)
+        messageStore.error('获取 VIP 状态失败')
+    } finally {
+        youthVipLoading.value = false
+    }
+}
+// 领取一天 VIP(默认今天)
+const claimYouthDayVip = async () => {
+    if (youthVipClaiming.value) return
+    youthVipClaiming.value = true
+    youthVipActionMsg.value = ''
+    try {
+        const today = new Date()
+        const receiveDay = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+        const res = await kugouYouthDayVip(receiveDay)
+        const code = res?.status || res?.code || res?.error_code
+        const msg = res?.errmsg || res?.error_msg || res?.message || res?.tip || ''
+        if (code === 1 || res?.data || (msg && !String(code).startsWith('4'))) {
+            youthVipActionMsg.value = msg || '领取成功'
+        } else {
+            youthVipActionMsg.value = `领取失败${msg ? '：' + msg : ''}`
+        }
+        await refreshYouthVipInfo()
+    } catch (e) {
+        console.error('[Kugou Youth Vip] 领取失败:', e)
+        youthVipActionMsg.value = '领取失败,请稍后重试'
+    } finally {
+        youthVipClaiming.value = false
+    }
+}
+// 领取 3 小时 VIP 时长(每天最多 8 次)
+const claimYouthVipHours = async () => {
+    if (youthVipClaiming.value) return
+    youthVipClaiming.value = true
+    youthVipActionMsg.value = ''
+    try {
+        const res = await kugouYouthVip()
+        const code = res?.status || res?.code || res?.error_code
+        const msg = res?.errmsg || res?.error_msg || res?.message || res?.tip || ''
+        if (code === 1 || res?.data || (msg && !String(code).startsWith('4'))) {
+            youthVipActionMsg.value = msg || '领取成功'
+        } else {
+            youthVipActionMsg.value = `领取失败${msg ? '：' + msg : ''}`
+        }
+        await refreshYouthVipInfo()
+    } catch (e) {
+        console.error('[Kugou Youth Vip] 领取时长失败:', e)
+        youthVipActionMsg.value = '领取失败,请稍后重试'
+    } finally {
+        youthVipClaiming.value = false
+    }
+}
+// 升级畅听 VIP(需先领取一天 VIP)
+const upgradeYouthVip = async () => {
+    if (youthVipUpgrading.value) return
+    youthVipUpgrading.value = true
+    youthVipActionMsg.value = ''
+    try {
+        const res = await kugouYouthDayVipUpgrade()
+        const code = res?.status || res?.code || res?.error_code
+        const msg = res?.errmsg || res?.error_msg || res?.message || res?.tip || ''
+        if (code === 1 || res?.data || (msg && !String(code).startsWith('4'))) {
+            youthVipActionMsg.value = msg || '升级成功'
+        } else {
+            youthVipActionMsg.value = `升级失败${msg ? '：' + msg : ''}`
+        }
+        await refreshYouthVipInfo()
+    } catch (e) {
+        console.error('[Kugou Youth Vip] 升级失败:', e)
+        youthVipActionMsg.value = '升级失败,请稍后重试'
+    } finally {
+        youthVipUpgrading.value = false
+    }
+}
+// 酷狗登录信息展示：token=xxx;userid=xxx 格式（用户可复制后用于 Cookie 登录）
+const kugouCookieDisplay = computed(() => {
+    const token = kugouUserStore.cookie || ''
+    const userid = kugouUserStore.userid || ''
+    if (!token) return ''
+    return userid ? `token=${token};userid=${userid}` : `token=${token}`
+})
+// 酷狗歌单折叠状态：创建的歌单默认展开，收藏的歌单默认折叠
+const kugouCreatedCollapsed = ref(false)
+const kugouCollectedCollapsed = ref(true)
+// 酷狗收藏歌单批量管理
+const kugouPlaylistBatchMode = ref(false)
+const kugouSelectedPlaylistIds = ref([])
+const kugouBatchDeleting = ref(false)
+const kugouShowBatchConfirm = ref(false)
+const kugouTogglePlaylistBatch = () => {
+    kugouPlaylistBatchMode.value = !kugouPlaylistBatchMode.value
+    kugouSelectedPlaylistIds.value = []
+}
+const kugouTogglePlaylistSelect = (id) => {
+    const idx = kugouSelectedPlaylistIds.value.indexOf(id)
+    if (idx >= 0) kugouSelectedPlaylistIds.value.splice(idx, 1)
+    else kugouSelectedPlaylistIds.value.push(id)
+}
+const kugouIsPlaylistSelected = (id) => kugouSelectedPlaylistIds.value.includes(id)
+const kugouIsAllPlaylistsSelected = computed(() =>
+    kugouCollectedPlaylists.value.length > 0 &&
+    kugouSelectedPlaylistIds.value.length === kugouCollectedPlaylists.value.length
+)
+const kugouSelectAllPlaylists = () => {
+    if (kugouIsAllPlaylistsSelected.value) {
+        kugouSelectedPlaylistIds.value = []
+    } else {
+        kugouSelectedPlaylistIds.value = kugouCollectedPlaylists.value.map(p => p.id)
+    }
+}
+const kugouBatchDeletePlaylists = async () => {
+    kugouShowBatchConfirm.value = false
+    if (!kugouSelectedPlaylistIds.value.length) return
+    kugouBatchDeleting.value = true
+    const ok = await kugouUserStore.batchDeletePlaylists(kugouSelectedPlaylistIds.value)
+    if (ok) {
+        kugouSelectedPlaylistIds.value = []
+        kugouPlaylistBatchMode.value = false
+    }
+    kugouBatchDeleting.value = false
+}
+// 酷狗新建歌单弹窗
+const kugouShowCreatePlaylist = ref(false)
+const kugouNewPlaylistName = ref('')
+const kugouCreating = ref(false)
+const kugouCreatePlaylist = async () => {
+    const name = kugouNewPlaylistName.value.trim()
+    if (!name) {
+        useMessageStore().warning('请输入歌单名称')
+        return
+    }
+    kugouCreating.value = true
+    const ok = await kugouUserStore.createPlaylist(name)
+    if (ok) {
+        kugouShowCreatePlaylist.value = false
+        kugouNewPlaylistName.value = ''
+    }
+    kugouCreating.value = false
+}
+// 酷狗歌单分类：我创建的 / 我收藏的
+const kugouCreatedPlaylists = computed(() => kugouUserStore.playlists.filter(p => p.isMine))
+const kugouCollectedPlaylists = computed(() => kugouUserStore.playlists.filter(p => !p.isMine))
+const cookieDisplayValue = computed(() => {
+    return platformStore.isKugou ? kugouCookieDisplay.value : (qqUserStore.cookie || '')
+})
 const copyCookie = async () => {
-    const cookie = qqUserStore.cookie || ''
+    // QQ 走 qqUserStore.cookie；酷狗走 kugouCookieDisplay（含 userid）
+    const cookie = cookieDisplayValue.value
     if (!cookie) return
     try {
         await navigator.clipboard.writeText(cookie)
@@ -162,12 +368,28 @@ const qqQualityLabels = {
     m4a: '标准 AAC',
     flac: '无损'
 }
+// 酷狗概念版真实音质（已查 KuGouMusicApi song_url.js 源码确认：7 档真实）
+// 隐藏 multitrack / viper_tape / 魔法音效（piano/acappella 等）
+const kugouQualityLabels = {
+    '128': '标准',
+    '320': '高品',
+    flac: '无损',
+    high: 'Hi-Res',
+    viper_atmos: '蝰蛇全景声',
+    viper_clear: '蝰蛇清澈',
+    super: '超品'
+}
 // 根据当前平台动态切换音质选项
-const qualityLabels = computed(() => platformStore.isQQ ? qqQualityLabels : neteaseQualityLabels)
+const qualityLabels = computed(() =>
+    platformStore.isQQ ? qqQualityLabels
+    : platformStore.isKugou ? kugouQualityLabels
+    : neteaseQualityLabels
+)
 // 顶部 badge 显示的短标签
 const qualityBadgeLabel = computed(() => {
     const q = playerStore.quality
     if (platformStore.isQQ) return qqQualityLabels[q] || '标准'
+    if (platformStore.isKugou) return kugouQualityLabels[q] || '标准'
     return neteaseQualityLabels[q] || '标准'
 })
 
@@ -178,20 +400,25 @@ const toggleUserMenu = () => {
 const logout = () => {
     if (platformStore.isQQ) {
         qqUserStore.logout()
+        router.push('/qq')
+    } else if (platformStore.isKugou) {
+        kugouUserStore.logout()
+        router.push('/kugou')
     } else {
         userStore.logout()
+        router.push('/')
     }
     showUserMenu.value = false
-    router.push(platformStore.isQQ ? '/qq' : '/')
 }
 
 // 平台切换：调用 store 切换并刷新页面
 const switchPlatform = (key) => {
     platformStore.switchTo(key)
 }
-// 平台下拉框选项
+// 平台下拉框选项(酷狗概念版排在 QQ 音乐前面)
 const platformOptions = computed(() => [
     { value: 'netease', label: '网易云' },
+    { value: 'kugou', label: '酷狗概念版' },
     { value: 'qq', label: 'QQ音乐' }
 ])
 // 下拉框切换平台
@@ -212,6 +439,14 @@ const qqNavItems = [
     { id: '/qq', label: '发现音乐', icon: Music },
     { id: '/qq/singers', label: '歌手', icon: Mic },
     { id: '/qq/categories', label: '歌单分类', icon: ListMusic },
+    { id: '/anime', label: '动漫', icon: MonitorPlay },
+    { id: '/movie', label: '影视', icon: Film },
+]
+// 酷狗概念版导航项（与 QQ 模式一致）
+const kugouNavItems = [
+    { id: '/kugou', label: '发现音乐', icon: Music },
+    { id: '/kugou/singers', label: '歌手', icon: Mic },
+    { id: '/kugou/categories', label: '歌单分类', icon: ListMusic },
     { id: '/anime', label: '动漫', icon: MonitorPlay },
     { id: '/movie', label: '影视', icon: Film },
 ]
@@ -299,6 +534,10 @@ onMounted(() => {
       qqUserStore.fetchUserPlaylists()
       // 启动时刷新真实昵称/头像/VIP状态(解决重启后显示"已登录"的问题)
       qqUserStore.fetchRealProfile()
+  } else if (platformStore.isKugou && kugouUserStore.isLoggedIn && kugouUserStore.userid) {
+      kugouUserStore.fetchUserPlaylists()
+      kugouUserStore.fetchRealProfile()
+      kugouUserStore.fetchVipInfo()
   }
 
   const b = getBridge()
@@ -460,10 +699,11 @@ const navigateTo = (path) => {
 
 const handleSearch = () => {
   if (searchText.value.trim()) {
-    searchHistoryStore.addHistory('music', searchText.value)
+    // 音乐搜索历史按当前平台细分(music-netease/music-kugou/music-qq)
+    searchHistoryStore.addHistory(`music-${platformStore.current}`, searchText.value)
     showSearchSuggest.value = false
     // 根据当前平台跳转搜索页
-    const searchPath = platformStore.isQQ ? '/qq/search' : '/search'
+    const searchPath = platformStore.isQQ ? '/qq/search' : platformStore.isKugou ? '/kugou/search' : '/search'
     router.push({ path: searchPath, query: { keywords: searchText.value, t: Date.now() } })
   }
 }
@@ -740,6 +980,15 @@ const openGithub = () => {
     <Toast />
     <VideoDownloadToast />
     <ConfirmModal />
+    <!-- 酷狗批量取消收藏歌单确认弹窗 -->
+    <ConfirmModal
+        :visible="kugouShowBatchConfirm"
+        title="取消收藏歌单"
+        :message="`确定取消收藏选中的 ${kugouSelectedPlaylistIds.length} 个歌单吗？`"
+        confirmText="取消收藏"
+        @confirm="kugouBatchDeletePlaylists"
+        @cancel="kugouShowBatchConfirm = false"
+    />
     <LyricSelector />
     <UpdateDialog :visible="updateInfo.available" :version="updateInfo.version" :notes="updateInfo.notes" :downloadUrl="updateInfo.downloadUrl" @close="updateInfo.available = false" />
 
@@ -797,13 +1046,13 @@ const openGithub = () => {
     <div v-if="showCookieModal" class="modal-overlay" @click.self="showCookieModal = false">
         <div class="custom-modal" @click.stop>
             <div class="modal-header">
-                <h3>QQ 音乐 Cookie</h3>
+                <h3>{{ platformStore.isKugou ? '酷狗 Token' : 'QQ 音乐 Cookie' }}</h3>
                 <X class="clickable" :size="20" @click="showCookieModal = false" />
             </div>
             <div class="modal-body">
                 <textarea
                     class="cookie-textarea"
-                    :value="qqUserStore.cookie"
+                    :value="cookieDisplayValue"
                     readonly
                     rows="10"
                 ></textarea>
@@ -811,26 +1060,68 @@ const openGithub = () => {
             <div class="modal-footer">
                 <button class="cancel-btn clickable" @click="showCookieModal = false">关闭</button>
                 <button class="save-btn clickable" @click="copyCookie">
-                    {{ cookieCopied ? '已复制' : '复制 Cookie' }}
+                    {{ cookieCopied ? '已复制' : (platformStore.isKugou ? '复制 Token' : '复制 Cookie') }}
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 酷狗概念版领取 VIP 弹窗 -->
+    <div v-if="showYouthVipModal" class="modal-overlay" @click.self="showYouthVipModal = false">
+        <div class="custom-modal youth-vip-modal" @click.stop>
+            <div class="modal-header">
+                <h3>领取酷狗概念版 VIP</h3>
+                <X class="clickable" :size="20" @click="showYouthVipModal = false" />
+            </div>
+            <div class="modal-body">
+                <div class="youth-vip-status">
+                    <div class="youth-vip-status-label">当前状态</div>
+                    <div class="youth-vip-status-value">
+                        {{ youthVipLoading ? '加载中...' : (youthVipInfo?.is_vip || youthVipInfo?.isVip || youthVipInfo?.vip_status ? 'VIP 会员' : '普通用户') }}
+                    </div>
+                </div>
+                <div class="youth-vip-status">
+                    <div class="youth-vip-status-label">当月已领取天数</div>
+                    <div class="youth-vip-status-value">{{ youthMonthRecord.length }} 天</div>
+                </div>
+                <div class="youth-vip-actions">
+                    <button class="youth-vip-btn primary" :disabled="youthVipClaiming" @click="claimYouthDayVip">
+                        {{ youthVipClaiming ? '领取中...' : '领取今天一天 VIP' }}
+                    </button>
+                    <button class="youth-vip-btn" :disabled="youthVipClaiming" @click="claimYouthVipHours">
+                        {{ youthVipClaiming ? '领取中...' : '领取 3 小时' }}
+                    </button>
+                    <button class="youth-vip-btn" :disabled="youthVipUpgrading" @click="upgradeYouthVip">
+                        {{ youthVipUpgrading ? '升级中...' : '升级畅听 VIP' }}
+                    </button>
+                </div>
+                <div v-if="youthVipActionMsg" class="youth-vip-msg">{{ youthVipActionMsg }}</div>
+                <div class="youth-vip-tips">
+                    提示：这些接口来自酷狗概念版测试接口,部分用户可能不可用；领取 3 小时每天最多 8 次;升级畅听 VIP 需先领取一天 VIP。
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="cancel-btn clickable" @click="showYouthVipModal = false">关闭</button>
             </div>
         </div>
     </div>
 
 <header class="header" v-show="!playerStore.showSongDetail && !playerStore.showMvPlayer">
         <div class="header-left no-drag">
-          <div class="logo clickable" @click="navigateTo(platformStore.isQQ ? '/qq' : '/')">
+          <div class="logo clickable" @click="navigateTo(platformStore.isQQ ? '/qq' : platformStore.isKugou ? '/kugou' : '/')">
             <div class="logo-icon">
               <Music :size="20" color="white" />
             </div>
             <span>茗韵时光</span>
           </div>
-          <!-- 平台切换:下拉框(网易云 / QQ 音乐) -->
+          <!-- 平台切换:下拉框(网易云 / 酷狗概念版 / QQ 音乐) -->
           <div class="platform-select-wrapper" :title="`当前：${platformStore.currentPlatform.label}`">
             <CustomSelect
                 :model-value="platformStore.current"
                 :options="platformOptions"
                 transparent
+                compact
+                class="platform-select-sm"
                 @change="onPlatformChange"
             />
           </div>
@@ -894,7 +1185,21 @@ const openGithub = () => {
               <img v-if="isLoggedIn && avatarUrl" :src="avatarUrl" class="avatar" />
               <div v-else class="avatar"></div>
               <span class="nickname">{{ isLoggedIn ? nickname : '未登录' }}</span>
-              <div v-if="!platformStore.isQQ && userStore.vipInfo && userStore.vipInfo.redVipLevelIcon" class="vip-badge">
+              <span v-if="platformStore.isKugou && kugouUserStore.profile?.isVip" class="kugou-vip-badge" title="酷狗概念版 VIP">
+                  <svg class="kugou-vip-svg" viewBox="0 0 42 24" width="42" height="24" aria-hidden="true">
+                      <defs>
+                          <linearGradient id="kg-vip-grad" x1="0" y1="0" x2="1" y2="0">
+                              <stop offset="0%" stop-color="#2CA2F5"/>
+                              <stop offset="100%" stop-color="#4AD295"/>
+                          </linearGradient>
+                      </defs>
+                      <rect x="0.5" y="0.5" width="41" height="23" rx="5" fill="url(#kg-vip-grad)"/>
+                      <path d="M13 7 L16.2 3.2 L19 6.8 L22 3.2 L25 7 L24 18 L14 18 Z" fill="#FFD54F"/>
+                      <path d="M14.8 13.5 L16 11.5 L19 12 L20 11.5 L21 13.5 L20 15 L16.5 15 Z" fill="#FFB300"/>
+                      <text x="21" y="20.5" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="'PingFang SC', Arial, sans-serif">VIP</text>
+                  </svg>
+              </span>
+              <div v-if="!platformStore.isQQ && !platformStore.isKugou && userStore.vipInfo && userStore.vipInfo.redVipLevelIcon" class="vip-badge">
                  <img :src="userStore.vipInfo.redVipLevelIcon" class="vip-icon" />
               </div>
               <span v-if="platformStore.isQQ && qqUserStore.profile?.isVip" class="qq-vip-badge" :title="qqUserStore.profile?.vipLevel >= 2 ? '豪华绿钻' : '绿钻'">
@@ -909,11 +1214,34 @@ const openGithub = () => {
 
             <div class="user-dropdown" v-if="showUserMenu && isLoggedIn" @click.stop>
                 <div class="dropdown-header">
+                    <!-- 酷狗平台:显示酷狗用户数据 -->
+                    <template v-if="platformStore.isKugou">
                     <div class="stats-item">
-                        <span class="count">{{ platformStore.isQQ ? (qqUserStore.profile?.uin || '-') : (userStore.profile?.eventCount || 0) }}</span>
-                        <span class="label">{{ platformStore.isQQ ? 'QQ号' : '动态' }}</span>
+                        <span class="count">{{ kugouUserStore.profile?.userid || '-' }}</span>
+                        <span class="label">酷狗ID</span>
                     </div>
-                    <template v-if="!platformStore.isQQ">
+                    <div class="stats-item">
+                        <span class="count">{{ kugouUserStore.profile?.fans || kugouUserStore.profile?.fan_count || 0 }}</span>
+                        <span class="label">粉丝</span>
+                    </div>
+                    <div class="stats-item">
+                        <span class="count">{{ kugouUserStore.profile?.follows || kugouUserStore.profile?.follow_count || 0 }}</span>
+                        <span class="label">关注</span>
+                    </div>
+                    </template>
+                    <!-- QQ平台:显示QQ号 -->
+                    <template v-else-if="platformStore.isQQ">
+                    <div class="stats-item">
+                        <span class="count">{{ qqUserStore.profile?.uin || '-' }}</span>
+                        <span class="label">QQ号</span>
+                    </div>
+                    </template>
+                    <!-- 网易云平台:显示动态/关注/粉丝 -->
+                    <template v-else>
+                    <div class="stats-item">
+                        <span class="count">{{ userStore.profile?.eventCount || 0 }}</span>
+                        <span class="label">动态</span>
+                    </div>
                     <div class="stats-item">
                         <span class="count">{{ userStore.profile.follows || 0 }}</span>
                         <span class="label">关注</span>
@@ -925,14 +1253,45 @@ const openGithub = () => {
                     </template>
                 </div>
                 <div class="dropdown-list">
-                    <div v-if="!platformStore.isQQ" class="menu-sub-item">
+                    <div v-if="platformStore.isNetease" class="menu-sub-item">
                         <div class="left">等级</div>
                         <div class="right">Lv.{{ userStore.profile.level || 0 }}</div>
                     </div>
-                    <!-- QQ 平台:显示 Cookie(可复制) -->
-                    <div v-if="platformStore.isQQ && qqUserStore.cookie" class="menu-sub-item" @click="showCookieModal = true">
-                        <div class="left">查看 Cookie</div>
+                    <!-- 酷狗平台:显示VIP状态 -->
+                    <div v-if="platformStore.isKugou" class="menu-sub-item">
+                        <div class="left">VIP状态</div>
+                        <div class="right">{{ kugouUserStore.profile?.isVip ? 'VIP会员' : '普通用户' }}</div>
+                    </div>
+                    <!-- 酷狗平台:领取概念版 VIP -->
+                    <div v-if="platformStore.isKugou" class="menu-sub-item clickable" @click="openYouthVipModal">
+                        <div class="left">领取 VIP</div>
+                        <div class="right"><Sparkles :size="14" /></div>
+                    </div>
+                    <!-- QQ/酷狗 平台:显示 Cookie(可复制) -->
+                    <div v-if="(platformStore.isQQ && qqUserStore.cookie) || (platformStore.isKugou && kugouUserStore.cookie)" class="menu-sub-item" @click="showCookieModal = true">
+                        <div class="left">查看 {{ platformStore.isKugou ? 'Token' : 'Cookie' }}</div>
                         <div class="right"><Copy :size="14" /></div>
+                    </div>
+                    <!-- 关闭行为设置 -->
+                    <div class="menu-sub-item close-behavior-setting">
+                        <div class="left">关闭行为</div>
+                        <div class="close-behavior-options">
+                            <span
+                                class="behavior-opt"
+                                :class="{ active: closePref === 'ask' }"
+                                @click="saveClosePref('ask')"
+                            >询问</span>
+                            <span
+                                class="behavior-opt"
+                                :class="{ active: closePref === 'tray' }"
+                                @click="saveClosePref('tray')"
+                            >托盘</span>
+                            <span
+                                class="behavior-opt"
+                                :class="{ active: closePref === 'quit' }"
+                                @click="saveClosePref('quit')"
+                            >退出</span>
+                        </div>
                     </div>
                     <div class="menu-sub-item" @click="logout">
                         <div class="left">退出登录</div>
@@ -987,10 +1346,10 @@ const openGithub = () => {
             <!-- Navigation：根据平台动态显示 -->
             <div class="sidebar-section">
               <div
-                v-for="item in (platformStore.isQQ ? qqNavItems : neteaseNavItems)"
+                v-for="item in (platformStore.isQQ ? qqNavItems : platformStore.isKugou ? kugouNavItems : neteaseNavItems)"
                 :key="item.id"
                 class="menu-item"
-                :class="{ active: item.id === (platformStore.isQQ ? '/qq' : '/') ? route.path === item.id : route.path.startsWith(item.id) }"
+                :class="{ active: (item.id === '/qq' || item.id === '/kugou' || item.id === '/') ? route.path === item.id : route.path.startsWith(item.id) }"
                 @click="navigateTo(item.id)"
               >
                 <component :is="item.icon" :size="18" />
@@ -998,11 +1357,11 @@ const openGithub = () => {
               </div>
             </div>
 
-            <!-- Library：本地资源，两平台共用 -->
+            <!-- Library：本地资源(官方云盘仅网易云平台显示) -->
             <div class="sidebar-label">我的音乐</div>
             <div class="sidebar-section">
               <div
-                v-for="item in libraryNavItems"
+                v-for="item in libraryNavItems.filter(i => !(i.id === '/netease-cloud' && !platformStore.isNetease))"
                 :key="item.id"
                 class="menu-item"
                 :class="{ active: route.path === item.id }"
@@ -1044,7 +1403,7 @@ const openGithub = () => {
             </template>
 
             <!-- QQ 音乐：仅显示"我喜欢的音乐"(线上 API),不显示用户歌单列表 -->
-            <template v-else>
+            <template v-else-if="platformStore.isQQ">
                 <div class="sidebar-label">
                     <span>QQ 音乐</span>
                 </div>
@@ -1058,6 +1417,76 @@ const openGithub = () => {
                     <span class="menu-label">我喜欢的音乐</span>
                   </div>
                 </div>
+            </template>
+
+            <!-- 酷狗概念版：区分创建/收藏歌单，除我喜欢外自动折叠 -->
+            <template v-else-if="platformStore.isKugou">
+                <template v-if="kugouUserStore.isLoggedIn">
+                    <!-- 我创建的歌单（含"我喜欢"） -->
+                    <div class="sidebar-label clickable" @click="kugouCreatedCollapsed = !kugouCreatedCollapsed">
+                        <ChevronRight v-if="kugouCreatedCollapsed" :size="12" />
+                        <ChevronDown v-else :size="12" />
+                        <span>我创建的歌单</span>
+                        <Plus :size="14" class="sidebar-add-btn" title="新建歌单" @click.stop="kugouShowCreatePlaylist = true" />
+                    </div>
+                    <div v-if="!kugouCreatedCollapsed" class="sidebar-section">
+                        <div
+                            v-for="p in kugouCreatedPlaylists"
+                            :key="p.id"
+                            class="menu-item playlist-item"
+                            :class="{ active: p.id === kugouUserStore.likedPlaylistId ? route.path === '/kugou/liked' : route.path === `/kugou/playlist/${p.id}` }"
+                            @click="navigateTo(p.id === kugouUserStore.likedPlaylistId ? '/kugou/liked' : `/kugou/playlist/${p.id}`)"
+                        >
+                            <Heart v-if="p.id === kugouUserStore.likedPlaylistId" :size="16" :fill="'#EC4141'" :color="'#EC4141'" />
+                            <ListMusic v-else :size="16" />
+                            <span class="menu-label truncate">{{ p.name }}</span>
+                        </div>
+                    </div>
+                    <!-- 我收藏的歌单 -->
+                    <div v-if="kugouCollectedPlaylists.length" class="sidebar-label clickable" @click="kugouCollectedCollapsed = !kugouCollectedCollapsed">
+                        <ChevronRight v-if="kugouCollectedCollapsed" :size="12" />
+                        <ChevronDown v-else :size="12" />
+                        <span>我收藏的歌单</span>
+                        <Trash2
+                            v-if="!kugouCollectedCollapsed"
+                            :size="13"
+                            class="sidebar-add-btn"
+                            :title="kugouPlaylistBatchMode ? '退出批量' : '批量管理'"
+                            @click.stop="kugouTogglePlaylistBatch"
+                        />
+                    </div>
+                    <!-- 批量操作栏 -->
+                    <div v-if="!kugouCollectedCollapsed && kugouPlaylistBatchMode && kugouCollectedPlaylists.length" class="kugou-sidebar-batch-bar">
+                        <div class="kugou-sidebar-batch-select-all" @click="kugouSelectAllPlaylists">
+                            <CheckSquare v-if="kugouIsAllPlaylistsSelected" :size="14" class="kugou-check-icon active" />
+                            <Square v-else :size="14" class="kugou-check-icon" />
+                            <span>全选</span>
+                        </div>
+                        <button
+                            class="kugou-sidebar-batch-delete-btn"
+                            @click="kugouShowBatchConfirm = true"
+                            :disabled="!kugouSelectedPlaylistIds.length || kugouBatchDeleting"
+                        >
+                            {{ kugouBatchDeleting ? '删除中...' : `取消收藏(${kugouSelectedPlaylistIds.length})` }}
+                        </button>
+                    </div>
+                    <div v-if="!kugouCollectedCollapsed && kugouCollectedPlaylists.length" class="sidebar-section">
+                        <div
+                            v-for="p in kugouCollectedPlaylists"
+                            :key="p.id"
+                            class="menu-item playlist-item"
+                            :class="{ active: !kugouPlaylistBatchMode && route.path === `/kugou/playlist/${p.id}` }"
+                            @click="kugouPlaylistBatchMode ? kugouTogglePlaylistSelect(p.id) : navigateTo(`/kugou/playlist/${p.id}`)"
+                        >
+                            <template v-if="kugouPlaylistBatchMode">
+                                <CheckSquare v-if="kugouIsPlaylistSelected(p.id)" :size="16" class="kugou-check-icon active" />
+                                <Square v-else :size="16" class="kugou-check-icon" />
+                            </template>
+                            <ListMusic v-else :size="16" />
+                            <span class="menu-label truncate">{{ p.name }}</span>
+                        </div>
+                    </div>
+                </template>
             </template>
         </div>
       </aside>
@@ -1073,6 +1502,7 @@ const openGithub = () => {
         <div class="song-detail">
           <div class="song-name-row">
             <span class="song-name" :title="playerStore.currentSong.name">{{ playerStore.currentSong.name }}</span>
+            <span v-if="playerStore.currentSong.fee === 1 || playerStore.currentSong.isVip" class="vip-badge-footer">VIP</span>
             <Heart
               :size="16"
               class="heart-icon clickable hover-red"
@@ -1202,10 +1632,38 @@ const openGithub = () => {
      </div>
     </div>
     <router-view v-if="route.path === '/desktop-lyrics'" />
+
+    <!-- 酷狗新建歌单弹窗 -->
+    <div v-if="kugouShowCreatePlaylist" class="kugou-modal-overlay" @click.self="kugouShowCreatePlaylist = false">
+        <div class="kugou-modal kugou-modal-sm">
+            <div class="kugou-modal-header">
+                <span class="kugou-modal-title">新建歌单</span>
+                <X :size="18" class="kugou-modal-close" @click="kugouShowCreatePlaylist = false" />
+            </div>
+            <div class="kugou-modal-body">
+                <input
+                    v-model="kugouNewPlaylistName"
+                    class="kugou-modal-input"
+                    placeholder="请输入歌单名称"
+                    @keyup.enter="kugouCreatePlaylist"
+                    autofocus
+                />
+                <button class="kugou-modal-confirm-btn" @click="kugouCreatePlaylist" :disabled="kugouCreating">
+                    {{ kugouCreating ? '创建中...' : '创建' }}
+                </button>
+            </div>
+        </div>
+    </div>
   </div>
 </template>
 
 <style>
+/* 平台切换下拉:缩小选项字体(下拉浮层 Teleport 到 body,需全局样式) */
+.platform-select-wrapper .cs-dropdown.cs-dropdown-fixed .cs-option {
+    font-size: 12px;
+    padding: 5px 10px;
+}
+
 .is-lyrics-window, .is-lyrics-window body, .is-lyrics-window #app, .is-lyrics-window .app-container {
     background: transparent !important;
     background-color: transparent !important;
@@ -1535,6 +1993,145 @@ const openGithub = () => {
     justify-content: space-between;
     align-items: center;
 }
+.sidebar-label.clickable {
+    cursor: pointer;
+    gap: 6px;
+    justify-content: flex-start;
+    user-select: none;
+}
+.sidebar-label.clickable:hover { color: #666; }
+.sidebar-label.clickable svg { flex-shrink: 0; }
+.sidebar-add-btn {
+    margin-left: auto;
+    opacity: 0.5;
+    cursor: pointer;
+    transition: opacity 0.15s, color 0.15s;
+}
+.sidebar-add-btn:hover {
+    opacity: 1;
+    color: var(--primary-color, #2CA2F5);
+}
+
+/* 酷狗侧边栏批量管理 */
+.kugou-sidebar-batch-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 14px; margin-bottom: 4px;
+    background: var(--hover-bg, rgba(0,0,0,0.04));
+    border-radius: 6px;
+}
+.kugou-sidebar-batch-select-all {
+    display: flex; align-items: center; gap: 4px;
+    cursor: pointer; font-size: 12px; color: var(--text-secondary, #666);
+}
+.kugou-sidebar-batch-delete-btn {
+    margin-left: auto; padding: 4px 12px; border-radius: 12px;
+    border: none; background: #ff6b6b; color: white;
+    cursor: pointer; font-size: 12px;
+    transition: opacity 0.15s;
+}
+.kugou-sidebar-batch-delete-btn:hover:not(:disabled) { opacity: 0.85; }
+.kugou-sidebar-batch-delete-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.kugou-check-icon {
+    color: #ccc;
+    transition: color 0.2s;
+    flex-shrink: 0;
+}
+.kugou-check-icon.active {
+    color: var(--primary-color, #2CA2F5);
+}
+
+/* 酷狗歌单管理弹窗(全局样式,各组件复用) */
+.kugou-modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.45); z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    animation: kugou-modal-fade-in 0.2s ease;
+}
+@keyframes kugou-modal-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes kugou-modal-slide-up {
+    from { opacity: 0; transform: translateY(16px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.kugou-modal {
+    background: var(--bg-main, #fff) !important; border-radius: 12px;
+    width: 400px; max-height: 500px; overflow: hidden;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.25), 0 0 0 1px rgba(0,0,0,0.04);
+    display: flex; flex-direction: column;
+    animation: kugou-modal-slide-up 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.kugou-modal-sm { width: 340px; }
+.kugou-modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 22px; border-bottom: 1px solid var(--border-color, rgba(0,0,0,0.06));
+}
+.kugou-modal-title {
+    font-size: 16px; font-weight: 600; color: var(--text-main, #333);
+    letter-spacing: 0.3px;
+}
+.kugou-modal-close {
+    cursor: pointer; color: var(--text-light, #999);
+    transition: color 0.15s, transform 0.15s;
+    padding: 4px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+}
+.kugou-modal-close:hover {
+    color: var(--text-main, #333);
+    background: var(--hover-bg, rgba(0,0,0,0.05));
+    transform: rotate(90deg);
+}
+.kugou-modal-body { padding: 14px 22px 22px; overflow-y: auto; flex: 1; }
+.kugou-modal-body::-webkit-scrollbar { width: 6px; }
+.kugou-modal-body::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 3px; }
+.kugou-modal-add-new {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; border-radius: 8px; cursor: pointer;
+    color: var(--primary-color, #2CA2F5); font-size: 14px; margin-bottom: 8px;
+    transition: background 0.15s;
+}
+.kugou-modal-add-new:hover { background: var(--hover-bg, rgba(0,0,0,0.04)); }
+.kugou-modal-empty { text-align: center; color: var(--text-light, #999); padding: 30px 0; font-size: 13px; }
+.kugou-modal-playlist-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 8px; cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+.kugou-modal-playlist-item:hover { background: var(--hover-bg, rgba(0,0,0,0.04)); }
+.kugou-modal-playlist-item:active { transform: scale(0.99); }
+.kugou-modal-cover { width: 36px; height: 36px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+.kugou-modal-cover-placeholder {
+    width: 36px; height: 36px; border-radius: 6px; flex-shrink: 0;
+    background: var(--hover-bg, rgba(0,0,0,0.04)); color: var(--text-light, #999);
+    display: flex; align-items: center; justify-content: center;
+}
+.kugou-modal-playlist-name {
+    flex: 1; font-size: 14px; color: var(--text-main, #333);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.kugou-modal-playlist-count { font-size: 12px; color: var(--text-light, #999); flex-shrink: 0; }
+.kugou-modal-input {
+    width: 100%; padding: 10px 14px; border: 1.5px solid var(--border-color, rgba(0,0,0,0.1));
+    border-radius: 8px; font-size: 14px; color: var(--text-main, #333);
+    background: var(--bg-sidebar, #fff); box-sizing: border-box; margin-bottom: 14px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+.kugou-modal-input:focus {
+    outline: none; border-color: var(--primary-color, #2CA2F5);
+    box-shadow: 0 0 0 3px rgba(44, 162, 245, 0.12);
+}
+.kugou-modal-confirm-btn {
+    width: 100%; padding: 11px; border: none; border-radius: 8px;
+    background: var(--primary-color, #2CA2F5); color: white; cursor: pointer; font-size: 14px;
+    font-weight: 500; letter-spacing: 0.5px;
+    transition: opacity 0.15s, transform 0.1s;
+}
+.kugou-modal-confirm-btn:hover:not(:disabled) { opacity: 0.9; }
+.kugou-modal-confirm-btn:active:not(:disabled) { transform: scale(0.98); }
+.kugou-modal-confirm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .add-icon {
     opacity: 0.6;
@@ -1563,6 +2160,38 @@ const openGithub = () => {
     background-color: #f5f5f5;
 }
 
+/* 关闭行为设置 */
+.close-behavior-setting {
+    flex-direction: column;
+    gap: 8px;
+}
+.close-behavior-setting:hover {
+    background-color: transparent;
+}
+.close-behavior-options {
+    display: flex;
+    gap: 8px;
+    padding: 0 20px 8px;
+}
+.behavior-opt {
+    flex: 1;
+    text-align: center;
+    font-size: 12px;
+    padding: 5px 0;
+    border-radius: 4px;
+    cursor: pointer;
+    background: #f0f0f0;
+    color: #666;
+    transition: all 0.15s;
+}
+.behavior-opt:hover {
+    background: #e0e0e0;
+}
+.behavior-opt.active {
+    background: var(--primary-color, #c20c0c);
+    color: #fff;
+}
+
 .vip-badge {
     margin-left: 5px;
 }
@@ -1574,17 +2203,32 @@ const openGithub = () => {
 /* QQ 音乐 VIP 角标 */
 .qq-vip-badge {
     margin-left: 6px;
-    padding: 1px 5px;
-    font-size: 10px;
+    margin-right: 6px;
+    padding: 2px 8px;
+    font-size: 12px;
     font-weight: 700;
     color: #fff;
     background: linear-gradient(135deg, #ffd700, #ff9500);
-    border-radius: 8px;
-    line-height: 1.2;
+    border-radius: 10px;
+    line-height: 1.4;
     letter-spacing: 0.5px;
     box-shadow: 0 1px 3px rgba(255, 149, 0, 0.4);
     display: inline-flex;
     align-items: center;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+/* 酷狗概念版 VIP 角标(蓝白主题) */
+.kugou-vip-badge {
+    margin-left: 6px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    line-height: 1;
+}
+.kugou-vip-svg {
+    display: block;
+    filter: drop-shadow(0 1px 3px rgba(44, 162, 245, 0.4));
 }
 .qq-vip-icon {
     height: 14px;
@@ -1794,6 +2438,57 @@ const openGithub = () => {
     border-radius: 8px;
     padding: 20px;
     box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+}
+
+/* 领取酷狗概念版 VIP 弹窗 */
+.youth-vip-modal { width: 420px; }
+.youth-vip-status {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #f0f0f0;
+}
+.youth-vip-status-label { font-size: 13px; color: var(--text-light); }
+.youth-vip-status-value { font-size: 14px; font-weight: 600; color: #2CA2F5; }
+.youth-vip-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 16px;
+}
+.youth-vip-btn {
+    height: 38px;
+    border-radius: 19px;
+    border: 1px solid rgba(44, 162, 245, 0.5);
+    background: #fff;
+    color: #2CA2F5;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.youth-vip-btn.primary {
+    background: linear-gradient(135deg, #2CA2F5, #4ad295);
+    border: none;
+    color: #fff;
+    font-weight: 600;
+}
+.youth-vip-btn:hover { opacity: 0.9; }
+.youth-vip-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.youth-vip-msg {
+    margin-top: 12px;
+    font-size: 13px;
+    color: #2CA2F5;
+    text-align: center;
+}
+.youth-vip-tips {
+    margin-top: 14px;
+    font-size: 12px;
+    color: #999;
+    line-height: 1.6;
+    background: #fafafa;
+    border-radius: 6px;
+    padding: 10px 12px;
 }
 
 .modal-header {

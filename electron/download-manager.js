@@ -224,8 +224,6 @@ async function startDownload(params) {
   emit('download:progress', { id, percent: 0, received: 0, total: 0, speed: 0 })
   emit('video-download-progress', { downloadId: id, percent: 0, received: 0, total: 0, speed: 0 })
 
-  console.log(`[DownloadManager] 开始下载 [${cat}] ${safeName}: ${maskUrl(url)}`)
-
   // 分流：DASH 音视频分离 / 本地文件 / m3u8 / 直链
   if (audioUrl && /^https?:\/\//i.test(audioUrl)) {
     // DASH 格式：分别下载 video 和 audio，再用 ffmpeg 流复制合并（极快）
@@ -636,7 +634,6 @@ async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraH
     }
   }
 
-  console.log(`[DownloadManager] DASH 合并下载: ${maskUrl(videoUrl)}`)
 
   try {
     // 并行下载 video + audio
@@ -848,7 +845,7 @@ async function startM3u8SegmentsDownload(id, m3u8Url, outputPath, extraHeaders, 
 
   try {
     // 1. 下载 m3u8 内容
-    console.log(`[DownloadManager] m3u8 分片模式：下载播放列表 ${maskUrl(m3u8Url)}`)
+
     const m3u8Res = await axios.get(m3u8Url, { headers: axiosHeaders, timeout: 15000, httpAgent, httpsAgent })
     let m3u8Text = m3u8Res.data
     let baseUrl = m3u8Url
@@ -858,7 +855,7 @@ async function startM3u8SegmentsDownload(id, m3u8Url, outputPath, extraHeaders, 
       const subMatch = m3u8Text.split(/\r?\n/).find(l => l && !l.startsWith('#'))
       if (subMatch) {
         const subUrl = resolveUrl(baseUrl, subMatch.trim())
-        console.log(`[DownloadManager] master playlist → 子 m3u8: ${maskUrl(subUrl)}`)
+
         const subRes = await axios.get(subUrl, { headers: axiosHeaders, timeout: 15000, httpAgent, httpsAgent })
         m3u8Text = subRes.data
         baseUrl = subUrl
@@ -875,7 +872,7 @@ async function startM3u8SegmentsDownload(id, m3u8Url, outputPath, extraHeaders, 
       throw new Error('m3u8 中未找到 ts 分片')
     }
 
-    console.log(`[DownloadManager] m3u8 共 ${segments.length} 个分片`)
+    
 
     // 3. 创建临时目录
     await fs.promises.mkdir(tmpDir, { recursive: true })
@@ -957,7 +954,7 @@ async function startM3u8SegmentsDownload(id, m3u8Url, outputPath, extraHeaders, 
     if (state.canceled) throw new Error('已取消')
 
     // 5. 用 ffmpeg 本地 concat 合并（不依赖网络协议，快速）
-    console.log(`[DownloadManager] ffmpeg 合并 ${segCount} 个分片 → ${path.basename(outputPath)}`)
+
     const listFile = path.join(tmpDir, 'filelist.txt')
     const listContent = partFiles.map(f => `file '${f.replace(/\\/g, '/').replace(/'/g, "'\\''")}'`).join('\n')
     await fs.promises.writeFile(listFile, listContent, 'utf-8')
@@ -1122,4 +1119,4 @@ export function setDownloadManagerWindow(w) {
   setWindow(w)
 }
 
-console.log(`[DownloadManager] 模块已加载（aria2c: ${ARIA2C_PATH} | ffmpeg: ${FFMPEG_PATH}）`)
+

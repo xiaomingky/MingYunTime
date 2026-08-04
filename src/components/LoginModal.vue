@@ -1,8 +1,12 @@
 <script setup>
 import { ref, onUnmounted, watch, computed } from 'vue'
-import { X, QrCode, Smartphone, Mail, FileCode, Info } from 'lucide-vue-next'
+import { X, QrCode, Smartphone, Mail, FileCode, Info, User } from 'lucide-vue-next'
 import { useUserStore } from '../store/user'
 import { useQQUserStore } from '../store/qq-user'
+import { useKugouUserStore } from '../store/kugou-user'
+import {
+    kugouCaptchaSent, kugouQrKey, kugouQrCreate, kugouQrCheck
+} from '../api/kugou'
 import { usePlatformStore } from '../store/platform'
 import { useMessageStore } from '../store/message'
 
@@ -11,6 +15,7 @@ const emit = defineEmits(['close'])
 
 const userStore = useUserStore()
 const qqUserStore = useQQUserStore()
+const kugouUserStore = useKugouUserStore()
 const platformStore = usePlatformStore()
 const messageStore = useMessageStore()
 const loading = ref(false)
@@ -18,7 +23,12 @@ const loginMode = ref('qr') // qr, phone, email, cookie
 
 // 是否 QQ 平台
 const isQQ = computed(() => platformStore.isQQ)
-const modalTitle = computed(() => isQQ.value ? '登录 QQ 音乐' : '登录网易云音乐')
+const isKugou = computed(() => platformStore.isKugou)
+const modalTitle = computed(() => {
+    if (isQQ.value) return '登录 QQ 音乐'
+    if (isKugou.value) return '登录酷狗概念版'
+    return '登录网易云音乐'
+})
 const qrTipText = computed(() => isQQ.value ? '请使用 QQ APP 扫码（不支持微信/QQ音乐扫码）' : '请使用网易云音乐 APP 扫码')
 
 // Form Data
@@ -116,11 +126,125 @@ const handleQQCookieLogin = async () => {
     }
 }
 
+// ===== 酷狗概念版登录 =====
+const kugouPhone = ref('')
+const kugouCode = ref('')
+const kugouCodeSending = ref(false)
+const kugouCodeCountdown = ref(0)
+// 多账户选择弹窗（手机号关联多个酷狗账户时显示）
+const kugouMultiAccounts = ref([])
+const showKugouAccountPicker = ref(false)
+const kugouAccountPicking = ref(false)
+const kugouQrImg = ref('')
+const kugouQrStatus = ref(0)
+const kugouQrMessage = ref('')
+let kugouQrTimer = null
+const kugouCookieInput = ref('')
+
+// 酷狗用户名登录
+const kugouUsername = ref('')
+const kugouPassword = ref('')
+
+const sendKugouCode = async () => {
+    if (!kugouPhone.value || !/^1\d{10}$/.test(kugouPhone.value)) {
+        messageStore.error('请输入正确的手机号')
+        return
+    }
+    if (kugouCodeCountdown.value > 0) return
+    kugouCodeSending.value = true
+    try {
+        await kugouCaptchaSent(kugouPhone.value)
+        messageStore.success('验证码已发送')
+        kugouCodeCountdown.value = 60
+        const timer = setInterval(() => {
+            kugouCodeCountdown.value--
+            if (kugouCodeCountdown.value <= 0) clearInterval(timer)
+        }, 1000)
+    } catch (e) {
+        messageStore.error('验证码发送失败')
+    } finally {
+        kugouCodeSending.value = false
+    }
+}
+
+const doKugouPhoneLogin = async () => {
+    if (!kugouPhone.value || !kugouCode.value) {
+        messageStore.error('请输入手机号和验证码')
+        return
+    }
+    const result = await kugouUserStore.phoneLogin(kugouPhone.value, kugouCode.value)
+    // 多账户场景：返回 { multiAccounts: [...] }，弹出选择框
+    if (result && typeof result === 'object' && result.multiAccounts) {
+        kugouMultiAccounts.value = result.multiAccounts
+        showKugouAccountPicker.value = true
+        return
+    }
+    // 登录成功（result === true）或失败（result === false）
+    if (result === true) emit('close')
+}
+
+// 多账户选择：用指定 userid 完成登录
+const pickKugouAccount = async (account) => {
+    if (kugouAccountPicking.value) return
+    kugouAccountPicking.value = true
+    try {
+        const ok = await kugouUserStore.phoneLoginWithUserid(
+            kugouPhone.value, kugouCode.value, account.userid
+        )
+        if (ok) {
+            showKugouAccountPicker.value = false
+            kugouMultiAccounts.value = []
+            emit('close')
+        }
+    } finally {
+        kugouAccountPicking.value = false
+    }
+}
+
+const cancelKugouAccountPicker = () => {
+    showKugouAccountPicker.value = false
+    kugouMultiAccounts.value = []
+}
+
+const startKugouQrLogin = async () => {
+    kugouQrImg.value = ''
+    kugouQrStatus.value = 0
+    kugouQrMessage.value = ''
+    const stopFn = await kugouUserStore.qrLogin(kugouQrImg, kugouQrStatus, kugouQrMessage)
+    if (stopFn) kugouQrTimer = stopFn
+}
+
+const doKugouCookieLogin = async () => {
+    if (!kugouCookieInput.value.trim()) {
+        messageStore.error('请粘贴 token 或 "token=xxx; userid=xxx" 格式的 Cookie')
+        return
+    }
+    const ok = await kugouUserStore.cookieLogin(kugouCookieInput.value)
+    if (ok) emit('close')
+}
+
+// 酷狗用户名登录
+const doKugouUsernameLogin = async () => {
+    if (!kugouUsername.value || !kugouPassword.value) {
+        messageStore.error('请输入用户名和密码')
+        return
+    }
+    const ok = await kugouUserStore.usernameLogin(kugouUsername.value, kugouPassword.value)
+    if (ok) emit('close')
+}
+
+// 酷狗扫码成功后关闭弹窗
+watch(kugouQrStatus, (val) => {
+    if (val === 4) emit('close')
+})
+
 // 统一启动扫码（按平台分发）
 const startPlatformQr = () => {
     if (isQQ.value) {
         // QQ 平台不在弹窗内显示二维码,改为提示用户点击按钮触发官网登录
-        // 用户点击 login-modal 中的"打开官网登录"按钮时调用 startQQWebLogin
+    } else if (isKugou.value) {
+        // 酷狗默认 tab 是概念版二维码
+        startKugouQrLogin()
     } else {
         startQrPolling()
     }
@@ -128,6 +252,10 @@ const startPlatformQr = () => {
 
 const stopAllPolling = () => {
     stopQrPolling()
+    if (kugouQrTimer) {
+        kugouQrTimer()
+        kugouQrTimer = null
+    }
 }
 
 const handlePhoneLogin = async () => {
@@ -211,8 +339,14 @@ watch(() => props.show, (newVal) => {
 })
 
 watch(loginMode, (newVal) => {
-    if (newVal === 'qr') startPlatformQr()
-    else stopAllPolling()
+    // 先停止所有轮询
+    stopAllPolling()
+    if (isKugou.value) {
+        // 酷狗平台：qr=概念版二维码
+        if (newVal === 'qr') startKugouQrLogin()
+    } else if (newVal === 'qr') {
+        startPlatformQr()
+    }
 })
 
 // 平台切换时重置登录态
@@ -252,7 +386,7 @@ onUnmounted(() => stopAllPolling())
           <!-- 官网扫码登录 -->
           <div v-if="loginMode === 'qr'" class="qq-web-login">
             <div class="qq-web-login-icon">
-              <QrCode :size="64" color="#31C27C" />
+              <QrCode :size="64" :color="platformStore.themeColor" />
             </div>
             <p class="qq-web-login-title">QQ 音乐官网扫码登录</p>
             <p class="qq-web-login-tip">
@@ -280,6 +414,93 @@ onUnmounted(() => stopAllPolling())
             </div>
             <button class="login-btn" :disabled="loading" @click="handleQQCookieLogin">
               {{ loading ? '正在验证...' : '登录' }}
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- 酷狗概念版平台：扫码 + 手机 + 用户名 + Cookie -->
+      <template v-else-if="isKugou">
+        <div class="login-tabs">
+          <div class="tab" :class="{ active: loginMode === 'qr' }" @click="loginMode = 'qr'">
+            <QrCode :size="16" />
+            扫码
+          </div>
+          <div class="tab" :class="{ active: loginMode === 'phone' }" @click="loginMode = 'phone'">
+            <Smartphone :size="16" />
+            手机
+          </div>
+          <div class="tab" :class="{ active: loginMode === 'username' }" @click="loginMode = 'username'">
+            <User :size="16" />
+            用户名
+          </div>
+          <div class="tab" :class="{ active: loginMode === 'cookie' }" @click="loginMode = 'cookie'">
+            <FileCode :size="16" />
+            Cookie
+          </div>
+        </div>
+
+        <div class="content">
+          <!-- 概念版扫码登录 -->
+          <div v-if="loginMode === 'qr'" class="qr-login">
+            <div class="qr-container">
+              <img :src="kugouQrImg" v-if="kugouQrImg" :class="{ blur: kugouQrStatus === 4 || kugouQrMessage.includes('过期') }" />
+              <div class="qr-overlay" v-if="kugouQrStatus === 4">
+                <div class="success-icon">✓</div>
+                <p>登录成功</p>
+              </div>
+              <div class="qr-overlay" v-if="kugouQrMessage.includes('过期')">
+                <p>二维码已过期</p>
+                <button @click="startKugouQrLogin">刷新</button>
+              </div>
+            </div>
+            <p class="qr-tip">{{ kugouQrMessage || '请使用酷狗概念版 APP 扫码' }}</p>
+          </div>
+
+          <!-- 手机号 + 验证码 -->
+          <div v-if="loginMode === 'phone'" class="form">
+            <div class="input-item">
+              <input type="text" v-model="kugouPhone" placeholder="请输入手机号" />
+            </div>
+            <div class="input-item captcha-group">
+              <input type="text" v-model="kugouCode" placeholder="验证码" />
+              <button class="captcha-btn" :disabled="kugouCodeCountdown > 0" @click="sendKugouCode">
+                {{ kugouCodeCountdown > 0 ? `${kugouCodeCountdown}s` : '获取验证码' }}
+              </button>
+            </div>
+            <button class="login-btn" :disabled="kugouUserStore.logining" @click="doKugouPhoneLogin">
+              {{ kugouUserStore.logining ? '正在登录...' : '登录' }}
+            </button>
+          </div>
+
+          <!-- 用户名 + 密码 -->
+          <div v-if="loginMode === 'username'" class="form">
+            <div class="info-box">
+              <Info :size="14" />
+              <span>用户名登录可能需要验证，推荐使用扫码或手机登录</span>
+            </div>
+            <div class="input-item">
+              <input type="text" v-model="kugouUsername" placeholder="请输入用户名" />
+            </div>
+            <div class="input-item">
+              <input type="password" v-model="kugouPassword" placeholder="请输入密码" />
+            </div>
+            <button class="login-btn" :disabled="kugouUserStore.logining" @click="doKugouUsernameLogin">
+              {{ kugouUserStore.logining ? '正在登录...' : '登录' }}
+            </button>
+          </div>
+
+          <!-- Cookie/Token 登录 -->
+          <div v-if="loginMode === 'cookie'" class="form">
+            <div class="info-box">
+              <Info :size="14" />
+              <span>粘贴 token 或 "token=xxx; userid=xxx" 格式的 Cookie</span>
+            </div>
+            <div class="input-item">
+              <textarea v-model="kugouCookieInput" placeholder="在此粘贴 token 或 Cookie" rows="4"></textarea>
+            </div>
+            <button class="login-btn" :disabled="kugouUserStore.logining" @click="doKugouCookieLogin">
+              {{ kugouUserStore.logining ? '正在验证...' : '登录' }}
             </button>
           </div>
         </div>
@@ -376,6 +597,35 @@ onUnmounted(() => stopAllPolling())
           </div>
         </div>
       </template>
+    </div>
+
+    <!-- 酷狗多账户选择弹窗（手机号关联多个账户时显示） -->
+    <div v-if="showKugouAccountPicker" class="account-picker-overlay" @click.self="cancelKugouAccountPicker">
+      <div class="account-picker-modal">
+        <div class="account-picker-header">
+          <span class="account-picker-title">请选择要登录的账户</span>
+          <X :size="18" class="account-picker-close" @click="cancelKugouAccountPicker" />
+        </div>
+        <div class="account-picker-body">
+          <p class="account-picker-tip">该手机号关联了 {{ kugouMultiAccounts.length }} 个酷狗账户，请选择要登录的账户：</p>
+          <div
+            v-for="acc in kugouMultiAccounts"
+            :key="acc.userid"
+            class="account-picker-item"
+            :class="{ disabled: kugouAccountPicking }"
+            @click="pickKugouAccount(acc)"
+          >
+            <img v-if="acc.pic" :src="acc.pic" class="account-picker-avatar" referrerpolicy="no-referrer" @error="$event.target.style.display='none'" />
+            <div v-else class="account-picker-avatar placeholder">
+              <User :size="20" />
+            </div>
+            <div class="account-picker-info">
+              <div class="account-picker-name">{{ acc.username || '未设置昵称' }}</div>
+              <div class="account-picker-meta">ID: {{ acc.userid }}<span v-if="acc.mobile"> · {{ acc.mobile }}</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -646,7 +896,7 @@ onUnmounted(() => stopAllPolling())
 }
 
 .qq-web-login-tip strong {
-    color: #31C27C;
+    color: var(--primary-color);
 }
 
 .qq-web-login-warn {
@@ -664,7 +914,7 @@ onUnmounted(() => stopAllPolling())
 
 .qq-web-login-btn {
     width: 80%;
-    background-color: #31C27C;
+    background-color: var(--primary-color);
     margin-top: 8px;
 }
 
@@ -677,5 +927,114 @@ onUnmounted(() => stopAllPolling())
     color: #999;
     text-align: center;
     min-height: 16px;
+}
+
+/* 酷狗多账户选择弹窗 */
+.account-picker-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    backdrop-filter: blur(4px);
+}
+.account-picker-modal {
+    background: #fff;
+    border-radius: 12px;
+    width: 380px;
+    max-width: 90vw;
+    max-height: 80vh;
+    overflow: hidden;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25);
+    animation: account-picker-in 0.2s ease;
+}
+@keyframes account-picker-in {
+    from { opacity: 0; transform: scale(0.95) translateY(-10px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+}
+.account-picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid #f0f0f0;
+}
+.account-picker-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+}
+.account-picker-close {
+    color: #999;
+    cursor: pointer;
+    transition: color 0.15s, transform 0.15s;
+}
+.account-picker-close:hover {
+    color: #333;
+    transform: rotate(90deg);
+}
+.account-picker-body {
+    padding: 16px 20px;
+    overflow-y: auto;
+}
+.account-picker-tip {
+    font-size: 12px;
+    color: #999;
+    margin-bottom: 12px;
+    line-height: 1.5;
+}
+.account-picker-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-bottom: 6px;
+}
+.account-picker-item:hover {
+    background: rgba(44, 162, 245, 0.08);
+}
+.account-picker-item.disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+.account-picker-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: #f5f5f5;
+}
+.account-picker-avatar.placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ccc;
+}
+.account-picker-info {
+    flex: 1;
+    min-width: 0;
+}
+.account-picker-name {
+    font-size: 14px;
+    color: #333;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.account-picker-meta {
+    font-size: 12px;
+    color: #999;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 </style>

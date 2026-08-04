@@ -22,6 +22,16 @@ const QQLiked = () => import('../views/qq/Liked.vue')
 const QQSingerList = () => import('../views/qq/SingerList.vue')
 const QQPlaylistCategory = () => import('../views/qq/PlaylistCategory.vue')
 
+// 酷狗概念版模块（懒加载，与网易云/QQ 路由隔离）
+const KugouDiscovery = () => import('../views/kugou/Discovery.vue')
+const KugouSearch = () => import('../views/kugou/Search.vue')
+const KugouPlaylistDetail = () => import('../views/kugou/PlaylistDetail.vue')
+const KugouSingerDetail = () => import('../views/kugou/SingerDetail.vue')
+const KugouAlbumDetail = () => import('../views/kugou/AlbumDetail.vue')
+const KugouLiked = () => import('../views/kugou/Liked.vue')
+const KugouSingerList = () => import('../views/kugou/SingerList.vue')
+const KugouPlaylistCategory = () => import('../views/kugou/PlaylistCategory.vue')
+
 // 动漫模块（懒加载，减小首屏 bundle）
 const Anime = () => import('../views/Anime.vue')
 const AnimeDetail = () => import('../views/AnimeDetail.vue')
@@ -155,6 +165,48 @@ const routes = [
         path: '/qq/categories',
         name: 'QQPlaylistCategory',
         component: QQPlaylistCategory
+    },
+
+    // ========== 酷狗概念版平台路由（独立路径前缀 /kugou/） ==========
+    {
+        path: '/kugou',
+        name: 'KugouDiscovery',
+        component: KugouDiscovery
+    },
+    {
+        path: '/kugou/search',
+        name: 'KugouSearch',
+        component: KugouSearch
+    },
+    {
+        path: '/kugou/playlist/:id',
+        name: 'KugouPlaylistDetail',
+        component: KugouPlaylistDetail
+    },
+    {
+        path: '/kugou/singer/:id',
+        name: 'KugouSingerDetail',
+        component: KugouSingerDetail
+    },
+    {
+        path: '/kugou/album/:id',
+        name: 'KugouAlbumDetail',
+        component: KugouAlbumDetail
+    },
+    {
+        path: '/kugou/liked',
+        name: 'KugouLiked',
+        component: KugouLiked
+    },
+    {
+        path: '/kugou/singers',
+        name: 'KugouSingerList',
+        component: KugouSingerList
+    },
+    {
+        path: '/kugou/categories',
+        name: 'KugouPlaylistCategory',
+        component: KugouPlaylistCategory
     }
 ]
 
@@ -177,14 +229,23 @@ export function getPendingLockTarget() {
 }
 
 router.beforeEach((to, from, next) => {
-    // 平台路由守卫:根据当前平台重定向首页
-    // QQ 平台访问 / → 重定向到 /qq;网易云平台访问 /qq → 重定向到 /
+    // 平台路由守卫:根据当前平台重定向首页（三平台互斥）
+    // QQ/酷狗 平台访问 / → 跳转到对应平台首页
+    // 网易云平台访问 /qq 或 /kugou → 跳回 /
+    // QQ 平台访问 /kugou → 跳 /qq;酷狗平台访问 /qq → 跳 /kugou
     const platform = localStorage.getItem('current_platform') || 'netease'
-    if (platform === 'qq' && to.path === '/') {
+    if ((platform === 'qq' || platform === 'kugou') && to.path === '/') {
+        return next(platform === 'qq' ? '/qq' : '/kugou')
+    }
+    if (platform === 'netease' && (to.path === '/qq' || to.path === '/kugou') &&
+        !from.path.startsWith('/qq') && !from.path.startsWith('/kugou')) {
+        return next('/')
+    }
+    if (platform === 'qq' && to.path === '/kugou') {
         return next('/qq')
     }
-    if (platform === 'netease' && to.path === '/qq' && !from.path.startsWith('/qq')) {
-        return next('/')
+    if (platform === 'kugou' && to.path === '/qq') {
+        return next('/kugou')
     }
 
     // 账号密码锁路由守护:访问"我喜欢的音乐"或自己创建的歌单时拦截
