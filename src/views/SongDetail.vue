@@ -26,6 +26,8 @@ const isKugouSong = computed(() => playerStore.currentSong.platform === 'kugou' 
 // 非网易云歌曲(用于统一隐藏网易云专属功能:歌单管理、云盘等)
 const isNonNeteaseSong = computed(() => isQQSong.value || isKugouSong.value)
 const lyricFontSize = ref(32)
+const noScale = ref(localStorage.getItem('song_detail_no_scale') === 'true')
+watch(noScale, (v) => { localStorage.setItem('song_detail_no_scale', v) })
 const showGifCover = ref(localStorage.getItem('song_detail_show_gif_cover') !== 'false')
 // 歌词设置项默认折叠收起
 const showLyricSettings = ref(false)
@@ -1011,6 +1013,12 @@ onMounted(() => {
                            <Plus :size="14" class="clickable" @click="lyricFontSize = lyricFontSize + 2" />
                         </div>
                     </div>
+                    <div class="group">
+                        <span class="label">高亮行</span>
+                        <div class="mode-chip" :class="{ active: noScale }" title="切换高亮行是否放大" @click="noScale = !noScale">
+                            <span>{{ noScale ? '等大' : '放大' }}</span>
+                        </div>
+                    </div>
                 </div>
             </transition>
         </div>
@@ -1029,7 +1037,7 @@ onMounted(() => {
                     blurClassMap[index] || ''
                 ]"
                 :style="{ 
-                    fontSize: (index === currentLyricIndex ? lyricFontSize + 4 : lyricFontSize) + 'px',
+                    fontSize: (index === currentLyricIndex && !noScale ? lyricFontSize + 4 : lyricFontSize) + 'px',
                     fontFamily: lyricFontFamily
                 }"
                 @click="handleLyricClick(line.time)"

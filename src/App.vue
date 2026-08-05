@@ -1185,20 +1185,7 @@ const openGithub = () => {
               <img v-if="isLoggedIn && avatarUrl" :src="avatarUrl" class="avatar" />
               <div v-else class="avatar"></div>
               <span class="nickname">{{ isLoggedIn ? nickname : '未登录' }}</span>
-              <span v-if="platformStore.isKugou && kugouUserStore.profile?.isVip" class="kugou-vip-badge" title="酷狗概念版 VIP">
-                  <svg class="kugou-vip-svg" viewBox="0 0 42 24" width="42" height="24" aria-hidden="true">
-                      <defs>
-                          <linearGradient id="kg-vip-grad" x1="0" y1="0" x2="1" y2="0">
-                              <stop offset="0%" stop-color="#2CA2F5"/>
-                              <stop offset="100%" stop-color="#4AD295"/>
-                          </linearGradient>
-                      </defs>
-                      <rect x="0.5" y="0.5" width="41" height="23" rx="5" fill="url(#kg-vip-grad)"/>
-                      <path d="M13 7 L16.2 3.2 L19 6.8 L22 3.2 L25 7 L24 18 L14 18 Z" fill="#FFD54F"/>
-                      <path d="M14.8 13.5 L16 11.5 L19 12 L20 11.5 L21 13.5 L20 15 L16.5 15 Z" fill="#FFB300"/>
-                      <text x="21" y="20.5" text-anchor="middle" font-size="12" font-weight="700" fill="#fff" font-family="'PingFang SC', Arial, sans-serif">VIP</text>
-                  </svg>
-              </span>
+              <span v-if="platformStore.isKugou && kugouUserStore.profile?.isVip" class="kugou-vip-badge" title="酷狗概念版 VIP">VIP</span>
               <div v-if="!platformStore.isQQ && !platformStore.isKugou && userStore.vipInfo && userStore.vipInfo.redVipLevelIcon" class="vip-badge">
                  <img :src="userStore.vipInfo.redVipLevelIcon" class="vip-icon" />
               </div>
@@ -2218,17 +2205,18 @@ const openGithub = () => {
     white-space: nowrap;
     flex-shrink: 0;
 }
-/* 酷狗概念版 VIP 角标(蓝白主题) */
+/* 酷狗概念版 VIP 角标 */
 .kugou-vip-badge {
     margin-left: 6px;
-    display: inline-flex;
-    align-items: center;
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    background: linear-gradient(135deg, #2CA2F5, #4AD295);
+    padding: 1px 5px;
+    border-radius: 3px;
+    line-height: 16px;
     flex-shrink: 0;
-    line-height: 1;
-}
-.kugou-vip-svg {
-    display: block;
-    filter: drop-shadow(0 1px 3px rgba(44, 162, 245, 0.4));
 }
 .qq-vip-icon {
     height: 14px;
