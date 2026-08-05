@@ -744,7 +744,7 @@ const close = () => {
      同时移除 transition: background —— 它会在每帧追赶新目标值，造成顿挫感 */
   background-image: linear-gradient(to right,
     currentColor 0%, currentColor 50%,
-    rgba(0, 0, 0, 0.32) 50%, rgba(0, 0, 0, 0.32) 100%);
+    rgba(0, 0, 0, 0.28) 50%, rgba(0, 0, 0, 0.28) 100%);
   background-size: 200% 100%;
   background-position: calc(100% - var(--wp, 0) * 100%) 0;
   background-repeat: no-repeat;
@@ -756,7 +756,7 @@ const close = () => {
 .card-locked .yrc-word {
   background-image: linear-gradient(to right,
     #ec4141 0%, #ec4141 50%,
-    #cccccc 50%, #cccccc 100%);
+    #aaaaaa 50%, #aaaaaa 100%);
   background-size: 200% 100%;
   background-position: calc(100% - var(--wp, 0) * 100%) 0;
   background-repeat: no-repeat;

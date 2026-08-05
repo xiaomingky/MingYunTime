@@ -246,7 +246,11 @@ onUnmounted(() => {
   if (animationId) cancelAnimationFrame(animationId)
   animationId = null
   _barEls = null    // 清理 DOM 引用缓存
-  if (_leavingTimer) clearTimeout(_leavingTimer)
+  // 清理所有 leaving 定时器
+  for (const [, timer] of _leavingTimers) {
+    clearTimeout(timer)
+  }
+  _leavingTimers.clear()
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
@@ -279,7 +283,6 @@ const currentLyricIndex = computed(() => {
 })
 
 const lyricContainer = ref(null)
-const lyricMode = ref('apple')
 const leavingIndexes = ref(new Set())
 
 const lyricFontFamily = computed(() => {
@@ -303,7 +306,6 @@ const getParticleStyle = (lineIndex, charIndex) => {
 }
 
 const getLineBlur = (index) => {
-    if (lyricMode.value !== 'apple') return 0
     const distance = Math.abs(index - currentLyricIndex.value)
     if (distance === 0) return 0
     if (distance === 1) return 2
@@ -314,7 +316,6 @@ const getLineBlur = (index) => {
 // 预计算每行模糊等级，避免模板中逐行调用函数
 const blurClassMap = computed(() => {
     const map = {}
-    if (lyricMode.value !== 'apple') return map
     const current = currentLyricIndex.value
     displayLyrics.value.forEach((_, i) => {
         const d = Math.abs(i - current)
@@ -347,14 +348,7 @@ const scrollToCenter = async (index, instant = false) => {
   })
 }
 
-const toggleLyricMode = () => {
-    lyricMode.value = lyricMode.value === 'apple' ? 'classic' : 'apple'
-    if (currentLyricIndex.value >= 0) {
-        scrollToCenter(currentLyricIndex.value)
-    }
-}
-
-// === 歌词源切换 ===
+// 歌词源切换 ===
 const lyricSourceText = computed(() => {
     const map = { qq: 'QQ音乐', kugou: '酷狗', netease: '网易云', local: '本地', '': '未加载' }
     return map[playerStore.lyricSource] || '未加载'
@@ -378,17 +372,19 @@ const switchLyricSource = () => {
     }))
 }
 
-// leavingIndexes 定时器引用，组件卸载时清理
-let _leavingTimer = null
+// leavingIndexes 定时器 Map，每个索引独立定时器，避免清除时遗漏导致 pointer-events 永久锁定
+let _leavingTimers = new Map()
 watch(currentLyricIndex, (newIndex, oldIndex) => {
   if (oldIndex != null && oldIndex >= 0 && oldIndex !== newIndex) {
     leavingIndexes.value.add(oldIndex)
-    // 与 transition 时长（0.3s）匹配，避免过长的 leaving 状态
-    if (_leavingTimer) clearTimeout(_leavingTimer)
-    _leavingTimer = setTimeout(() => {
-      _leavingTimer = null
+    // 清除该索引的旧定时器（如果有），然后创建新定时器
+    if (_leavingTimers.has(oldIndex)) {
+      clearTimeout(_leavingTimers.get(oldIndex))
+    }
+    _leavingTimers.set(oldIndex, setTimeout(() => {
       leavingIndexes.value.delete(oldIndex)
-    }, 320)
+      _leavingTimers.delete(oldIndex)
+    }, 1300))
   }
   if (newIndex >= 0) {
     scrollToCenter(newIndex)
@@ -957,10 +953,6 @@ onMounted(() => {
                    <Image v-else :size="18" />
                    <span class="icon-text">{{ playerStore.bgMode === 'cover' ? '沉浸' : '经典' }}</span>
                 </div>
-                <div class="icon-with-label action-item lyric-mode-btn" :class="{ active: lyricMode === 'apple' }" :title="lyricMode === 'apple' ? '切换到经典歌词' : '切换到苹果风格歌词'" @click="toggleLyricMode">
-                   <span class="mode-label">{{ lyricMode === 'apple' ? 'A' : 'C' }}</span>
-                   <span class="icon-text">{{ lyricMode === 'apple' ? '苹果' : '经典' }}</span>
-                </div>
                 <div class="icon-with-label action-item lyric-source-btn" :title="`当前: ${lyricSourceText}，点击切换歌词源`" @click="switchLyricSource">
                    <RefreshCw :size="16" />
                    <span class="icon-text">{{ lyricSourceText }}</span>
@@ -1023,7 +1015,7 @@ onMounted(() => {
             </transition>
         </div>
 
-        <div class="lyric-wrapper" ref="lyricContainer" :class="'mode-' + lyricMode">
+        <div class="lyric-wrapper mode-apple" ref="lyricContainer">
           <div class="lyric-track">
               <div 
                 v-for="(line, index) in displayLyrics" 
@@ -1907,10 +1899,10 @@ onMounted(() => {
   box-sizing: border-box;
   transform-origin: center center;
   opacity: 0.55;
-  /* 只过渡 color/opacity 两个轻量属性，transform/filter 都不做过渡避免卡顿 */
+  /* 过渡动画：慢速 + 自然缓动，营造真实感 */
   transition:
-    color 0.3s ease,
-    opacity 0.3s ease;
+    color 1.2s cubic-bezier(0.25, 0.1, 0.25, 1),
+    opacity 1.2s cubic-bezier(0.25, 0.1, 0.25, 1);
 }
 
 .lyric-line.active {
@@ -1983,26 +1975,11 @@ onMounted(() => {
   opacity: 0.25;
 }
 
-.mode-classic .lyric-line.blur-1,
-.mode-classic .lyric-line.blur-2,
-.mode-classic .lyric-line.blur-far {
-  filter: none !important;
-}
-
-@keyframes particle-scatter-word {
-  0% {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-18px);
-  }
-}
+/* === 歌词变色模式：高亮行使用所选颜色 === */
 
 .lyric-line.active .main-text {
-     /* 未填充部分保持 0.5 可读性,避免新激活行进度极低时整行过浅 */
-     background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.5) var(--progress));
+     /* 未填充部分保持 0.75 可读性,避免新激活行进度极低时整行过浅 */
+     background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.75) var(--progress));
      -webkit-background-clip: text;
      background-clip: text;
      -webkit-text-fill-color: transparent;
@@ -2021,7 +1998,7 @@ onMounted(() => {
 }
 
 .is-cover-mode .lyric-line.active .main-text {
-     background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.55) var(--progress));
+     background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.75) var(--progress));
      -webkit-background-clip: text;
      background-clip: text;
      -webkit-text-fill-color: transparent;
@@ -2043,7 +2020,7 @@ onMounted(() => {
 }
 
 .main-text {
-  background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.4) var(--progress));
+  background: linear-gradient(to right, #000 var(--progress), rgba(0,0,0,0.7) var(--progress));
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -2088,7 +2065,7 @@ onMounted(() => {
        前者只触发 GPU 合成层位移（丝滑），后者每帧重绘 background（顿挫） */
     background-image: linear-gradient(to right,
         #000 0%, #000 50%,
-        rgba(0,0,0,0.5) 50%, rgba(0,0,0,0.5) 100%);
+        rgba(0,0,0,0.4) 50%, rgba(0,0,0,0.4) 100%);
     background-size: 200% 100%;
     background-position: calc(100% - var(--wp) * 100%) 0;
     background-repeat: no-repeat;
@@ -2105,7 +2082,7 @@ onMounted(() => {
 .is-cover-mode .yrc-word {
     background-image: linear-gradient(to right,
         #000 0%, #000 50%,
-        rgba(0,0,0,0.65) 50%, rgba(0,0,0,0.65) 100%);
+        rgba(0,0,0,0.45) 50%, rgba(0,0,0,0.45) 100%);
     background-size: 200% 100%;
     background-position: calc(100% - var(--wp) * 100%) 0;
     background-repeat: no-repeat;
@@ -2117,7 +2094,7 @@ onMounted(() => {
 .lyric-line.active .yrc-word {
     background-image: linear-gradient(to right,
         #000 0%, #000 50%,
-        rgba(0,0,0,0.5) 50%, rgba(0,0,0,0.5) 100%);
+        rgba(0,0,0,0.4) 50%, rgba(0,0,0,0.4) 100%);
     background-size: 200% 100%;
     background-position: calc(100% - var(--wp) * 100%) 0;
     background-repeat: no-repeat;
@@ -2134,43 +2111,6 @@ onMounted(() => {
 /* 沉浸模式：加深非激活行逐字歌词颜色 */
 .is-cover-mode .lyric-line:not(.active) .yrc-word {
     -webkit-text-fill-color: rgba(0,0,0,0.7);
-}
-
-/* === 经典模式 === */
-.mode-classic .lyric-line {
-    filter: none !important;
-    transform: none !important;
-    opacity: 0.65;
-    color: rgba(0,0,0,0.55);
-}
-
-.mode-classic .lyric-line.active {
-    opacity: 1;
-    color: #000 !important;
-}
-
-.mode-classic .lyric-line.played {
-    opacity: 0.35;
-}
-
-.mode-classic .lyric-line.leaving {
-    opacity: 0.35;
-}
-
-.mode-classic .lyric-line.leaving .lyric-char,
-.mode-classic .lyric-line.leaving .yrc-word {
-    animation: none;
-}
-
-.mode-classic .lyric-line:not(.active) .yrc-word {
-    -webkit-text-fill-color: rgba(0,0,0,0.55);
-}
-
-/* === 歌词模式切换按钮 === */
-.lyric-mode-btn .mode-label {
-    font-size: 11px;
-    font-weight: 700;
-    color: inherit;
 }
 
 /* === 歌词变色模式：高亮行使用所选颜色 === */

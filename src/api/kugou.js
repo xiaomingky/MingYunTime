@@ -685,8 +685,9 @@ export const normalizeKugouSong = (song) => {
         audio_id: song.audio_id || '',
         mixsongid,
         // fileid: 从歌单删除歌曲时需要的字段(酷狗文档 /playlist/tracks/del 需要 fileids)
-        // 兼容多种字段名: fileid / file_id / songid / song_id / SongID
-        fileid: song.fileid || song.file_id || song.FileID || song.songid || song.song_id || song.SongID || song.Audioid || hash,
+        // ⚠️ delete_songs 接口会 Number(fileid)，必须是数字！hash 是字符串会导致 NaN
+        // 优先取数字字段: album_audio_id / songid / Audioid，最后才回退到 hash
+        fileid: song.fileid || song.file_id || song.FileID || song.album_audio_id || song.Audioid || song.songid || song.song_id || song.SongID || hash,
         songname: songName,
         name: songName,
         singer: Array.isArray(singers) ? singers : [],

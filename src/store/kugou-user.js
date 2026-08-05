@@ -7,8 +7,9 @@ import {
     kugouLoginToken, kugouUserDetail, kugouUserVip, kugouUserPlaylist,
     getKugouCookie, setKugouCookie, clearKugouCookie,
     getKugouProfile, setKugouProfile, clearKugouProfile, getKugouUserid,
-    normalizeKugouPlaylist, kugouLikeSong, kugouUnlikeSong,
-    kugouPlaylistAdd, kugouPlaylistDel, kugouPlaylistTracksAdd, kugouPlaylistTracksDel
+    normalizeKugouPlaylist, normalizeKugouSong, kugouLikeSong, kugouUnlikeSong,
+    kugouPlaylistAdd, kugouPlaylistDel, kugouPlaylistTracksAdd, kugouPlaylistTracksDel,
+    kugouPlaylistSongsNew
 } from '../api/kugou'
 
 export const useKugouUserStore = defineStore('kugouUser', {
@@ -545,8 +546,20 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 // 用 isSongLiked(hash) 判断当前喜欢状态,而不是依赖外部传入的 isLiked 字段
                 const isLiked = this.isSongLiked(song.hash)
                 if (isLiked) {
-                    // 取消喜欢
-                    await kugouUnlikeSong(this.likedPlaylistId, song.hash)
+                    // 取消喜欢：复用 removeSongFromPlaylist 逻辑（与删除歌单歌曲一致）
+                    // 外部传入的 song 可能只有 hash 缺少 album_audio_id（如播放器 currentSong），
+                    // 需要从"我喜欢"歌单拉取完整数据来补全数字 ID
+                    let fullSong = song
+                    if (!song.album_audio_id) {
+                        try {
+                            const res = await kugouPlaylistSongsNew(this.likedPlaylistId, 1, 300)
+                            const list = res?.data?.info || res?.data?.lists || res?.data?.list || []
+                            const found = (Array.isArray(list) ? list : []).map(normalizeKugouSong).find(s => s?.hash === song.hash)
+                            if (found) fullSong = { ...song, ...found }
+                        } catch (_) {}
+                    }
+                    const ok = await this.removeSongFromPlaylist(this.likedPlaylistId, fullSong)
+                    if (!ok) return false
                     // 从 likedSongsHashes 中移除
                     this.likedSongsHashes = this.likedSongsHashes.filter(h => h !== song.hash)
                     useMessageStore().success('已取消喜欢')
@@ -752,12 +765,14 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 useMessageStore().warning('请先登录酷狗')
                 return false
             }
-            if (!listid || !song?.fileid) {
+            // delete_songs 接口：优先用数字 ID，否则用 hash
+            const fileId = song.album_audio_id || song.fileid || song.songid || song.hash
+            if (!listid || !fileId) {
                 useMessageStore().warning('参数不完整')
                 return false
             }
             try {
-                const res = await kugouPlaylistTracksDel(listid, song.fileid)
+                const res = await kugouPlaylistTracksDel(listid, fileId)
                 if (this._isKugouSuccess(res)) {
                     useMessageStore().success('已从歌单移除')
                     return true
@@ -773,7 +788,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
         },
 
         // 批量从歌单删除歌曲
-        // songs: 标准化后的歌曲对象数组(需含 fileid 字段)
+        // songs: 标准化后的歌曲对象数组(需含 album_audio_id 或 fileid 字段)
         async batchRemoveFromPlaylist(listid, songs) {
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
@@ -783,9 +798,10 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 useMessageStore().warning('参数不完整')
                 return false
             }
-            const fileids = songs.map(s => s.fileid).filter(Boolean)
+            // delete_songs 接口：优先用数字 ID，否则用 hash
+            const fileids = songs.map(s => s.album_audio_id || s.fileid || s.songid || s.hash).filter(Boolean)
             if (!fileids.length) {
-                useMessageStore().warning('未找到歌曲 fileid')
+                useMessageStore().warning('未找到歌曲ID')
                 return false
             }
             try {
