@@ -979,7 +979,13 @@ const openGithub = () => {
   <div class="app-container" :class="{ 'is-desktop-lyrics': route.path === '/desktop-lyrics' }" :data-platform="platformStore.current">
     <Toast />
     <VideoDownloadToast />
-    <ConfirmModal />
+    <ConfirmModal
+        :visible="messageStore.confirmState.show"
+        :title="messageStore.confirmState.title"
+        :message="messageStore.confirmState.message"
+        @confirm="messageStore.closeConfirm(true)"
+        @cancel="messageStore.closeConfirm(false)"
+    />
     <!-- 酷狗批量取消收藏歌单确认弹窗 -->
     <ConfirmModal
         :visible="kugouShowBatchConfirm"
