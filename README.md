@@ -307,7 +307,7 @@ music/
 ---
 
 ## ☕ 赞赏
-
+[![Powered by DartNode](https://dartnode.com/branding/DN-Open-Source-sm.png)](https://dartnode.com "Powered by DartNode - Free VPS for Open Source")
 如果觉得好用，欢迎请开发者喝杯咖啡！
 
 ![赞赏码](showimage/赞赏.png)
