@@ -8,6 +8,12 @@ import * as cheerio from 'cheerio'
 
 // 3线路：推荐 / 经典 / 备用（同构 maccms，解析逻辑通用）
 const SOURCES = {
+  yhfs: {
+    id: 'yhfs',
+    base: 'https://www.yinghuafans.com',
+    label: '樱花动漫·官方线路',
+    type: 'iframe'
+  },
   yhf: {
     id: 'yhf',
     base: 'https://www.yinghuafan.com',
@@ -28,8 +34,8 @@ const SOURCES = {
   }
 }
 
-// 故障转移顺序：推荐 → 经典 → 备用
-const FALLBACK_ORDER = ['yhf', 'xdm', 'yhdmfan']
+// 故障转移顺序：官方 → 推荐 → 经典 → 备用
+const FALLBACK_ORDER = ['yhfs', 'yhf', 'xdm', 'yhdmfan']
 
 // 各播放源(from)对应的解析接口（来自 playerconfig.js）
 // 方案一：直接 iframe 套用解析播放器，快速无需提取直链
@@ -89,6 +95,7 @@ function parseCard($el, base, sourceId) {
     if (!$titleLink.length) $titleLink = $el.find('a[href*="/show/"]').first()
     if (!$titleLink.length) $titleLink = $el.find('.module-card-item-title a').first()
     if (!$titleLink.length) $titleLink = $el.find('.module-item-title a').first()
+    if (!$titleLink.length) $titleLink = $el.find('.vod-item-title a').first()
   }
 
   const href = $titleLink.attr('href') || ''
@@ -99,7 +106,7 @@ function parseCard($el, base, sourceId) {
   const $img = $el.find('img').first()
   let title = ($titleLink.attr('title') || '').trim()
     || ($img.attr('alt') || '').trim()
-    || $el.find('.module-poster-item-title, .module-card-item-title').first().text().trim()
+    || $el.find('.module-poster-item-title, .module-card-item-title, .vod-item-title, .slide-item-title').first().text().trim()
     || $titleLink.find('strong').text().trim()
     || $el.attr('title')
     || ''
@@ -109,11 +116,13 @@ function parseCard($el, base, sourceId) {
   }
   if (!title) return null
 
+  const $ewaveImg = $el.find('.ewave-img-wrapper, .slide-item-pic').first()
+  const coverUrl = $img.attr('data-original') || $img.attr('data-src') || $img.attr('src') || $ewaveImg.attr('data-original') || $ewaveImg.attr('data-background')
   const cover = normalizeCover(
-    $img.attr('data-original') || $img.attr('data-src') || $img.attr('src'),
+    coverUrl,
     base
   )
-  const note = $el.find('.module-item-note, .module-item-new, .module-card-item-tag').first().text().trim()
+  const note = $el.find('.module-item-note, .module-item-new, .module-card-item-tag, .vod-item-desc, .slide-item-desc').first().text().trim()
   return {
     id: idMatch[1],
     title: title.replace(/\s+/g, ' '),
@@ -139,11 +148,11 @@ async function getHomeSingle(sourceId) {
   }
 
   // 1. 优先按 module 区块爬取
-  $('.module').each((_, mod) => {
+  $('.module, .layout-box').each((_, mod) => {
     const $mod = $(mod)
-    const sectionTitle = $mod.find('.module-heading .module-title, .module-title').first().text().trim()
+    const sectionTitle = $mod.find('.module-heading .module-title, .module-title, .box-title').first().text().trim()
     const items = []
-    $mod.find('.module-poster-item, .module-card-item, .module-item, .stui-vodlist__item, .vodlist-item').each((_, el) => {
+    $mod.find('.module-poster-item, .module-card-item, .module-item, .stui-vodlist__item, .vodlist-item, .vod-item, .slide-item').each((_, el) => {
       const card = parseCard($(el), base, sourceId)
       if (card) items.push(card)
     })
@@ -162,7 +171,7 @@ async function getHomeSingle(sourceId) {
 
   // 2. 兜底：直接遍历所有卡片选择器
   if (sections.latest.length === 0 && sections.hot.length === 0) {
-    $('.module-poster-item, .module-card-item, .module-item, .stui-vodlist__item, .vodlist-item, li[class*=item]').each((_, el) => {
+    $('.module-poster-item, .module-card-item, .module-item, .stui-vodlist__item, .vodlist-item, .vod-item, .slide-item, li[class*=item]').each((_, el) => {
       pushCard(parseCard($(el), base, sourceId))
     })
   }
@@ -320,15 +329,17 @@ async function getDetailSingle(sourceId, id) {
   const html = await fetchHtml(url, base)
   const $ = cheerio.load(html)
 
-  const title = $('.module-info-heading h1, .page-title, h1').first().text().trim()
+  const title = $('.module-info-heading h1, .page-title, h1, .detail-info-title').first().text().trim()
     || $('meta[property="og:title"]').attr('content') || id
 
-  const $coverImg = $('.module-info-poster img, .module-item-pic img, .content img').first()
-  const cover = normalizeCover($coverImg.attr('data-original') || $coverImg.attr('src'), base)
+  const $coverImg = $('.module-info-poster img, .module-item-pic img, .content img, .detail-info-pic img').first()
+  const $ewaveCover = $('.detail-info-pic .ewave-img-wrapper, .ewave-img-wrapper').first()
+  const coverUrl = $coverImg.attr('data-original') || $coverImg.attr('src') || $ewaveCover.attr('data-original') || $ewaveCover.attr('data-background')
+  const cover = normalizeCover(coverUrl, base)
 
   // 简介：优先取 .module-info-introduction 的纯文本，避免混入导演/制作等元信息行
   let desc = ''
-  const $intro = $('.module-info-introduction, .video-info-content, .summary, .brief, .video_info-content, #c1>p, .play-desc').first()
+  const $intro = $('.module-info-introduction, .video-info-content, .summary, .brief, .video_info-content, #c1>p, .play-desc, .detail-info-list').first()
   if ($intro.length) {
     desc = $intro.text().trim()
     // 过滤掉"导演：xxx"、"主演：xxx"等元信息行（以"xxx："开头且含中文冒号）
@@ -340,14 +351,21 @@ async function getDetailSingle(sourceId, id) {
 
   // 多线路：每个 .module-play-list 对应一个 .module-tab-item
   const routes = []
-  const $tabs = $('.module-tab-item[data-dropdown-value], .playlist-tab-item')
+  const $tabs = $('.module-tab-item[data-dropdown-value], .playlist-tab-item, .ewave-tab[data-target^="#"]')
   const $playLists = $('.module-play-list')
 
-  if ($tabs.length > 0 && $playLists.length > 0) {
-    $playLists.each((idx, list) => {
-      const $list = $(list)
-      const $tab = $tabs.eq(idx)
+  if ($tabs.length > 0) {
+    $tabs.each((idx, tab) => {
+      const $tab = $(tab)
       const routeName = $tab.attr('data-dropdown-value') || $tab.text().trim() || `线路${idx + 1}`
+      const target = $tab.attr('data-target')
+      let $list
+      if (target && target.startsWith('#')) {
+        $list = $(target)
+      } else {
+        $list = $playLists.eq(idx)
+      }
+      
       const episodes = []
       $list.find('a.module-play-list-link, a[href*="/p/"]').each((_, el) => {
         const $el = $(el)

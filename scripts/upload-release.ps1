@@ -9,10 +9,10 @@ Write-Host "token loaded (len=$($token.Length))"
 
 $owner = "xiaomingky"
 $repo = "MingYunTime"
-$tag = "v3.1.7"
+$tag = "v3.1.8"
 $headers = @{ Authorization = "token $token"; Accept = "application/vnd.github+json" }
 
-$releaseNotes = "修复动漫专区搜索不到内容的问题，适配源站的接口更新以绕过安全验证。"
+$releaseNotes = "新增樱花动漫官方直连线路，并全面重构了无感知的观看防诈骗提示弹窗，进一步提升影音安全体验。"
 
 Write-Host "=== 1. Check release ==="
 $releaseId = $null
@@ -22,7 +22,7 @@ try {
     $releaseId = $existing.id
 } catch {
     Write-Host "Creating new release"
-    $bodyObj = @{ tag_name = $tag; name = "v3.1.7"; body = $releaseNotes; draft = $false; prerelease = $false }
+    $bodyObj = @{ tag_name = $tag; name = "v3.1.8"; body = $releaseNotes; draft = $false; prerelease = $false }
     $bodyJson = $bodyObj | ConvertTo-Json -Depth 5
     $create = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases" -Headers $headers -Method Post -Body $bodyJson -ContentType "application/json; charset=utf-8" -TimeoutSec 30
     $releaseId = $create.id
@@ -31,12 +31,12 @@ try {
 
 if (-not $releaseId) { Write-Host "ERROR: no releaseId"; exit 1 }
 
-$exePath = (Get-ChildItem "f:\xiangmu\music\release\*3.1.7.exe")[0].FullName
+$exePath = (Get-ChildItem "f:\xiangmu\music\release\*3.1.8.exe")[0].FullName
 if (-not (Test-Path $exePath)) { Write-Host "ERROR: exe not found"; exit 1 }
 $fileSize = (Get-Item $exePath).Length
 Write-Host "=== 2. Upload ($([math]::Round($fileSize/1MB,2)) MB) ==="
 
-$fileName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.1.7.exe")
+$fileName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.1.8.exe")
 $uploadUrl = "https://uploads.github.com/repos/$owner/$repo/releases/$releaseId/assets?name=$fileName"
 $uploadHeaders = @{ Authorization = "token $token"; Accept = "application/vnd.github+json"; "Content-Type" = "application/octet-stream" }
 
@@ -49,10 +49,10 @@ try {
     exit 1
 }
 
-$bmapPath = (Get-ChildItem "f:\xiangmu\music\release\*3.1.7.exe.blockmap")[0].FullName
+$bmapPath = (Get-ChildItem "f:\xiangmu\music\release\*3.1.8.exe.blockmap")[0].FullName
 if (Test-Path $bmapPath) {
     Write-Host "=== 3. Upload blockmap ==="
-    $bmapName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.1.7.exe.blockmap")
+    $bmapName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.1.8.exe.blockmap")
     $bmapUrl = "https://uploads.github.com/repos/$owner/$repo/releases/$releaseId/assets?name=$bmapName"
     try { Invoke-RestMethod -Uri $bmapUrl -Headers $uploadHeaders -Method Post -InFile $bmapPath -TimeoutSec 120; Write-Host "blockmap OK" } catch { Write-Host "blockmap failed" }
 }
