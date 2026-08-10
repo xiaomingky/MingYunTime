@@ -12,7 +12,7 @@ $repo = "MingYunTime"
 $tag = "v3.1.6"
 $headers = @{ Authorization = "token $token"; Accept = "application/vnd.github+json" }
 
-$releaseNotes = Get-Content "f:\xiangmu\music\BLOG-v3.1.6.md" -Raw -Encoding UTF8
+$releaseNotes = "全新高质感 CD 碟片模式，自带侧滑动画与真实唱机机械摇臂联动"
 
 Write-Host "=== 1. Check release ==="
 $releaseId = $null
@@ -31,8 +31,8 @@ try {
 
 if (-not $releaseId) { Write-Host "ERROR: no releaseId"; exit 1 }
 
-$exePath = "f:\xiangmu\music\release\茗韵时光 Setup 3.1.6.exe"
-if (-not (Test-Path $exePath)) { Write-Host "ERROR: exe not found $exePath"; exit 1 }
+$exePath = (Get-ChildItem "f:\xiangmu\music\release\*3.1.6.exe")[0].FullName
+if (-not (Test-Path $exePath)) { Write-Host "ERROR: exe not found"; exit 1 }
 $fileSize = (Get-Item $exePath).Length
 Write-Host "=== 2. Upload ($([math]::Round($fileSize/1MB,2)) MB) ==="
 
@@ -49,7 +49,7 @@ try {
     exit 1
 }
 
-$bmapPath = "f:\xiangmu\music\release\茗韵时光 Setup 3.1.6.exe.blockmap"
+$bmapPath = (Get-ChildItem "f:\xiangmu\music\release\*3.1.6.exe.blockmap")[0].FullName
 if (Test-Path $bmapPath) {
     Write-Host "=== 3. Upload blockmap ==="
     $bmapName = [System.Uri]::EscapeDataString("茗韵时光 Setup 3.1.6.exe.blockmap")

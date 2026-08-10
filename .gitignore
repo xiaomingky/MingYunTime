@@ -57,3 +57,8 @@ website/
 # 临时测试文件
 test-*.js
 explorer.html
+
+BLOG*.md
+CHANGELOG.md
+kgapi*.md
+update_report.md
