@@ -216,40 +216,84 @@ async function getHome() {
 // 单源搜索
 async function searchSingle(sourceId, keyword) {
   const base = SOURCES[sourceId].base
-  const url = `${base}/vodsearch/${encodeURIComponent(keyword)}-------------.html`
-  const html = await fetchHtml(url, base)
-  const $ = cheerio.load(html)
   const results = []
   const seen = new Set()
-  $('.module-card-item, .module-item, .module-poster-item').each((_, el) => {
-    const card = parseCard($(el), base, sourceId)
-    if (card && !seen.has(card.id)) {
-      seen.add(card.id)
-      results.push(card)
-    }
-  })
-  // 兜底
-  if (results.length === 0) {
-    $('a[href*="/v/"]').each((_, el) => {
-      const $el = $(el)
-      const href = $el.attr('href') || ''
-      const idMatch = href.match(/\/v\/(\w+)\.html/)
-      if (!idMatch) return
-      const id = idMatch[1]
-      if (seen.has(id)) return
-      const $parent = $el.closest('.module-card-item, .module-item, div, li')
-      const $img = $parent.length ? $parent.find('img').first() : $el.find('img').first()
-      let title = $el.attr('title') || $img.attr('alt') || ''
-      if (!title) {
-        const txt = $el.text().trim()
-        if (txt && txt.length >= 2 && !/^(播放|详情|全集|HD|高清|下载)$/.test(txt)) title = txt
-      }
-      if (!title) return
-      seen.add(id)
-      const cover = $img.length ? normalizeCover($img.attr('data-original') || $img.attr('src'), base) : ''
-      results.push({ id, title, cover, desc: '', source: sourceId })
+  
+  // 1. 优先使用 MacCMS 的 ajax/suggest 接口，这通常返回 JSON 且不易被安全验证拦截
+  try {
+    const suggestUrl = `${base}/index.php/ajax/suggest?mid=1&wd=${encodeURIComponent(keyword)}&limit=50`
+    const res = await axios.post(suggestUrl, {}, {
+      headers: {
+        'User-Agent': UA,
+        'Referer': base + '/'
+      },
+      timeout: 10000
     })
+    if (res.data && res.data.code === 1 && Array.isArray(res.data.list)) {
+      for (const item of res.data.list) {
+        const id = String(item.id)
+        if (!seen.has(id)) {
+          seen.add(id)
+          results.push({
+            id: id,
+            title: item.name,
+            cover: normalizeCover(item.pic, base),
+            desc: '',
+            source: sourceId
+          })
+        }
+      }
+      if (results.length > 0) {
+        return results
+      }
+    }
+  } catch (e) {
+    console.warn(`[Anime] ajax/suggest 失败(${sourceId}): ${e.message}`)
   }
+
+  // 2. 降级：网页搜索（如果遇到系统安全验证可能会失败）
+  try {
+    const url = `${base}/vodsearch/${encodeURIComponent(keyword)}-------------.html`
+    const html = await fetchHtml(url, base)
+    // 如果返回了"系统安全验证"，直接放弃网页解析
+    if (html && (html.includes('系统安全验证') || html.includes('mx-mac_msg_jump'))) {
+      console.warn(`[Anime] 网页搜索被系统安全验证拦截(${sourceId})`)
+      return results // 返回前面 suggest 可能拿到的空结果
+    }
+    const $ = cheerio.load(html)
+    $('.module-card-item, .module-item, .module-poster-item').each((_, el) => {
+      const card = parseCard($(el), base, sourceId)
+      if (card && !seen.has(card.id)) {
+        seen.add(card.id)
+        results.push(card)
+      }
+    })
+    // 兜底
+    if (results.length === 0) {
+      $('a[href*="/v/"]').each((_, el) => {
+        const $el = $(el)
+        const href = $el.attr('href') || ''
+        const idMatch = href.match(/\/v\/(\w+)\.html/)
+        if (!idMatch) return
+        const id = idMatch[1]
+        if (seen.has(id)) return
+        const $parent = $el.closest('.module-card-item, .module-item, div, li')
+        const $img = $parent.length ? $parent.find('img').first() : $el.find('img').first()
+        let title = $el.attr('title') || $img.attr('alt') || ''
+        if (!title) {
+          const txt = $el.text().trim()
+          if (txt && txt.length >= 2 && !/^(播放|详情|全集|HD|高清|下载)$/.test(txt)) title = txt
+        }
+        if (!title) return
+        seen.add(id)
+        const cover = $img.length ? normalizeCover($img.attr('data-original') || $img.attr('src'), base) : ''
+        results.push({ id, title, cover, desc: '', source: sourceId })
+      })
+    }
+  } catch (e) {
+    console.warn(`[Anime] 网页搜索解析失败(${sourceId}): ${e.message}`)
+  }
+  
   return results
 }
 
