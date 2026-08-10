@@ -25,7 +25,10 @@ const isQQSong = computed(() => playerStore.currentSong.platform === 'qq' || !!p
 const isKugouSong = computed(() => playerStore.currentSong.platform === 'kugou' || !!playerStore.currentSong.hash)
 // 非网易云歌曲(用于统一隐藏网易云专属功能:歌单管理、云盘等)
 const isNonNeteaseSong = computed(() => isQQSong.value || isKugouSong.value)
-const lyricFontSize = ref(32)
+const lyricFontSize = ref(Number(localStorage.getItem('song_detail_lyric_size')) || 32)
+watch(lyricFontSize, (v) => { localStorage.setItem('song_detail_lyric_size', v) })
+const coverMode = ref(localStorage.getItem('song_detail_cover_mode') || 'classic')
+watch(coverMode, (v) => { localStorage.setItem('song_detail_cover_mode', v) })
 const noScale = ref(localStorage.getItem('song_detail_no_scale') === 'true')
 watch(noScale, (v) => { localStorage.setItem('song_detail_no_scale', v) })
 const showGifCover = ref(localStorage.getItem('song_detail_show_gif_cover') !== 'false')
@@ -846,8 +849,26 @@ onMounted(() => {
         <!-- Normal Cover + Info -->
         <div class="cover-container">
             <div class="cover-glow" :style="{ backgroundImage: `url(${getCoverUrl()})` }"></div>
-            <div class="cover-wrapper" :class="{ playing: playerStore.isPlaying }">
+            
+            <div class="cover-wrapper" :class="{ playing: playerStore.isPlaying, 'cd-active': coverMode === 'cd' }">
               <img :src="getCoverUrl()" class="square-cover" />
+            </div>
+            
+            <div class="cd-disc-wrapper" :class="{ active: coverMode === 'cd', playing: playerStore.isPlaying }">
+              <div class="cd-disc">
+                <img :src="getCoverUrl()" class="cd-cover" />
+                <div class="cd-center"></div>
+                <div class="cd-lines"></div>
+              </div>
+              <!-- 静态反光层 -->
+              <div class="cd-light"></div>
+            </div>
+
+            <!-- 唱片机指针摇臂 -->
+            <div class="stylus-arm" :class="{ active: coverMode === 'cd', playing: playerStore.isPlaying }">
+                <div class="stylus-pivot"></div>
+                <div class="stylus-rod"></div>
+                <div class="stylus-head"></div>
             </div>
             <!-- GIF/静态封面切换 -->
             <div v-if="playerStore.currentSong.al?.picUrl?.startsWith('song-cover:')" class="cover-toggle no-drag" @click="toggleGifCover">
@@ -1018,6 +1039,14 @@ onMounted(() => {
                         <div class="mode-chip" :class="{ active: noScale }" title="切换高亮行是否放大" @click="noScale = !noScale">
                             <span>{{ noScale ? '等大' : '放大' }}</span>
                         </div>
+                    </div>
+                    <div class="group">
+                        <span class="label">封面模式</span>
+                        <CustomSelect
+                            v-model="coverMode"
+                            :options="[{label: '经典', value: 'classic'}, {label: 'CD', value: 'cd'}]"
+                            compact
+                        />
                     </div>
                 </div>
             </transition>
@@ -1283,16 +1312,17 @@ onMounted(() => {
 
 .cover-container {
     position: relative;
-    width: 340px;
+    width: 440px;
     height: 340px;
 }
 
 .cover-glow {
     position: absolute;
     top: 20px;
-    left: 20px;
-    right: 20px;
     bottom: 0;
+    width: 300px;
+    left: 50%;
+    margin-left: -150px;
     background-size: cover;
     /* 恢复 blur 光晕效果，无 transition 安全 */
     filter: blur(30px);
@@ -1302,10 +1332,14 @@ onMounted(() => {
 }
 
 .cover-wrapper {
-    position: relative;
-    width: 100%;
-    height: 100%;
-    z-index: 1;
+    position: absolute;
+    width: 340px;
+    height: 340px;
+    top: 50%;
+    left: 50%;
+    margin-top: -170px;
+    margin-left: -170px;
+    z-index: 2;
     box-shadow: 0 20px 50px rgba(0,0,0,0.15);
     border-radius: 12px;
     overflow: hidden;
@@ -1318,10 +1352,219 @@ onMounted(() => {
     box-shadow: 0 30px 80px rgba(0,0,0,0.25);
 }
 
+.cover-wrapper.cd-active {
+    transform: translateX(-70px) scale(0.72);
+}
+
+.cover-wrapper.playing.cd-active {
+    transform: translateX(-70px) scale(0.82);
+}
+
 .square-cover {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.cd-disc-wrapper {
+    position: absolute;
+    width: 340px;
+    height: 340px;
+    top: 50%;
+    left: 50%;
+    margin-top: -170px;
+    margin-left: -170px;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s;
+    transform: translateX(-70px) scale(0.72);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.cd-disc-wrapper.active {
+    transform: translateX(35px) scale(0.72);
+    opacity: 1;
+}
+
+.cd-disc-wrapper.active.playing {
+    transform: translateX(55px) scale(0.82);
+}
+
+.cd-disc {
+    width: 320px;
+    height: 320px;
+    border-radius: 50%;
+    background: #111;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.4), inset 0 0 0 10px rgba(255,255,255,0.1);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    animation: spin 20s linear infinite;
+    animation-play-state: paused;
+}
+
+.cd-disc-wrapper.playing .cd-disc {
+    animation-play-state: running;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.cd-cover {
+    width: 215px;
+    height: 215px;
+    border-radius: 50%;
+    object-fit: cover;
+    z-index: 2;
+}
+
+.cd-center {
+    position: absolute;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.9);
+    z-index: 3;
+    box-shadow: inset 0 0 6px rgba(0,0,0,0.4), 0 0 2px rgba(0,0,0,0.3);
+}
+.cd-center::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.4);
+}
+
+.cd-lines {
+    position: absolute;
+    inset: 12px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.06);
+    z-index: 1;
+    pointer-events: none;
+}
+.cd-lines::before {
+    content: '';
+    position: absolute;
+    inset: 18px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+.cd-lines::after {
+    content: '';
+    position: absolute;
+    inset: 38px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.04);
+}
+
+.cd-light {
+    position: absolute;
+    width: 320px;
+    height: 320px;
+    top: 50%;
+    left: 50%;
+    margin-top: -160px;
+    margin-left: -160px;
+    border-radius: 50%;
+    background: conic-gradient(
+        from 45deg,
+        rgba(255,255,255,0) 0%,
+        rgba(255,255,255,0.15) 15%,
+        rgba(255,255,255,0) 30%,
+        rgba(255,255,255,0) 50%,
+        rgba(255,255,255,0.15) 65%,
+        rgba(255,255,255,0) 80%,
+        rgba(255,255,255,0) 100%
+    );
+    z-index: 5;
+    pointer-events: none;
+}
+
+.stylus-arm {
+    position: absolute;
+    top: -20px;
+    left: 310px;
+    z-index: 10;
+    transform-origin: 15px 15px;
+    transform: rotate(-35deg);
+    transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s;
+    opacity: 0;
+    pointer-events: none;
+}
+.stylus-arm.active {
+    opacity: 1;
+}
+.stylus-arm.active.playing {
+    transform: rotate(-10deg);
+}
+
+.stylus-pivot {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #e0e0e0 0%, #999 50%, #666 100%);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    position: relative;
+    z-index: 2;
+}
+.stylus-pivot::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #444;
+}
+
+.stylus-rod {
+    width: 6px;
+    height: 130px;
+    background: linear-gradient(to right, #aaa, #eee, #999);
+    position: absolute;
+    top: 15px;
+    left: 12px; 
+    z-index: 1;
+    border-radius: 3px;
+    box-shadow: -2px 4px 6px rgba(0,0,0,0.3);
+}
+
+.stylus-head {
+    width: 18px;
+    height: 34px;
+    background: linear-gradient(135deg, #444, #222);
+    border-radius: 4px;
+    position: absolute;
+    top: 140px;
+    left: 6px;
+    box-shadow: -2px 5px 8px rgba(0,0,0,0.4);
+    z-index: 2;
+}
+.stylus-head::after {
+    content: '';
+    position: absolute;
+    bottom: 2px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 4px;
+    height: 6px;
+    background: #bbb;
+    border-radius: 2px;
 }
 
 .cover-toggle {
