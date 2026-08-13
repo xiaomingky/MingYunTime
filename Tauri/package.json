@@ -1,0 +1,60 @@
+{
+  "name": "MingYunTime",
+  "version": "3.1.8",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xiaomingky/MingYunTime"
+  },
+  "scripts": {
+    "dev": "vite",
+    "dev:light": "set NODE_OPTIONS=--max-old-space-size=256 && vite",
+    "build": "node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@applemusic-like-lyrics/core": "^0.5.0",
+    "@applemusic-like-lyrics/lyric": "^1.0.0",
+    "@applemusic-like-lyrics/vue": "^0.5.0",
+    "@pixi/app": "^7.4.3",
+    "@pixi/core": "^7.4.3",
+    "@pixi/display": "^7.4.3",
+    "@pixi/filter-blur": "^7.4.3",
+    "@pixi/filter-bulge-pinch": "^5.1.1",
+    "@pixi/filter-color-matrix": "^7.4.3",
+    "@pixi/sprite": "^7.4.3",
+    "@sansenjian/qq-music-api": "^2.4.0",
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-fs": "^2.2.0",
+    "@tauri-apps/plugin-http": "^2.2.0",
+    "@tauri-apps/plugin-opener": "^2.2.5",
+    "@tauri-apps/plugin-os": "^2.2.0",
+    "@tauri-apps/plugin-process": "^2.2.0",
+    "@tauri-apps/plugin-shell": "^2.2.0",
+    "@tauri-apps/plugin-window-state": "^2.2.1",
+    "axios": "^1.13.6",
+    "cheerio": "^0.22.0",
+    "flac-metadata": "^0.1.1",
+    "flv.js": "^1.6.2",
+    "hls.js": "^1.6.16",
+    "iconv-lite": "^0.6.3",
+    "jss": "^10.10.0",
+    "jss-preset-default": "^10.10.0",
+    "lucide-vue-next": "^0.446.0",
+    "mpegts.js": "^1.8.0",
+    "music-metadata": "^11.12.3",
+    "node-id3": "^0.2.9",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.30",
+    "vue-router": "^5.0.3"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "@vitejs/plugin-vue": "^5.1.4",
+    "vite": "^5.4.8",
+    "vite-plugin-node-polyfills": "^0.27.0"
+  }
+}

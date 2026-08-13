@@ -1,0 +1,69 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "茗韵时光",
+  "version": "3.1.8",
+  "identifier": "com.mingyuntime.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": {
+      "../font/": "font/",
+      "../resources/aria2c.exe": "aria2c.exe",
+      "../resources/ffmpeg.exe": "ffmpeg.exe",
+      "../resources/qq-music-api/dist/": "qq-music-api/dist/",
+      "../resources/qq-music-api/libs/": "qq-music-api/libs/",
+      "../resources/qq-music-api/package.json": "qq-music-api/package.json",
+      "../resources/kugou-music-api/": "kugou-music-api/",
+      "../resources/netease-api/": "netease-api/",
+      "../resources/native-api/": "native-api/"
+    },
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine",
+        "languages": ["SimpChinese"]
+      }
+    },
+    "fileAssociations": [
+      { "ext": ["mp3"], "name": "MP3 音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["flac"], "name": "FLAC 无损音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["wav"], "name": "WAV 音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["ogg"], "name": "OGG 音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["m4a"], "name": "M4A 音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["ape"], "name": "APE 无损音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["aac"], "name": "AAC 音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["wma"], "name": "WMA 音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["opus"], "name": "OPUS 音频", "description": "茗韵时光音频文件", "role": "Viewer" },
+      { "ext": ["mp4"], "name": "MP4 视频", "description": "茗韵时光视频文件", "role": "Viewer" },
+      { "ext": ["mkv"], "name": "MKV 视频", "description": "茗韵时光视频文件", "role": "Viewer" },
+      { "ext": ["webm"], "name": "WEBM 视频", "description": "茗韵时光视频文件", "role": "Viewer" },
+      { "ext": ["avi"], "name": "AVI 视频", "description": "茗韵时光视频文件", "role": "Viewer" },
+      { "ext": ["mov"], "name": "MOV 视频", "description": "茗韵时光视频文件", "role": "Viewer" },
+      { "ext": ["flv"], "name": "FLV 视频", "description": "茗韵时光视频文件", "role": "Viewer" },
+      { "ext": ["wmv"], "name": "WMV 视频", "description": "茗韵时光视频文件", "role": "Viewer" },
+      { "ext": ["m4v"], "name": "M4V 视频", "description": "茗韵时光视频文件", "role": "Viewer" },
+      { "ext": ["ts"], "name": "TS 视频", "description": "茗韵时光视频文件", "role": "Viewer" }
+    ]
+  }
+}

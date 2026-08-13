@@ -1,0 +1,709 @@
+:root {
+    --primary-color: #EC4141;
+    --header-bg: #EC4141;
+    --bg-main: #FFFFFF;
+    --bg-sidebar: #F6F6F6;
+    --bg-footer: #FFFFFF;
+    --border-color: #E0E0E0;
+    --text-main: #333333;
+    --text-secondary: #666666;
+    --text-light: #999999;
+    --sidebar-width: 200px;
+    --footer-height: 75px;
+    --header-height: 60px;
+
+    --hover-bg: #F0F0F0;
+    --active-bg: #F0F0F0;
+
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+/* QQ 音乐主题：绿色（在 #app 或 body 上设置 data-platform="qq" 即可生效） */
+[data-platform="qq"] {
+    --primary-color: #31C27C;
+    --header-bg: #31C27C;
+    --bg-main: #FFFFFF;
+    --bg-sidebar: #F5F7F6;
+    --bg-footer: #FFFFFF;
+    --border-color: #E0E5E2;
+    --text-main: #2C3E2F;
+    --text-secondary: #5A6B5E;
+    --text-light: #8F9D92;
+    --hover-bg: #EAF5EF;
+    --active-bg: #E0F0E7;
+}
+
+/* 酷狗概念版主题：蓝白（在 #app 或 body 上设置 data-platform="kugou" 即可生效） */
+[data-platform="kugou"] {
+    --primary-color: #2CA2F5;
+    --header-bg: #2CA2F5;
+    --bg-main: #FFFFFF;
+    --bg-sidebar: #F5F9FC;
+    --bg-footer: #FFFFFF;
+    --border-color: #DCEAF5;
+    --text-main: #1F3A4D;
+    --text-secondary: #4A6B82;
+    --text-light: #8FA8BC;
+    --hover-bg: #E8F4FD;
+    --active-bg: #D6EBFB;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body,
+html,
+#app {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background-color: var(--bg-main);
+    color: var(--text-main);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #E0E0E0;
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #D0D0D0;
+}
+
+/* Layout Utilities */
+.flex {
+    display: flex;
+}
+
+.flex-1 {
+    flex: 1;
+}
+
+.flex-col {
+    flex-direction: column;
+}
+
+.items-center {
+    align-items: center;
+}
+
+.justify-center {
+    justify-content: center;
+}
+
+.justify-between {
+    justify-content: space-between;
+}
+
+/* Main App Layout */
+.app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.main-layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+    height: calc(100vh - var(--header-height) - var(--footer-height));
+    position: relative;
+}
+
+aside.sidebar {
+    width: var(--sidebar-width);
+    min-width: var(--sidebar-width);
+    flex-shrink: 0;
+    background-color: var(--bg-sidebar);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+}
+
+header.header {
+    height: var(--header-height);
+    background-color: var(--header-bg);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 15px;
+    flex-shrink: 0;
+    -webkit-app-region: drag;
+}
+
+/* Table Styles */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+th,
+td {
+    padding: 8px 10px;
+    text-align: left;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+th {
+    color: #999;
+    font-weight: normal;
+}
+
+tr:hover td {
+    background-color: #f2f2f2;
+}
+
+footer.footer {
+    height: var(--footer-height);
+    border-top: 1px solid var(--border-color);
+    background-color: var(--bg-footer);
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    z-index: 1100;
+    position: relative;
+    flex-shrink: 0;
+}
+
+/* Common Header Styles (Header Component) */
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: white;
+    font-weight: bold;
+    font-size: 18px;
+}
+
+/* 平台切换按钮：网易云 ⇄ QQ 音乐 */
+.platform-switch {
+    display: flex;
+    align-items: center;
+    background-color: rgba(255, 255, 255, 0.18);
+    border-radius: 14px;
+    padding: 2px;
+    gap: 2px;
+    margin-left: 4px;
+}
+.platform-btn {
+    padding: 3px 10px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.75);
+    cursor: pointer;
+    border-radius: 12px;
+    transition: all 0.18s ease;
+    user-select: none;
+    white-space: nowrap;
+}
+.platform-btn:hover {
+    color: white;
+}
+.platform-btn.active {
+    background-color: rgba(255, 255, 255, 0.92);
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.logo-icon {
+    width: 32px;
+    height: 32px;
+    background-color: rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.nav-arrows {
+    display: flex;
+    gap: 10px;
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.header-search {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.search-input {
+    background-color: rgba(0, 0, 0, 0.1);
+    border-radius: 20px;
+    padding: 5px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 160px;
+    transition: width 0.3s;
+}
+
+.search-input input {
+    background: none;
+    border: none;
+    color: white;
+    width: 100%;
+    font-size: 12px;
+    outline: none;
+}
+
+.search-input input::placeholder {
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.avatar {
+    width: 26px;
+    height: 26px;
+    background-color: #ddd;
+    border-radius: 50%;
+    object-fit: cover;
+}
+
+.window-controls {
+    display: flex;
+    gap: 15px;
+    padding-left: 10px;
+    border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.window-controls>* {
+    cursor: pointer;
+}
+
+/* Common Sidebar Styles */
+.sidebar-section {
+    padding: 10px 0;
+}
+
+.sidebar-label {
+    padding: 10px 20px 5px 20px;
+    font-size: 12px;
+    color: #999;
+}
+
+.menu-item {
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.2s;
+    position: relative;
+}
+
+.menu-item:hover {
+    background-color: #f0f0f0;
+}
+
+.menu-item.active {
+    background-color: #f0f0f0;
+    font-weight: bold;
+    color: #333;
+}
+
+.menu-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    width: 4px;
+    height: 20px;
+    background-color: var(--primary-color);
+}
+
+/* Responsive sidebar */
+@media (max-width: 1080px) {
+    :root {
+        --sidebar-width: 200px;
+        /* Keep it usable for longer */
+    }
+}
+
+@media (max-width: 850px) {
+    :root {
+        --sidebar-width: 60px;
+    }
+
+    .menu-label,
+    .sidebar-label,
+    .user-info span,
+    .logo span {
+        display: none;
+    }
+
+    .menu-item {
+        justify-content: center;
+        padding: 10px;
+        gap: 0;
+    }
+}
+
+/* Common Footer Styles */
+.footer {
+    justify-content: space-between;
+    transition: background-color 0.4s cubic-bezier(0.2, 0, 0.2, 1), border-color 0.4s;
+}
+
+.footer.is-transparent {
+    background-color: transparent !important;
+    border-top-color: transparent !important;
+}
+
+.song-info {
+    width: 200px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+}
+
+.song-cover {
+    width: 45px;
+    height: 45px;
+    border-radius: 4px;
+    object-fit: cover;
+}
+
+.song-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    overflow: hidden;
+}
+
+.song-name {
+    font-size: 14px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.song-name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.vip-badge-footer {
+    font-size: 9px;
+    color: var(--primary-color, #c20c0c);
+    border: 1px solid var(--primary-color, #c20c0c);
+    padding: 0 3px;
+    border-radius: 2px;
+    height: 14px;
+    line-height: 12px;
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+/* 酷狗歌曲列表通用 VIP 标签（细边框样式,仿网易云,酷狗主题配色 #2CA2F5） */
+.kugou-vip-tag {
+    font-size: 10px;
+    color: #2CA2F5;
+    border: 1px solid rgba(44, 162, 245, 0.7);
+    padding: 0 3px;
+    border-radius: 2px;
+    line-height: 12px;
+    flex-shrink: 0;
+    margin-left: 6px;
+    vertical-align: middle;
+    align-self: center;
+    background: transparent;
+}
+
+.artist-name {
+    font-size: 12px;
+    color: #666;
+}
+
+.player-controls {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 5px;
+}
+
+.control-btns {
+    display: flex;
+    align-items: center;
+    gap: 25px;
+    color: #333;
+}
+
+.play-circle {
+    width: 35px;
+    height: 35px;
+    background-color: #f5f5f5;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.progress-bar-container {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.time {
+    font-size: 11px;
+    color: #444;
+    width: 35px;
+}
+
+.progress-bar {
+    flex: 1;
+    height: 4px;
+    background-color: rgba(0, 0, 0, 0.12);
+    border-radius: 2px;
+    position: relative;
+    cursor: pointer;
+}
+
+.progress-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    background: linear-gradient(90deg, #c20c0c, var(--primary-color));
+    border-radius: 2px;
+}
+
+.progress-dot {
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 12px;
+    height: 12px;
+    background-color: var(--primary-color);
+    border-radius: 50%;
+    box-shadow: 0 0 0 3px rgba(236, 65, 65, 0.25);
+    display: none;
+}
+
+.progress-bar:hover .progress-dot,
+.progress-bar.dragging .progress-dot {
+    display: block;
+}
+
+.extra-controls {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 20px;
+    color: #666;
+}
+
+.volume-slider {
+    width: 100px;
+    height: 4px;
+    background-color: rgba(0, 0, 0, 0.12);
+    border-radius: 2px;
+    position: relative;
+    cursor: pointer;
+}
+
+.volume-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    background: linear-gradient(90deg, #c20c0c, var(--primary-color));
+    border-radius: 2px;
+}
+
+/* 音量超过 100% 时,填充条变为橙色提示增益状态 */
+.volume-slider.boosted .volume-fill {
+    background: linear-gradient(90deg, var(--primary-color), #ff8c00);
+}
+
+/* 音量数值显示 */
+.volume-value {
+    font-size: 11px;
+    color: #444;
+    min-width: 28px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* 音量增益按钮:激活时高亮橙色 */
+.boost-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    color: #666;
+    transition: all 0.2s;
+}
+.boost-btn:hover {
+    color: var(--primary-color);
+    background: rgba(236, 65, 65, 0.08);
+}
+.boost-btn.active {
+    color: #ff8c00;
+    background: rgba(255, 140, 0, 0.12);
+}
+
+.volume-slider:hover .progress-dot,
+.volume-slider.dragging .progress-dot {
+    display: block;
+}
+
+/* --- Added for Premium Feel and Transitions --- */
+
+/* Page Fade Transitions */
+.fade-enter-active,
+.fade-leave-active {
+    transition: opacity 0.25s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+    opacity: 0;
+}
+
+/* Modern Hover Effects */
+.playlist-card,
+.video-card {
+    transition: transform 0.2s ease;
+}
+
+.playlist-card:hover,
+.video-card:hover {
+    transform: translateY(-5px);
+}
+
+.clickable {
+    cursor: pointer;
+}
+
+/* Electron Click Fix (More Robust) */
+.no-drag,
+.clickable,
+input,
+button,
+.header svg,
+.header span,
+.window-controls i {
+    -webkit-app-region: no-drag !important;
+}
+
+/* ============================================
+   全局下拉框美化（网易云白红配色风格）
+   - 适用于所有原生 <select> 元素
+   - 自定义箭头、圆角、悬停/聚焦反馈
+   - 保留各组件尺寸覆盖
+   ============================================ */
+select {
+    /* 重置原生外观 */
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-color: #fff;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23EC4141' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    background-size: 12px;
+    padding-right: 28px;
+    /* 颜色与边框 */
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    color: var(--text-main, #333);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+select:hover {
+    border-color: var(--primary-color, #EC4141);
+    background-color: #fffafa;
+}
+
+select:focus {
+    border-color: var(--primary-color, #EC4141);
+    box-shadow: 0 0 0 3px rgba(236, 65, 65, 0.12);
+}
+
+select:disabled {
+    background-color: #f5f5f5;
+    color: #aaa;
+    cursor: not-allowed;
+    border-color: #eee;
+}
+
+/* 选项列表样式（Webkit/Edge 可生效） */
+select option {
+    padding: 6px 12px;
+    font-size: 13px;
+    color: #333;
+    background-color: #fff;
+}
+
+select option:checked,
+select option:hover {
+    background-color: rgba(236, 65, 65, 0.08);
+    color: var(--primary-color, #EC4141);
+}
+
+/* Firefox 选项高亮 */
+select option:checked {
+    color: var(--primary-color, #EC4141);
+    font-weight: 500;
+}
+
+/* 隐藏 IE 默认箭头 */
+select::-ms-expand {
+    display: none;
+}
+
+/* 紧凑型 select（如表单内、设置项内） */
+select.compact {
+    padding: 4px 28px 4px 10px;
+    font-size: 12px;
+    border-radius: 6px;
+}
