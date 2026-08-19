@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { movieDetail, movieParsePlayUrl, downloadVideo } from '../api'
 import { useMessageStore } from '../store/message'
-import BiliPlayer from '../components/BiliPlayer.vue'
+import ArtVideoPlayer from '../components/ArtVideoPlayer.vue'
 import PlayDisclaimer from '../components/PlayDisclaimer.vue'
 import {
     ChevronLeft, Loader2, Film, RefreshCw, Download
@@ -84,7 +84,7 @@ function switchRoute(idx) {
     }
 }
 
-// ===== 播放器（由 BiliPlayer 组件内部管理 hls.js）=====
+// ===== 播放器（由 ArtVideoPlayer 组件内部管理 hls.js/mpegts.js）=====
 async function playEpisode(ep) {
     if (!ep) return
     currentEpisode.value = ep
@@ -123,7 +123,7 @@ function replayCurrent() {
     if (currentEpisode.value) playEpisode(currentEpisode.value)
 }
 
-// ===== 上一集 / 下一集（供 BiliPlayer 切换剧集）=====
+// ===== 上一集 / 下一集（供 ArtVideoPlayer 切换剧集）=====
 const currentEpisodeIdx = computed(() => {
     if (!currentEpisode.value) return -1
     return episodes.value.findIndex(ep => ep.title === currentEpisode.value.title)
@@ -245,8 +245,8 @@ const handleDownloadEpisode = async () => {
                         @close="closeDisclaimer"
                     />
 
-                    <!-- m3u8 用 BiliPlayer（B站风格自定义控制条） -->
-                    <BiliPlayer
+                    <!-- m3u8 用 ArtVideoPlayer（ArtPlayer 引擎 + 选集 + 音量增强） -->
+                    <ArtVideoPlayer
                         v-if="playUrl && playType === 'm3u8'"
                         :src="playUrl"
                         play-type="m3u8"

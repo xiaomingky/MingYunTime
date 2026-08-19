@@ -111,8 +111,8 @@
     flex-shrink: 0;
 }
 
-/* BiliPlayer 填满 player-wrapper，不保留自身 16:9（父容器已约束） */
-.player-wrapper > :deep(.bili-player) {
+/* ArtVideoPlayer 填满 player-wrapper，不保留自身 16:9（父容器已约束） */
+.player-wrapper > :deep(.art-player-wrap) {
     width: 100%;
     height: 100%;
     aspect-ratio: auto;
@@ -134,7 +134,7 @@
     outline: none;
 }
 
-/* 注：m3u8 模式使用 BiliPlayer 自定义控制条，无需原生 controls 样式 */
+/* 注：m3u8 模式使用 ArtVideoPlayer（ArtPlayer 引擎），无需原生 controls 样式 */
 
 .player-mask {
     position: absolute;
@@ -165,7 +165,7 @@
     pointer-events: none;
 }
 
-/* 分辨率切换器、控制条样式由 BiliPlayer 组件内部管理 */
+/* 分辨率切换器、控制条样式由 ArtVideoPlayer 组件内部管理 */
 
 /* ===== 选集 ===== */
 .episodes-panel {

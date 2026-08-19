@@ -497,7 +497,17 @@ ipcMain.handle('anime:sources', async () => {
 
 ipcMain.handle('anime:home', async (_, { source }) => {
   try {
-    // 首页忽略 source 参数，直接故障转移（保证可用性）
+    // 尊重用户选择的线路：先按指定线路加载，失败才故障转移
+    if (source && SOURCES[source]) {
+      try {
+        const data = await getHomeSingle(source)
+        if (data.latest.length > 0 || data.hot.length > 0) {
+          return { success: true, data }
+        }
+      } catch (e) {
+        console.warn(`[Anime] 指定线路首页失败(${source}): ${e.message}`)
+      }
+    }
     const data = await getHome()
     return { success: true, data }
   } catch (e) {
@@ -507,7 +517,17 @@ ipcMain.handle('anime:home', async (_, { source }) => {
 
 ipcMain.handle('anime:search', async (_, { source, keyword }) => {
   try {
-    // 搜索也故障转移
+    // 尊重用户选择的线路：先按指定线路搜索，失败才故障转移
+    if (source && SOURCES[source]) {
+      try {
+        const data = await searchSingle(source, keyword)
+        if (data.length > 0) {
+          return { success: true, data }
+        }
+      } catch (e) {
+        console.warn(`[Anime] 指定线路搜索失败(${source}): ${e.message}`)
+      }
+    }
     const data = await search(keyword)
     return { success: true, data }
   } catch (e) {

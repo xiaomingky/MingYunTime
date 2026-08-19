@@ -1,14 +1,14 @@
 {
   "name": "MingYunTime",
-  "version": "3.1.8",
+  "version": "3.1.9",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/xiaomingky/MingYunTime"
   },
   "scripts": {
-    "dev": "set NODE_OPTIONS=--max-old-space-size=256 && vite",
-    "dev:light": "set NODE_OPTIONS=--max-old-space-size=192 && vite",
+    "dev": "set NODE_OPTIONS=--max-old-space-size=1024 && vite",
+    "dev:light": "set NODE_OPTIONS=--max-old-space-size=512 && vite",
     "build": "node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && vite build && electron-builder",
     "preview": "vite preview"
   },
@@ -24,6 +24,7 @@
     "@pixi/filter-color-matrix": "^7.4.3",
     "@pixi/sprite": "^7.4.3",
     "@sansenjian/qq-music-api": "^2.4.0",
+    "artplayer": "^5.4.0",
     "axios": "^1.13.6",
     "cheerio": "^0.22.0",
     "electron-updater": "^6.8.3",

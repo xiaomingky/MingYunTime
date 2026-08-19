@@ -3,7 +3,7 @@
 // - 本地视频：通过文件对话框导入，扫描元数据
 // - 链接/直播流：用户添加 http(s)://...mp4/m3u8/flv 或直播流地址
 //   支持：mp4/webm 直链、HLS(m3u8)、FLV；直播流自动识别并标记 LIVE
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
 import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw } from 'lucide-vue-next'
@@ -244,6 +244,81 @@ const saveStreams = () => {
     localStorage.setItem('video_streams', JSON.stringify(streams.value))
 }
 
+// ===== 封面识别：用 Chromium 系统解码 + canvas 截帧（无需 ffmpeg，支持所有浏览器可解码格式）=====
+// 原理：把本地视频喂给隐藏 <video>（走 local-file:// 协议，已在主进程开启 CORS），
+// seek 到时长 10% 处（第2帧起），draw 到 320px 宽的 canvas 生成 JPEG dataURL，按路径缓存
+let thumbActive = true
+
+function grabFrameDataURL(url) {
+    return new Promise((resolve) => {
+        if (!url) return resolve(null)
+        const v = document.createElement('video')
+        v.muted = true
+        v.playsInline = true
+        v.preload = 'auto'
+        v.crossOrigin = 'anonymous'
+        v.src = url
+        let settled = false
+        const finish = (val) => { if (!settled) { settled = true; resolve(val) } }
+        const cleanup = () => { try { v.removeAttribute('src'); v.load() } catch (e) {} }
+        v.addEventListener('error', () => { cleanup(); finish(null) })
+        const onMeta = () => {
+            const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 60
+            try { v.currentTime = Math.min(dur * 0.1, 60) } catch (e) {}
+        }
+        const onSeek = () => {
+            try {
+                const w = v.videoWidth || 0
+                const h = v.videoHeight || 0
+                if (!w || !h) return finish(null)
+                const cw = Math.min(w, 320)
+                const ch = Math.round(h * (cw / w))
+                const cvs = document.createElement('canvas')
+                cvs.width = cw
+                cvs.height = ch
+                cvs.getContext('2d').drawImage(v, 0, 0, cw, ch)
+                finish(cvs.toDataURL('image/jpeg', 0.8))
+            } catch (e) { finish(null) } finally { cleanup() }
+        }
+        v.addEventListener('loadedmetadata', onMeta)
+        v.addEventListener('seeked', onSeek)
+        // 兜底：10 秒内未完成则放弃（避免阻塞后续）
+        setTimeout(() => finish(null), 10000)
+    })
+}
+
+async function loadThumbnails() {
+    thumbActive = true
+    const targets = localVideos.value.filter(v => v.url && !v.thumbnail)
+    if (!targets.length) return
+    let idx = 0
+    const worker = async () => {
+        while (idx < targets.length && thumbActive) {
+            const v = targets[idx++]
+            const dataUrl = await grabFrameDataURL(v.url)
+            if (dataUrl) {
+                v.thumbnail = dataUrl
+                saveVideosThrottled()
+            }
+        }
+    }
+    await Promise.all([worker(), worker()])
+    flushVideosSave()
+}
+
+// 封面 dataURL 较大，限制持久化规模（>40 张则不再写入 localStorage，只在本次会话内展示）
+let pendingSaveVideos = 0
+function saveVideosThrottled() {
+    if (localVideos.value.filter(x => x.thumbnail).length > 40) return
+    if (++pendingSaveVideos >= 3) { pendingSaveVideos = 0; saveVideos() }
+}
+function flushVideosSave() {
+    if (pendingSaveVideos > 0) { pendingSaveVideos = 0; saveVideos() }
+}
+
+onMounted(() => { loadThumbnails() })
+onBeforeUnmount(() => { thumbActive = false })
+
 const importFiles = async () => {
     const bridge = getBridge()
     if (!bridge?.openVideoFileDialog) { messageStore.error('Bridge 未加载'); return }
@@ -253,6 +328,7 @@ const importFiles = async () => {
             const existing = new Set(localVideos.value.map(v => v.path))
             localVideos.value.push(...videos.filter(v => !existing.has(v.path)))
             saveVideos()
+            loadThumbnails()
         }
     } catch (err) { messageStore.error('导入失败: ' + err.message) }
 }
@@ -267,6 +343,7 @@ const importFolder = async () => {
             const existing = new Set(localVideos.value.map(v => v.path))
             localVideos.value.push(...videos.filter(v => !existing.has(v.path)))
             saveVideos()
+            loadThumbnails()
             messageStore.success(`成功识别 ${videos.length} 个视频`)
         } else { messageStore.info('未找到支持的视频文件') }
     } catch (err) { messageStore.error('导入文件夹失败') }
@@ -507,7 +584,9 @@ const typeLabel = (s) => {
                 @dblclick="playVideo(video)"
             >
                 <div class="card-poster" @click="playVideo(video)">
-                    <Film :size="40" class="poster-icon" />
+                    <!-- ffmpeg 截帧封面；无封面时回退 Film 图标 -->
+                    <img v-if="video.thumbnail" :src="video.thumbnail" class="poster-img" :alt="video.name" @error="video.thumbnail = ''" />
+                    <Film v-else :size="40" class="poster-icon" />
                     <div class="play-overlay"><Play :size="28" fill="white" /></div>
                 </div>
                 <div class="card-info">
@@ -830,6 +909,15 @@ const typeLabel = (s) => {
 }
 
 .poster-icon { color: rgba(255,255,255,0.3); }
+
+/* ffmpeg 截帧封面铺满卡片 */
+.poster-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
 
 .play-overlay {
   position: absolute;

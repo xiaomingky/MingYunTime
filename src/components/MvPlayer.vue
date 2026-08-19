@@ -1,7 +1,7 @@
 <script setup>
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
-import BiliPlayer from './BiliPlayer.vue'
+import ArtVideoPlayer from './ArtVideoPlayer.vue'
 import { X, Maximize, Minimize, Download } from 'lucide-vue-next'
 import { ref, watch, computed } from 'vue'
 import { downloadVideo } from '../api'
@@ -13,13 +13,15 @@ const isFullscreen = ref(false)
 const isMaximized = ref(false)
 const showSizeMenu = ref(false)
 const isDownloading = ref(false)
+// 当前视频是否已真正开始播放（用于流未开播时报错时自动关弹窗，避免沾满全屏退不出去）
+const didPlay = ref(false)
 
 // 显示标题：优先 MV 标题，回退歌曲名
 const displayTitle = computed(() => {
     return playerStore.currentMvTitle || playerStore.currentSong?.name || '视频'
 })
 
-// 根据 URL 自动判断 BiliPlayer 的 playType（优先使用 playerStore 的显式提示）
+// 根据 URL 自动判断 ArtVideoPlayer 的 playType（优先使用 playerStore 的显式提示）
 const biliPlayType = computed(() => {
     // 显式类型优先（直播流等无标准后缀的场景）
     if (playerStore.currentMvPlayType) return playerStore.currentMvPlayType
@@ -43,6 +45,18 @@ const close = () => {
     playerStore.currentMvTitle = ''
     playerStore.currentMvAudioUrl = ''
     playerStore.currentMvPlayType = ''
+}
+
+// 切换播放地址时重置“是否已开播”标记
+watch(() => playerStore.currentMvUrl, () => { didPlay.value = false })
+const onArtPlaying = () => { didPlay.value = true }
+// 播放器报错：若从未真正开始播放（典型：直播流未开播/地址失效），
+// 直接关闭全屏弹窗并轻提示，避免占满整屏退不出去
+const onArtError = (msg) => {
+    if (!didPlay.value) {
+        close()
+        messageStore.error('播放失败：' + (msg || '视频地址无法播放'))
+    }
 }
 
 // 下载当前 MV
@@ -185,13 +199,15 @@ watch(() => playerStore.showMvPlayer, (val) => {
         </div>
       </div>
 
-      <!-- 统一使用 BiliPlayer 播放 -->
+      <!-- 统一使用 ArtVideoPlayer（ArtPlayer 引擎）播放 -->
       <div class="video-wrapper" @click="closeSizeMenu">
-        <BiliPlayer
+        <ArtVideoPlayer
           :src="playerStore.currentMvUrl"
           :playType="biliPlayType"
           :audioUrl="playerStore.currentMvAudioUrl"
           :autoplay="true"
+          @playing="onArtPlaying"
+          @error="onArtError"
         />
       </div>
     </div>
@@ -402,8 +418,8 @@ watch(() => playerStore.showMvPlayer, (val) => {
   position: relative;
 }
 
-/* 让 BiliPlayer 填满容器，不保留默认 16:9 比例 */
-.video-wrapper :deep(.bili-player) {
+/* 让 ArtVideoPlayer 填满容器，不保留默认 16:9 比例 */
+.video-wrapper :deep(.art-player-wrap) {
   aspect-ratio: auto !important;
   height: 100% !important;
 }

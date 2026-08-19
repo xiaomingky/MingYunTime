@@ -216,7 +216,7 @@ onMounted(fetchSinger)
                     <span>{{ currentMv.name }} - {{ currentMv.artist }}</span>
                     <span class="qq-mv-close" @click="closeMv">×</span>
                 </div>
-                <video :src="currentMv.url" controls autoplay class="qq-mv-video" />
+                <ArtVideoPlayer :src="currentMv.url" play-type="direct" :autoplay="true" class="qq-mv-video" />
             </div>
         </div>
     </div>

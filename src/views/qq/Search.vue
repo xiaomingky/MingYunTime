@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { qqSearch, qqHotkey, qqSmartbox, qqMvPlay, normalizeQQSong, toQQTrack, enrichQQSongWithDetail, getQQCookie } from '../../api/qq'
+import ArtVideoPlayer from '../../components/ArtVideoPlayer.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -349,7 +350,7 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
                     <span>{{ currentMv.name }} - {{ currentMv.artist }}</span>
                     <span class="qq-mv-close" @click="closeMv">×</span>
                 </div>
-                <video :src="currentMv.url" controls autoplay class="qq-mv-video" />
+                <ArtVideoPlayer :src="currentMv.url" play-type="direct" :autoplay="true" class="qq-mv-video" />
             </div>
         </div>
     </div>

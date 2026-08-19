@@ -5,7 +5,7 @@ import { animeDetail, animeParsePlayUrl, animeMetaSearch, animeMetaRelated, down
 import { useAnimeStore } from '../store/anime'
 import { useMessageStore } from '../store/message'
 import PlayDisclaimer from '../components/PlayDisclaimer.vue'
-import BiliPlayer from '../components/BiliPlayer.vue'
+import ArtVideoPlayer from '../components/ArtVideoPlayer.vue'
 import {
     ChevronLeft, Heart, Star, Loader2, Film, RefreshCw, Users, Clapperboard, Download
 } from 'lucide-vue-next'
@@ -38,7 +38,7 @@ const playType = ref('iframe')   // iframe | m3u8
 const playerError = ref('')
 const showDisclaimer = ref(true) // 播放前免责声明（默认显示，点击开始播放后消失）
 const pendingEpisode = ref(null) // 待播放的集数（用户点击开始后再解析）
-const playScheme = ref(1)        // 播放方案：1=iframe快速解析（默认），2=m3u8直链BiliPlayer
+const playScheme = ref(1)        // 播放方案：1=iframe快速解析（默认），2=m3u8直链ArtVideoPlayer
 
 const isFavorited = computed(() => {
     if (!detail.value) return false
@@ -166,7 +166,7 @@ async function playEpisode(ep) {
             }, ep)
             watchedSet.value.add(ep.title)
             animeStore.saveProgress(source.value, id.value, ep.title, 0, 0)
-            // m3u8 由 BiliPlayer 自动加载并隐藏外层 loading
+            // m3u8 由 ArtVideoPlayer 自动加载并隐藏外层 loading
             if (playType.value === 'm3u8') {
                 playerLoading.value = false
             }
@@ -351,8 +351,8 @@ const handleDownloadEpisode = async () => {
                         @close="closeDisclaimer"
                     />
 
-                    <!-- m3u8/mp4 直链用 BiliPlayer（B站风格自定义控制条 + 上一集/下一集） -->
-                    <BiliPlayer
+                    <!-- m3u8/mp4 直链用 ArtVideoPlayer（ArtPlayer 引擎 + 选集 + 音量增强） -->
+                    <ArtVideoPlayer
                         v-if="playUrl && playType === 'm3u8' && !playerError"
                         :src="playUrl"
                         play-type="m3u8"
@@ -385,7 +385,7 @@ const handleDownloadEpisode = async () => {
                         <p>解析播放地址中...</p>
                     </div>
 
-                    <!-- 错误遮罩（仅 iframe 模式；m3u8 由 BiliPlayer 自带错误遮罩） -->
+                    <!-- 错误遮罩（仅 iframe 模式；m3u8 由 ArtVideoPlayer 自带错误遮罩） -->
                     <div v-if="playerError && playType !== 'm3u8'" class="player-mask error">
                         <Film :size="36" />
                         <p>{{ playerError }}</p>
