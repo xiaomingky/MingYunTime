@@ -145,6 +145,7 @@ onUnmounted(() => {
         :style="width ? { width: typeof width === 'number' ? width + 'px' : width } : null"
     >
         <div class="cs-trigger" @click="toggleOpen">
+            <span class="cs-prefix"><slot name="trigger-prefix" /></span>
             <span class="cs-label" :class="{ placeholder: !normalizedOptions.find(o => o.value === modelValue) }">
                 {{ currentLabel }}
             </span>
@@ -208,6 +209,12 @@ onUnmounted(() => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.cs-prefix {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
 }
 
 .cs-label.placeholder {

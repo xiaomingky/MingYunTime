@@ -11,6 +11,7 @@ import AlbumDetail from '../views/AlbumDetail.vue'
 import CloudMusic from '../views/CloudMusic.vue'
 import Downloads from '../views/Downloads.vue'
 import NetEaseCloud from '../views/NetEaseCloud.vue'
+import Settings from '../views/Settings.vue'
 
 // QQ 音乐模块（懒加载，与网易云路由隔离）
 const QQDiscovery = () => import('../views/qq/Discovery.vue')
@@ -101,6 +102,11 @@ const routes = [
         path: '/downloads',
         name: 'Downloads',
         component: Downloads
+    },
+    {
+        path: '/settings',
+        name: 'Settings',
+        component: Settings
     },
     // 动漫模块
     {

@@ -54,7 +54,7 @@ const PARSE_MAP = {
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-async function fetchHtml(url, referer, timeout = 12000) {
+async function fetchHtml(url, referer, timeout = 60000) {
   const res = await axios.get(url, {
     headers: {
       'User-Agent': UA,
@@ -406,25 +406,13 @@ async function getDetailSingle(sourceId, id) {
   return { id, title, cover, desc: desc.slice(0, 500), routes, source: sourceId }
 }
 
-// 详情：先按用户选的源，失败则故障转移
+// 详情：严格按用户选的源加载，不跨线路跳转（每个路线有各自内容）
 async function getDetail(sourceId, id) {
-  // 先尝试用户选的源
   try {
     const data = await getDetailSingle(sourceId, id)
     if (data.title && data.routes.length > 0) return data
   } catch (e) {
     console.warn(`[Anime] 详情失败(${sourceId}): ${e.message}`)
-  }
-  // 故障转移（跳过用户已选的源）
-  for (const sid of FALLBACK_ORDER) {
-    if (sid === sourceId) continue
-    try {
-      const data = await getDetailSingle(sid, id)
-      if (data.title && data.routes.length > 0) {
-
-        return data
-      }
-    } catch (e) { /* 继续尝试 */ }
   }
   return null
 }
@@ -434,58 +422,56 @@ async function getDetail(sourceId, id) {
 // 方案二（scheme=2）：提取 m3u8/mp4 直链由 BiliPlayer(hls.js) 播放，失败则 iframe 整页
 async function parsePlay(sourceId, episodeUrl, scheme = 1) {
   // episodeUrl 形如 131086-5-1
-  const trySources = [sourceId, ...FALLBACK_ORDER.filter(s => s !== sourceId)]
-  for (const sid of trySources) {
-    if (!SOURCES[sid]) continue
-    try {
-      const base = SOURCES[sid].base
-      const url = `${base}/p/${episodeUrl}.html`
-      const html = await fetchHtml(url, base)
-      if (!html || html.length < 1000) continue
+  // 严格按所选路线解析，不做跨线路跳转（每个路线有各自内容）
+  const sid = sourceId
+  if (!SOURCES[sid]) return { success: false, message: '线路不存在' }
+  try {
+    const base = SOURCES[sid].base
+    const url = `${base}/p/${episodeUrl}.html`
+    const html = await fetchHtml(url, base)
+    if (!html || html.length < 1000) return { success: false, message: '所选线路无有效播放源' }
 
-      // 提取 player_aaaa
-      const playerMatch = html.match(/player_aaaa\s*=\s*(\{[\s\S]*?\})\s*<\/script>/)
-      let player = null
-      if (playerMatch) {
-        try { player = JSON.parse(playerMatch[1]) } catch (e) { /* 忽略 */ }
-      }
-
-      // ===== 方案一：解析播放器 iframe 套用（快速） =====
-      if (scheme === 1 && player && player.url && player.from) {
-        const parseUrl = PARSE_MAP[player.from]
-        if (parseUrl) {
-          const playUrl = String(player.url).replace(/\\\//g, '/')
-          const iframeUrl = parseUrl + encodeURIComponent(playUrl)
-
-          return { success: true, url: iframeUrl, type: 'iframe', scheme: 1 }
-        }
-        // from 不在映射表，降级到方案二逻辑
-      }
-
-      // ===== 方案二：提取 m3u8/mp4 直链给 BiliPlayer =====
-      if (player && player.url && /^https?:\/\//.test(player.url)) {
-        const playUrl = String(player.url).replace(/\\\//g, '/')
-        if (/\.(m3u8|mp4|flv|m4v|webm)(\?|$)/i.test(playUrl)) {
-
-          return { success: true, url: playUrl, type: 'm3u8', scheme: 2 }
-        }
-      }
-
-      // 方案二降级：正则找 m3u8
-      const m3u8Match = html.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/)
-      if (m3u8Match) {
-
-        return { success: true, url: m3u8Match[1].replace(/\\\//g, '/'), type: 'm3u8', scheme: 2 }
-      }
-
-      // 最终兜底：iframe 直接嵌入整页（樱花原生 Artplayer）
-
-      return { success: true, url: url, type: 'iframe' }
-    } catch (e) {
-      console.warn(`[Anime] 播放解析失败(${sid}): ${e.message}`)
+    // 提取 player_aaaa
+    const playerMatch = html.match(/player_aaaa\s*=\s*(\{[\s\S]*?\})\s*<\/script>/)
+    let player = null
+    if (playerMatch) {
+      try { player = JSON.parse(playerMatch[1]) } catch (e) { /* 忽略 */ }
     }
+
+    // ===== 方案一：解析播放器 iframe 套用（快速） =====
+    if (scheme === 1 && player && player.url && player.from) {
+      const parseUrl = PARSE_MAP[player.from]
+      if (parseUrl) {
+        const playUrl = String(player.url).replace(/\\\//g, '/')
+        const iframeUrl = parseUrl + encodeURIComponent(playUrl)
+
+        return { success: true, url: iframeUrl, type: 'iframe', scheme: 1 }
+      }
+      // from 不在映射表，降级到方案二逻辑
+    }
+
+    // ===== 方案二：提取 m3u8/mp4 直链给播放器 =====
+    if (player && player.url && /^https?:\/\//.test(player.url)) {
+      const playUrl = String(player.url).replace(/\\\//g, '/')
+      if (/\.(m3u8|mp4|flv|m4v|webm)(\?|$)/i.test(playUrl)) {
+
+        return { success: true, url: playUrl, type: 'm3u8', scheme: 2 }
+      }
+    }
+
+    // 方案二降级：正则找 m3u8
+    const m3u8Match = html.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/)
+    if (m3u8Match) {
+
+      return { success: true, url: m3u8Match[1].replace(/\\\//g, '/'), type: 'm3u8', scheme: 2 }
+    }
+
+    // 最终兜底：iframe 直接嵌入整页
+    return { success: true, url: url, type: 'iframe' }
+  } catch (e) {
+    console.warn(`[Anime] 播放解析失败(${sid}): ${e.message}`)
+    return { success: false, message: '所选线路解析播放地址失败' }
   }
-  return { success: false, message: '所有线路解析播放地址失败，请切换线路重试' }
 }
 
 // ============================================================

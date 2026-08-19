@@ -60,7 +60,7 @@ import { useSearchHistoryStore } from './store/searchHistory'
 import { usePlatformStore } from './store/platform'
 import { useQQUserStore } from './store/qq-user'
 import { useKugouUserStore } from './store/kugou-user'
-import { API_LINES, switchApiLine } from './api'
+import { useSettingsStore, comboMatches } from './store/settings'
 import {
     kugouYouthVip,
     kugouYouthDayVip,
@@ -79,6 +79,7 @@ const searchHistoryStore = useSearchHistoryStore()
 const platformStore = usePlatformStore()
 const qqUserStore = useQQUserStore()
 const kugouUserStore = useKugouUserStore()
+const settingsStore = useSettingsStore()
 
 // 当前平台的登录态（根据平台自动选择 userStore / qqUserStore / kugouUserStore）
 const activeUserStore = computed(() =>
@@ -458,6 +459,7 @@ const libraryNavItems = [
     { id: '/cloud', label: '我的云音乐', icon: Cloud },
     { id: '/netease-cloud', label: '官方云盘', icon: Database },
     { id: '/downloads', label: '下载', icon: Download },
+    { id: '/settings', label: '设置', icon: Settings },
 ]
 
 const toggleSongDetailOverlay = () => {
@@ -519,8 +521,32 @@ watch(() => playerStore.currentSong, persistPlayState)
 watch(() => playerStore.playlist, persistPlayState, { deep: false })
 watch([() => playerStore.currentIndex, () => playerStore.playMode], persistPlayState)
 
+// ===== 全局核心播放快捷键（可在"设置"专区自定义）=====
+const SHORTCUT_ACTIONS = {
+    togglePlay: () => playerStore.togglePlay(),
+    next: () => playerStore.next(),
+    prev: () => playerStore.prev(),
+    volumeUp: () => playerStore.setVolume(playerStore.volume + 10),
+    volumeDown: () => playerStore.setVolume(playerStore.volume - 10),
+    toggleLike: () => playerStore.toggleLike(),
+    togglePlayMode: () => playerStore.togglePlayMode()
+}
+const onGlobalKeydown = (e) => {
+    const t = e.target
+    // 输入框/文本区/可编辑区域中输入时跳过，避免抢键
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+    for (const id in SHORTCUT_ACTIONS) {
+        if (settingsStore.shortcuts[id] && comboMatches(e, settingsStore.shortcuts[id])) {
+            e.preventDefault()
+            SHORTCUT_ACTIONS[id]()
+            return
+        }
+    }
+}
+
 onMounted(() => {
   playerStore.initAudio()
+  window.addEventListener('keydown', onGlobalKeydown)
 
   // 平台隔离：QQ 平台不调网易云 fetchStatus；网易云平台不调 QQ fetchUserPlaylists
   if (platformStore.isNetease) {
@@ -610,6 +636,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
   const b = getBridge()
   if (b && b.off) {
     b.off('window-maximize-status', handleMaximize)
@@ -635,32 +662,13 @@ const toggleMaximize = () => {
 }
 
 const showCloseOptions = ref(false)
-const closePref = ref(localStorage.getItem('close_action') || 'ask')
 
-// API 线路选择（主线路 / 推荐线路 / 备用线路）
-const currentApiLine = ref(localStorage.getItem('api_line') || API_LINES[0].key)
-const currentApiLineLabel = computed(() => {
-    return API_LINES.find(l => l.key === currentApiLine.value)?.label || ''
-})
-const apiLineOptions = computed(() => API_LINES.map(l => ({ value: l.key, label: l.label })))
-const handleSwitchApiLine = (lineKey) => {
-    if (!lineKey || lineKey === localStorage.getItem('api_line')) return
-    if (switchApiLine(lineKey)) {
-        const line = API_LINES.find(l => l.key === lineKey)
-        messageStore.success(`已切换到${line?.label || '新'}线路，即将刷新页面...`, 1500)
-        // 切换 baseURL 后刷新页面，确保所有已发出请求与缓存状态重置
-        setTimeout(() => {
-            window.location.reload()
-        }, 800)
-    } else {
-        messageStore.error('线路切换失败')
-    }
-}
+// 关闭行为已迁移至"设置"专区（settings store 持久化），此处只读取
 
 const openCloseOptions = () => {
-    if (closePref.value === 'tray') {
+    if (settingsStore.closePrefer === 'tray') {
         minimizeToTray()
-    } else if (closePref.value === 'quit') {
+    } else if (settingsStore.closePrefer === 'quit') {
         quitApp()
     } else {
         showCloseOptions.value = true
@@ -677,12 +685,6 @@ const quitApp = () => {
     showCloseOptions.value = false
     const b = getBridge()
     if (b) b.send('window-quit')
-}
-
-const saveClosePref = (pref) => {
-    closePref.value = pref
-    localStorage.setItem('close_action', pref)
-    showCloseOptions.value = false
 }
 
 watch(showCloseOptions, (val) => {
@@ -1177,17 +1179,8 @@ const openGithub = () => {
         </div>
         
         <div class="header-right no-drag">
-          <div v-if="platformStore.isNetease" class="api-line-selector" :title="`当前：${currentApiLineLabel}`">
-            <span class="api-line-icon"><Sparkles :size="12" /></span>
-            <CustomSelect
-                v-model="currentApiLine"
-                :options="apiLineOptions"
-                transparent
-                @change="handleSwitchApiLine"
-            />
-          </div>
           <div class="user-info-container">
-            <div class="user-info clickable" @click="!isLoggedIn && (showLogin = true)">
+            <div class="user-info clickable" @click="isLoggedIn ? toggleUserMenu() : (showLogin = true)">
               <img v-if="isLoggedIn && avatarUrl" :src="avatarUrl" class="avatar" />
               <div v-else class="avatar"></div>
               <span class="nickname">{{ isLoggedIn ? nickname : '未登录' }}</span>
@@ -1200,10 +1193,6 @@ const openGithub = () => {
                   <template v-else>VIP</template>
               </span>
             </div>
-          </div>
-
-          <div class="theme-icons clickable" @click.stop="isLoggedIn ? toggleUserMenu() : null">
-            <Settings :size="16" />
 
             <div class="user-dropdown" v-if="showUserMenu && isLoggedIn" @click.stop>
                 <div class="dropdown-header">
@@ -1265,26 +1254,10 @@ const openGithub = () => {
                         <div class="left">查看 {{ platformStore.isKugou ? 'Token' : 'Cookie' }}</div>
                         <div class="right"><Copy :size="14" /></div>
                     </div>
-                    <!-- 关闭行为设置 -->
-                    <div class="menu-sub-item close-behavior-setting">
-                        <div class="left">关闭行为</div>
-                        <div class="close-behavior-options">
-                            <span
-                                class="behavior-opt"
-                                :class="{ active: closePref === 'ask' }"
-                                @click="saveClosePref('ask')"
-                            >询问</span>
-                            <span
-                                class="behavior-opt"
-                                :class="{ active: closePref === 'tray' }"
-                                @click="saveClosePref('tray')"
-                            >托盘</span>
-                            <span
-                                class="behavior-opt"
-                                :class="{ active: closePref === 'quit' }"
-                                @click="saveClosePref('quit')"
-                            >退出</span>
-                        </div>
+                    <!-- 关闭行为已迁移至"设置"专区 -->
+                    <div class="menu-sub-item clickable" @click="navigateTo('/settings')">
+                        <div class="left">设置</div>
+                        <div class="right"><Settings :size="14" /></div>
                     </div>
                     <div class="menu-sub-item" @click="logout">
                         <div class="left">退出登录</div>
@@ -1307,25 +1280,6 @@ const openGithub = () => {
                     </div>
                     <div class="close-option-item danger" @click="quitApp">
                         <X :size="14" /> 彻底退出
-                    </div>
-                    <div class="close-option-divider"></div>
-                    <div class="close-option-settings">
-                        <span class="settings-label">默认行为：</span>
-                        <span
-                            class="setting-option"
-                            :class="{ active: closePref === 'ask' }"
-                            @click="saveClosePref('ask')"
-                        >每次询问</span>
-                        <span
-                            class="setting-option"
-                            :class="{ active: closePref === 'tray' }"
-                            @click="saveClosePref('tray')"
-                        >托盘</span>
-                        <span
-                            class="setting-option"
-                            :class="{ active: closePref === 'quit' }"
-                            @click="saveClosePref('quit')"
-                        >退出</span>
                     </div>
                 </div>
             </Transition>
@@ -1808,9 +1762,9 @@ const openGithub = () => {
 }
 
 /* User Dropdown Styles */
-.theme-icons {
+/* 用户信息容器：作为用户下拉的定位基准 */
+.user-info-container {
     position: relative;
-    z-index: 1000;
 }
 
 /* 平台切换下拉框（logo 右侧） */
