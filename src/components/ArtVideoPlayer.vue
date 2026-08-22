@@ -158,19 +158,46 @@ function onEpisodeSelect(ep) {
     emit('selectEpisode', ep)
 }
 
+// 选择最优音频轨道：优先 AAC（hls.js 不支持 opus/webm）
+function selectBestAudioTrack(hls) {
+    if (!hls || !hls.audioTracks || hls.audioTracks.length === 0) return
+    // 优先找 AAC（mp4a）轨道
+    let bestIdx = 0
+    for (let i = 0; i < hls.audioTracks.length; i++) {
+        const t = hls.audioTracks[i]
+        const codec = (t.codec || t.type || '').toLowerCase()
+        if (codec.includes('mp4a') || codec.includes('aac') || codec.includes('audio/mp4')) {
+            bestIdx = i
+            break
+        }
+    }
+    // 只在需要切换时才设置
+    if (hls.audioTrack !== bestIdx) {
+        hls.audioTrack = bestIdx
+    }
+}
+
 // ===== m3u8 (hls.js) =====
 function playM3u8(video, url, artInstance) {
     if (Hls.isSupported()) {
         if (artInstance.hls) { try { artInstance.hls.destroy() } catch (e) {} }
+        const isLive = props.playType === 'live' || /live|stream|rtmp|twitch|ttvnw|kick|googlevideo/i.test(url)
         const hls = new Hls({
             enableWorker: true,
-            lowLatencyMode: false,
-            maxBufferLength: 60,
-            backBufferLength: 30,
+            lowLatencyMode: false, // YouTube 直播关闭低延迟模式，避免音频丢失
+            maxBufferLength: isLive ? 30 : 60,
+            backBufferLength: isLive ? 30 : 30,
+            liveSyncDurationCount: isLive ? 5 : undefined,
+            liveMaxLatencyDurationCount: isLive ? 20 : undefined,
+            liveDurationInfinity: false,
+            // 强制加载音频轨道
+            forceKeyFrameOnDiscontinuity: true,
             fragLoadingMaxRetry: 6,
             fragLoadingRetryDelay: 1000,
             manifestLoadingMaxRetry: 4,
-            levelLoadingMaxRetry: 4
+            levelLoadingMaxRetry: 4,
+            // 确保音频和视频同步
+            appendErrorMaxRetry: 6
         })
         hls.loadSource(url)
         hls.attachMedia(video)
@@ -187,6 +214,12 @@ function playM3u8(video, url, artInstance) {
                 }))
                 .sort((a, b) => b.height - a.height)
             addQualitySetting(artInstance, hls, list)
+            // 有独立 audioUrl 时由 DASH 音频同步处理，hls.js 只负责视频
+            if (!props.audioUrl) selectBestAudioTrack(hls)
+        })
+        // 音频轨道列表更新时也确保选中
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, () => {
+            if (!props.audioUrl) selectBestAudioTrack(hls)
         })
         hls.on(Hls.Events.ERROR, (_, data) => {
             if (!data.fatal) return
@@ -299,8 +332,9 @@ function playFlv(video, url, artInstance) {
     })
     flvPlayer.on(mpegts.Events.LOADING_COMPLETE, () => {
         if (flvTimer) { clearTimeout(flvTimer); flvTimer = null }
-        // 直播流收到 LOADING_COMPLETE 表示流已结束
-        if (isLiveStream) showError('直播流已结束')
+        // 直播流收到 LOADING_COMPLETE 多为 seek 追赶最新时读到缓冲边界，并非结束；
+        // 真正的下播是服务器断开连接，会走 ERROR 分支。故仅点播才视为播放完毕。
+        if (!isLiveStream) showError('播放完毕')
     })
     flvPlayer.on(mpegts.Events.MEDIA_INFO, (info) => {
         if (flvTimer) { clearTimeout(flvTimer); flvTimer = null }
@@ -324,6 +358,7 @@ function playFlv(video, url, artInstance) {
 
 // ===== DASH 音频初始化与同步（B站高画质流音视频分离）=====
 function destroyDashAudio() {
+    if (dashAudioHls) { try { dashAudioHls.destroy() } catch (e) {} dashAudioHls = null }
     if (dashAudioEl) {
         const v = art?.video
         const h = dashAudioEl._syncHandlers
@@ -344,28 +379,47 @@ function destroyDashAudio() {
     }
 }
 
+// YouTube HLS 音频的 hls.js 实例（独立于视频的 hls.js）
+let dashAudioHls = null
+
 function initDashAudio() {
     destroyDashAudio()
     if (!props.audioUrl) return
     const v = art?.video
     if (!v) return
     dashAudioEl = new Audio()
-    // 不设 crossOrigin：B站 CDN 不一定支持 CORS
-    dashAudioEl.src = props.audioUrl
-    dashAudioEl.load()
+    dashAudioEl.preload = 'auto'
     dashAudioEl.volume = v.volume
     dashAudioEl.muted = v.muted
 
-    // === 同步策略：以视频为准，音频跟随 ===
+    // 判断音频 URL 是否是 m3u8（YouTube HLS 直播的音频是独立 m3u8）
+    const isM3u8Audio = /\.m3u8(\?|$|#)/i.test(props.audioUrl) || /manifest\.googlevideo\.com/i.test(props.audioUrl)
+    if (isM3u8Audio && Hls.isSupported()) {
+        // 用 hls.js 加载 m3u8 音频流
+        dashAudioHls = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 30 })
+        dashAudioHls.loadSource(props.audioUrl)
+        dashAudioHls.attachMedia(dashAudioEl)
+        dashAudioHls.on(Hls.Events.ERROR, (_, data) => {
+            if (data.fatal) {
+                try { dashAudioHls.startLoad() } catch (e) {}
+            }
+        })
+    } else {
+        dashAudioEl.src = props.audioUrl
+        dashAudioEl.load()
+    }
+
+    // === 同步策略：以视频为准，音频跟随（直播和视频统一逻辑）===
     const syncPlay = () => { if (dashAudioEl) dashAudioEl.play().catch(() => {}) }
     const syncPause = () => { if (dashAudioEl) dashAudioEl.pause() }
     const syncSeek = () => { if (dashAudioEl) { try { dashAudioEl.currentTime = v.currentTime } catch (e) {} } }
     const syncVolume = () => { if (dashAudioEl) { dashAudioEl.volume = v.volume; dashAudioEl.muted = v.muted } }
     const syncRate = () => { if (dashAudioEl) dashAudioEl.playbackRate = v.playbackRate }
+    // 漂移阈值：0.5s 兼顾直播和视频，避免过松或过紧
     const syncDrift = () => {
         if (!dashAudioEl) return
         const drift = dashAudioEl.currentTime - v.currentTime
-        if (Math.abs(drift) > 0.3) {
+        if (Math.abs(drift) > 0.5) {
             try { dashAudioEl.currentTime = v.currentTime } catch (e) {}
         }
     }
@@ -387,8 +441,12 @@ function initDashAudio() {
 // ===== 播放器实例生命周期 =====
 function resolveArtType(url) {
     const pt = props.playType
-    if (/\.flv(\?|$)/i.test(url) || pt === 'flv' || pt === 'live') return 'flv'
-    if (/\.m3u8(\?|$)/i.test(url) || pt === 'm3u8') return 'm3u8'
+    // URL 优先判断：m3u8/FLV 以实际地址为准
+    if (/\.m3u8(\?|$|#)/i.test(url) || pt === 'm3u8') return 'm3u8'
+    if (/\.flv(\?|$|#)/i.test(url) || pt === 'flv') return 'flv'
+    // playType='live' 时根据 URL 判断：真正的 HLS 走 m3u8，其他（含 YouTube DASH）走 direct
+    // 注意：YouTube DASH URL (googlevideo) 是 fragmented MP4，不是 m3u8，不能用 hls.js 播放
+    if (pt === 'live') return /\.m3u8(\?|$|#)/i.test(url) || /\/hls\//i.test(url) ? 'm3u8' : ''
     return ''
 }
 

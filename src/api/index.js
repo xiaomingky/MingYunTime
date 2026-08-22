@@ -302,6 +302,13 @@ export const biliLoginQr = () => animeBridge().biliLoginQr()
 export const biliLoginCheck = (qrcodeKey) => animeBridge().biliLoginCheck(qrcodeKey)
 export const biliLoginStatus = () => animeBridge().biliLoginStatus()
 export const biliLogout = () => animeBridge().biliLogout()
+
+// YouTube 登录（官方网页登录，捕获 Cookie 供 yt-dlp 使用）
+export const youtubeLoginOpen = () => animeBridge().youtubeLoginOpen()
+export const youtubeLoginClose = () => animeBridge().youtubeLoginClose()
+export const youtubeLoginStatus = () => animeBridge().youtubeLoginStatus()
+export const youtubeLogout = () => animeBridge().youtubeLogout()
+export const onYoutubeLoginDone = (cb) => animeBridge().onYoutubeLoginDone(cb)
 export const onVideoDownloadProgress = (cb) => animeBridge().onVideoDownloadProgress(cb)
 export const onVideoDownloadStarted = (cb) => animeBridge().onVideoDownloadStarted(cb)
 export const onVideoDownloadDone = (cb) => animeBridge().onVideoDownloadDone(cb)

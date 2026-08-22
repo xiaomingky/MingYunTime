@@ -199,7 +199,7 @@ watch(() => playerStore.showMvPlayer, (val) => {
         </div>
       </div>
 
-      <!-- 统一使用 ArtVideoPlayer（ArtPlayer 引擎）播放 -->
+      <!-- 统一使用 ArtVideoPlayer（ArtPlayer 引擎）播放，YouTube DASH 和 B站同理 -->
       <div class="video-wrapper" @click="closeSizeMenu">
         <ArtVideoPlayer
           :src="playerStore.currentMvUrl"

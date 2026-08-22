@@ -47,6 +47,16 @@ const bridgeAPI = {
     biliLoginCheck: (qrcodeKey) => ipcRenderer.invoke('bilibili:login-check', { qrcodeKey }),
     biliLoginStatus: () => ipcRenderer.invoke('bilibili:login-status'),
     biliLogout: () => ipcRenderer.invoke('bilibili:logout'),
+    // YouTube 登录（官方网页登录，捕获 Cookie 供 yt-dlp 使用）
+    youtubeLoginOpen: () => ipcRenderer.invoke('youtube:login-open'),
+    youtubeLoginClose: () => ipcRenderer.invoke('youtube:login-close'),
+    youtubeLoginStatus: () => ipcRenderer.invoke('youtube:login-status'),
+    youtubeLogout: () => ipcRenderer.invoke('youtube:logout'),
+    onYoutubeLoginDone: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('youtube-login-done', sub)
+        return () => ipcRenderer.removeListener('youtube-login-done', sub)
+    },
     onVideoDownloadProgress: (cb) => {
         const sub = (_, data) => cb(data)
         ipcRenderer.on('video-download-progress', sub)

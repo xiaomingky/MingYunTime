@@ -1,6 +1,6 @@
 // electron/download-manager.js
 // 统一下载管理器
-// - 直链（mp4/mp3 等）：aria2c 多线程下载（16 连接）
+// - 直链（mp4/mp3 等）：aria2c 多线程下载（32 连接）
 // - m3u8 流：ffmpeg 合并为 mp4
 // - 本地文件：直接复制
 // - 统一历史记录（持久化到磁盘），分类：music / movie / anime / mv / video
@@ -33,6 +33,16 @@ function resolveTool(name) {
 
 const ARIA2C_PATH = resolveTool('aria2c.exe')
 const FFMPEG_PATH = resolveTool('ffmpeg.exe')
+const YTDLP_PATH = resolveTool('yt-dlp.exe')
+
+// YouTube 登录 Cookie 文件（Netscape 格式，由主进程在官方网页登录后写入），存在即代表已登录
+function getYoutubeCookieFile() {
+  try {
+    const f = path.join(app.getPath('userData'), 'youtube-cookies.txt')
+    if (fs.existsSync(f) && fs.statSync(f).size > 0) return f
+  } catch (e) {}
+  return null
+}
 const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 // 进行中的下载：id -> { process, canceled, cancel(), controller, _lastReport }
@@ -141,6 +151,8 @@ function deriveExt(url, category) {
     return '.mp3'
   }
   if (/\.m3u8(\?|$)/i.test(url)) return '.mp4'
+  // B站 DASH 的 .m4s 音频/视频流 下载后由 ffmpeg 合并为 mp4，统一用 .mp4 后缀
+  if (/\.m4s(\?|$)/i.test(url)) return '.mp4'
   const m = url.match(/\.(\w{2,4})(\?|$)/i)
   if (m) return '.' + m[1].toLowerCase()
   return '.mp4'
@@ -162,12 +174,13 @@ function parseSize(s) {
 // ===== 启动下载（核心入口） =====
 async function startDownload(params) {
   loadHistory()
-  const { url, name, type, category, savePath, askPath, audioUrl } = params
+  const { url, name, type, category, savePath, askPath, audioUrl, ytSrc, ytHeight, ytAuthed } = params
   if (!url) return { success: false, error: '缺少下载地址' }
 
   // 自动为 B站 CDN 注入 Referer（B站视频流需要 Referer 才能访问）
+  // bilivideo 与 mcdn(mountaintoys) 都是 B站视频 CDN，都需 Referer/UA，否则 403
   let headers = params.headers
-  if (/bilivideo\.(com|cn)/i.test(url)) {
+  if (/bilivideo\.(com|cn)|edge\.mountaintoys\.cn|mcdn/i.test(url)) {
     headers = Object.assign({
       'Referer': 'https://www.bilibili.com/',
       'User-Agent': DEFAULT_UA
@@ -224,8 +237,11 @@ async function startDownload(params) {
   emit('download:progress', { id, percent: 0, received: 0, total: 0, speed: 0 })
   emit('video-download-progress', { downloadId: id, percent: 0, received: 0, total: 0, speed: 0 })
 
-  // 分流：DASH 音视频分离 / 本地文件 / m3u8 / 直链
-  if (audioUrl && /^https?:\/\//i.test(audioUrl)) {
+  // 分流：YouTube(yt-dlp) / DASH 音视频分离 / 本地文件 / m3u8 / 直链
+  if (ytSrc && /^https?:\/\//i.test(ytSrc)) {
+    // YouTube：交给 yt-dlp 下载并自动合并音视频为 mp4
+    startYoutubeDlpDownload(id, ytSrc, ytHeight, ytAuthed, outputPath, record)
+  } else if (audioUrl && /^https?:\/\//i.test(audioUrl)) {
     // DASH 格式：分别下载 video 和 audio，再用 ffmpeg 流复制合并（极快）
     startDashMergeDownload(id, url, audioUrl, outputPath, headers, record)
   } else if (url.startsWith('local-file://') || url.startsWith('file://')) {
@@ -399,7 +415,152 @@ function startAria2cDownload(id, url, outputPath, extraHeaders, record) {
   })
 }
 
-// ===== 内置多线程分片下载（aria2c 不可用时降级） =====
+// ===== YouTube 下载（yt-dlp，自动合并音视频为 mp4） =====
+function startYoutubeDlpDownload(id, ytSrc, ytHeight, ytAuthed, outputPath, record) {
+  // yt-dlp 会自动补扩展名，去掉我们推导的 .mp4 避免变成 .mp4.mp4
+  const base = String(outputPath || '').replace(/\.[^.\/\\]+$/, '')
+  const format = ytHeight ? `bestvideo[height<=${ytHeight}]+bestaudio/best[height<=${ytHeight}]/best` : 'bestvideo+bestaudio/best'
+
+  const args = [
+    '--no-warnings', '--no-mtime', '--newline',
+    '-f', format,
+    '--merge-output-format', 'mp4',
+    '-o', base,
+    '--restrict-filenames',
+    '--progress-template', 'download:[download] %(progress._percent_str)s of %(progress._total_bytes_str)s at %(progress._speed_str)s ETA %(progress._eta_str)s'
+  ]
+  // aria2c 多线程下载（32线程×2=64并发，不限速）
+  if (fs.existsSync(ARIA2C_PATH)) {
+    args.push(
+      '--downloader', 'aria2c',
+      '--downloader-args', `aria2c:-x32 -s32 --max-overall-download-limit=0 --file-allocation=none --console-log-level=warn --summary-interval=0`
+    )
+  }
+  // 已登录（官方网页 Cookie 已写入）时启用账号画质/会员内容：yt-dlp 最新版仅支持 --cookies
+  // 只要 Cookie 文件存在就带上（不管前端是否显式传了 ytAuthed）
+  const ytCookieFile = getYoutubeCookieFile()
+  if (ytCookieFile) {
+    args.push('--cookies', ytCookieFile)
+  }
+  args.push(ytSrc)
+
+  const proc = spawn(YTDLP_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+  const state = { canceled: false, _lastReport: 0, startTime: Date.now() }
+  activeDownloads.set(id, {
+    process: proc,
+    canceled: false,
+    cancel: () => { state.canceled = true; try { proc.kill() } catch (e) {} }
+  })
+  record.status = 'downloading'
+
+  const reportProgress = (percent, total, speed) => {
+    record.percent = percent
+    record.total = total || record.total
+    record.speed = speed
+    const now = Date.now()
+    if (now - state._lastReport > 400) {
+      state._lastReport = now
+      emit('download:progress', { id, percent, received: total || 0, total: total || 0, speed })
+      emit('video-download-progress', { downloadId: id, percent, received: total || 0, total: total || 0, speed })
+    }
+  }
+
+  const parseProgress = (line) => {
+    // yt-dlp 原生格式: [download]  45.2% of ~  12.34MiB at  3.42MiB/s ETA 00:03
+    // yt-dlp template: [download] 45.2% of 12.34MiB at 3.42MiB/s ETA 00:03
+    let m = line.match(/\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+[KMGTP]?i?B)\s+at\s+([\d.]+[KMGTP]?i?B\/s)/i)
+    if (m) {
+      reportProgress(Math.min(100, parseFloat(m[1])), parseSize(m[2]), parseSize(m[3]))
+      return
+    }
+    // aria2c 格式: [#abc123 12.34MiB/45.67MiB(27%) CN:16 DL:3.42MiB ETA:1m23s]
+    m = line.match(/\[#[\w]+\s+([\d.]+[KMGTP]?i?B)\/([\d.]+[KMGTP]?i?B)\((\d+)%\).*?DL:([\d.]+[KMGTP]?i?B)/i)
+    if (m) {
+      reportProgress(Math.min(100, parseInt(m[3])), parseSize(m[2]), parseSize(m[4]))
+      return
+    }
+    // aria2c 简化格式: [#abc123 12.34MiB/45.67MiB(27%)]
+    m = line.match(/\[#[\w]+\s+([\d.]+[KMGTP]?i?B)\/([\d.]+[KMGTP]?i?B)\((\d+)%\)/i)
+    if (m) {
+      reportProgress(Math.min(100, parseInt(m[3])), parseSize(m[2]), 0)
+      return
+    }
+    // 合并阶段：[Merger] Merging formats into "..."
+    if (/\[Merger\]/.test(line)) reportProgress(99, 0, 0)
+  }
+
+  const onData = (chunk) => String(chunk).split(/\r?\n/).forEach(parseProgress)
+  proc.stdout?.on('data', onData)
+  proc.stderr?.on('data', onData)
+
+  proc.on('error', (err) => {
+    console.warn(`[DownloadManager] yt-dlp 启动失败: ${err.message}`)
+    record.status = 'error'
+    record.error = 'yt-dlp 启动失败：' + err.message
+    record.endTime = Date.now()
+    saveHistory()
+    activeDownloads.delete(id)
+    emit('download:error', { id, error: record.error })
+    emit('video-download-error', { downloadId: id, error: record.error })
+  })
+
+  proc.on('close', (code) => {
+    activeDownloads.delete(id)
+    // 定位 yt-dlp 实际产出的文件（base + 任意视频扩展名）
+    let finalPath = ''
+    try {
+      const dir = path.dirname(base)
+      const bname = path.basename(base)
+      const exts = ['mp4', 'mkv', 'webm', 'flv', 'mov', 'm4a', 'mp3', 'ogg', 'opus']
+      for (const f of fs.readdirSync(dir)) {
+        if (f.startsWith(bname)) {
+          const e = f.split('.').pop().toLowerCase()
+          if (exts.includes(e)) { finalPath = path.join(dir, f); break }
+        }
+      }
+    } catch (e) {}
+
+    if (state.canceled) {
+      record.status = 'canceled'
+      record.error = '用户取消'
+      try { if (finalPath && fs.existsSync(finalPath)) fs.unlinkSync(finalPath) } catch (e) {}
+    } else if (code !== 0) {
+      record.status = 'error'
+      record.error = `yt-dlp 下载失败（退出码 ${code}）`
+      try { if (finalPath && fs.existsSync(finalPath)) fs.unlinkSync(finalPath) } catch (e) {}
+    } else if (!finalPath) {
+      record.status = 'error'
+      record.error = '未找到下载产物'
+    } else {
+      // 若产物扩展名与预期(record.path)不同，重命名到 record.path
+      try {
+        if (finalPath !== outputPath && !fs.existsSync(outputPath)) fs.renameSync(finalPath, outputPath)
+        finalPath = outputPath
+      } catch (e) {}
+      record.status = 'done'
+      record.percent = 100
+      try { record.total = fs.statSync(finalPath).size; record.received = record.total } catch (e) {}
+    }
+    record.endTime = Date.now()
+    const dur = (record.endTime - record.startTime) / 1000
+    if (record.status === 'done' && dur > 0 && record.total > 0) {
+      record.speed = Math.round(record.total / dur)
+    } else if (record.status !== 'done') {
+      record.speed = 0
+    }
+    saveHistory()
+
+    if (record.status === 'done') {
+      emit('download:done', { id, path: record.path, speed: record.speed })
+      emit('video-download-done', { downloadId: id, path: record.path, name: record.name, category: record.type, speed: record.speed })
+    } else {
+      emit('download:error', { id, error: record.error })
+      emit('video-download-error', { downloadId: id, error: record.error })
+    }
+  })
+}
+
+// ===== 内置多线程分片下载（不依赖外部工具的降级方案） =====
 async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record) {
   try {
     const headerObj = { 'User-Agent': DEFAULT_UA }
@@ -610,9 +771,9 @@ async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraH
   const videoFile = path.join(tmpDir, 'video.m4s')
   const audioFile = path.join(tmpDir, 'audio.m4s')
 
-  // B站 audio 流也在 bilivideo CDN，需要相同的 Referer 头
+  // B站 audio 流也在 bilivideo/mcdn CDN，需要相同的 Referer 头
   let audioHeaders = extraHeaders
-  if (/bilivideo\.(com|cn)/i.test(audioUrl) && !audioHeaders) {
+  if (/bilivideo\.(com|cn)|edge\.mountaintoys\.cn|mcdn/i.test(audioUrl) && !audioHeaders) {
     audioHeaders = `Referer: https://www.bilibili.com/\r\nUser-Agent: ${DEFAULT_UA}`
   }
 
@@ -1117,6 +1278,11 @@ export function delegateCancelDownload(downloadId) {
 
 export function setDownloadManagerWindow(w) {
   setWindow(w)
+}
+
+// 供 main.js 复用 yt-dlp 路径（登录时调用）
+export function getYtDlpPath() {
+  return YTDLP_PATH
 }
 
 

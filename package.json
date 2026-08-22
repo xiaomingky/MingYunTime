@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "set NODE_OPTIONS=--max-old-space-size=1024 && vite",
     "dev:light": "set NODE_OPTIONS=--max-old-space-size=512 && vite",
-    "build": "node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && vite build && electron-builder",
+    "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && vite build && electron-builder",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -72,6 +72,10 @@
       {
         "from": "resources/ffmpeg.exe",
         "to": "ffmpeg.exe"
+      },
+      {
+        "from": "resources/yt-dlp.exe",
+        "to": "yt-dlp.exe"
       },
       {
         "from": "resources/qq-music-api/dist",

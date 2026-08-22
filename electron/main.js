@@ -13,9 +13,10 @@ async function getMM() {
     return mm
 }
 import axios from 'axios'
-import { exec, execFile } from 'node:child_process'
+import { exec, execFile, spawn } from 'node:child_process'
 import https from 'node:https'
 import crypto from 'node:crypto'
+import os from 'node:os'
 
 // 解析打包内 ffmpeg 路径（与 download-manager.js 的 resolveTool 一致）
 function getFfmpegPath() {
@@ -33,7 +34,7 @@ import './anime.js'
 import './anime-meta.js'
 import './movie.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
-import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload } from './download-manager.js'
+import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload, getYtDlpPath } from './download-manager.js'
 // 多平台歌词搜索（QQ + 酷狗）—— 必须用静态 import，否则 vite 打包后 dist-electron 下找不到模块
 import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ, getKugouLyric } from './lyric-providers.js'
 // QQ 音乐 API 子进程(@sansenjian/qq-music-api,监听 3200 端口)
@@ -266,6 +267,8 @@ function createWindow() {
                 'https://*.bilivideo.com/*', 'http://*.bilivideo.com/*',
                 'https://*.bilivideo.cn/*', 'http://*.bilivideo.cn/*',
                 'https://*.hdslb.com/*', 'http://*.hdslb.com/*',
+                // B站 mcdn 备用 CDN（edge.mountaintoys.cn），同样需注入 Referer/UA
+                'https://*.edge.mountaintoys.cn/*', 'http://*.edge.mountaintoys.cn/*',
                 // Twitch CDN 域名（usher/playlist/hls）— Twitch CDN 防盗链较宽松，但仍注入 Origin/Referer 以防万一
                 'https://*.ttvnw.net/*', 'http://*.ttvnw.net/*',
                 'https://*.hls.ttvnw.net/*', 'http://*.hls.ttvnw.net/*',
@@ -275,16 +278,32 @@ function createWindow() {
                 // 斗鱼 CDN 域名（douyucdn / douyuscdn / hdslb）
                 'https://*.douyucdn.com/*', 'http://*.douyucdn.com/*',
                 'https://*.douyuscdn.com/*', 'http://*.douyuscdn.com/*',
-                'https://*.douyucdn2.com/*', 'http://*.douyucdn2.com/*'
+                'https://*.douyucdn2.com/*', 'http://*.douyucdn2.com/*',
+                // 抖音 CDN 域名
+                'https://*.douyincdn.com/*', 'http://*.douyincdn.com/*',
+                'https://*.amemv.com/*', 'http://*.amemv.com/*',
+                'https://live.douyin.com/*', 'http://live.douyin.com/*',
+                // YouTube CDN（googlevideo 直链 + youtubei）
+                'https://*.googlevideo.com/*', 'http://*.googlevideo.com/*',
+                'https://*.youtube.com/*', 'http://*.youtube.com/*',
+                'https://i.ytimg.com/*', 'https://i9.ytimg.com/*'
             ]
         },
         (details, callback) => {
             const u = details.url
-            if (/bilivideo\.(com|cn)|hdslb\.com/i.test(u)) {
+            if (/bilivideo\.(com|cn)|hdslb\.com|mcdn|mountaintoys\.cn/i.test(u)) {
                 details.requestHeaders['Referer'] = 'https://www.bilibili.com/'
-                if (/bilivideo\.(com|cn)/i.test(u)) {
+                // mcdn/edge.mountaintoys.cn 与 bilivideo 一样需要浏览器 UA，否则 403
+                if (/bilivideo\.(com|cn)|edge\.mountaintoys\.cn|mcdn/i.test(u)) {
                     details.requestHeaders['User-Agent'] = PARSE_UA
                 }
+                // 播放分片同样需要登录 Cookie，否则高清/会员画质会 403（下载分支已注入，播放分支补上）
+                try {
+                    const bCookies = loadBiliCookie()
+                    if (bCookies && bCookies.SESSDATA) {
+                        details.requestHeaders['Cookie'] = biliCookieString(bCookies)
+                    }
+                } catch (e) { /* ignore */ }
             } else if (/ttvnw\.net/i.test(u)) {
                 // Twitch CDN：注入 Origin 和 Referer
                 details.requestHeaders['Origin'] = 'https://www.twitch.tv'
@@ -297,6 +316,15 @@ function createWindow() {
             } else if (/douyu(cdn|scdn)?2?\.com/i.test(u)) {
                 // 斗鱼 CDN：注入 Referer
                 details.requestHeaders['Referer'] = 'https://www.douyu.com/'
+                details.requestHeaders['User-Agent'] = PARSE_UA
+            } else if (/douyincdn\.com|amemv\.com|douyin\.com/i.test(u)) {
+                // 抖音 CDN：注入 Referer
+                details.requestHeaders['Referer'] = DOUYIN_LIVE_URL
+                details.requestHeaders['User-Agent'] = PARSE_UA
+            } else if (/googlevideo\.com|youtube\.com/i.test(u)) {
+                // YouTube CDN：注入来源 + 浏览器 UA，避免直链/分片 403
+                details.requestHeaders['Referer'] = 'https://www.youtube.com/'
+                details.requestHeaders['Origin'] = 'https://www.youtube.com'
                 details.requestHeaders['User-Agent'] = PARSE_UA
             }
             callback({ requestHeaders: details.requestHeaders })
@@ -869,10 +897,25 @@ ipcMain.handle('find-local-mv', async (_, { songName, songPath, mvDir }) => {
 // - 本地文件复制
 // - 统一历史记录 + 速度/进度事件
 // ============================================================
-ipcMain.handle('video-download', async (_, { url, name, headers, type, category, audioUrl }) => {
+ipcMain.handle('video-download', async (_, { url, name, headers, type, category, audioUrl, ytSrc, ytHeight }) => {
     // 委托给统一下载管理器，category 由调用方指定（mv/movie/anime/video），默认 video
     // audioUrl: DASH 音视频分离时，下载后由 ffmpeg 流复制合并（B站高画质，极快）
-    return delegateStartDownload({ url, name, headers, type, category: category || 'video', audioUrl })
+    // ytSrc/ytHeight: YouTube 视频时交给 yt-dlp 下载（自动合并音视频为 mp4）
+    // B站视频流（bilivideo CDN）需带 Referer + 登录 Cookie 才能访问，否则 403
+    let h = headers
+    if (/bilivideo\.(com|cn)/i.test(url || '')) {
+        const cookies = loadBiliCookie()
+        h = Object.assign({}, headers || {})
+        h['Referer'] = 'https://www.bilibili.com/'
+        h['User-Agent'] = PARSE_UA
+        if (cookies && cookies.SESSDATA) {
+            h['Cookie'] = biliCookieString(cookies)
+        }
+    }
+    // YouTube 登录状态：仅在已登录(令牌已缓存)时让 yt-dlp 开启 OAuth 账号画质
+    let ytAuthed = false
+    if (ytSrc && youtubeIsLoggedIn()) ytAuthed = true
+    return delegateStartDownload({ url, name, headers: h, type, category: category || 'video', audioUrl, ytSrc, ytHeight, ytAuthed })
 })
 
 ipcMain.handle('video-download-cancel', async (_, { downloadId }) => {
@@ -1442,69 +1485,71 @@ async function parseBilibili(target, addStream) {
         viewData = r.data.data
     } catch (e) { return null }
 
-    const { cid, title } = viewData
+    // 过滤 B站标题开头的【...】前缀（不少 UP 主会把整个标题或分类套进【】里，可能连续多层）
+    const cleanBiliTitle = (t) => {
+        let s = String(t || '')
+        // 循环剥离开头的连续【...】前缀（如"【合集】【全B站】标题"）
+        while (/^\s*【[^】]*】/u.test(s)) {
+            s = s.replace(/^\s*【[^】]*】\s*/u, '')
+        }
+        return s.trim()
+    }
+    const { cid } = viewData
+    const title = cleanBiliTitle(viewData.title)
     const pageTitle = title
     const qualityMap = { 127: '8K', 126: '杜比视界', 125: 'HDR', 120: '4K', 116: '1080P60', 112: '1080P高码率', 80: '1080P', 74: '720P60', 64: '720P', 32: '480P', 16: '360P' }
     const loggedInfo = isLoggedIn ? '（已登录）' : '（未登录·仅低画质）'
     let addedAny = false
 
-    // === 1. 登录后优先尝试 DASH 格式（fnval=16），可获取 4K/1080P+ 高画质（音视频分离）===
-    // B站对 durl(fnval=1) 限制了高画质，登录用户的高画质必须走 DASH（音视频分离）
-    // 下载时由下载管理器自动用 ffmpeg 合并 video+audio 成有声 mp4
-    if (isLoggedIn) {
-        try {
-            const r = await axios.get('https://api.bilibili.com/x/player/playurl', {
-                params: { bvid, cid, qn: 127, fnval: 16, fourk: 1 },
-                headers: biliHeaders,
-                timeout: 10000
-            })
-            if (r.data?.code === 0 && r.data.data?.dash) {
-                const dash = r.data.data.dash
-                // 取最高音质的 audio（按 id 降序），下载时与 video 合并
-                const audios = (dash.audio || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
-                const bestAudio = audios[0]
-                const audioUrl = bestAudio ? (bestAudio.baseUrl || bestAudio.base_url) : ''
-                // 视频流按 id 降序（高画质在前），同时去重相同 id（不同码率备份）
-                const videos = (dash.video || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
-                const seenQ = new Set()
-                videos.forEach(v => {
-                    if (seenQ.has(v.id)) return
-                    seenQ.add(v.id)
-                    const qLabel = qualityMap[v.id] || `${v.id}P`
-                    addStream(v.baseUrl || v.base_url, 'mp4', `${title} [${qLabel} 高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
-                    addedAny = true
-                })
-            }
-        } catch (e) {}
-    }
+    // 合集/分P：遍历所有 P（pages），每 P 各自请求 cid 对应的流
+    const pages = (viewData.pages && viewData.pages.length > 0)
+        ? viewData.pages
+        : [{ cid, part: title }]
+    const multi = pages.length > 1
+    for (let pi = 0; pi < pages.length; pi++) {
+        const p = pages[pi]
+        const partialCid = p.cid
+        // 分P标题：单P用合集原标题；多P用 [P分P号] 分P标题，作为文件名主体
+        const pTitle = multi
+            ? `[P${pi + 1}] ${cleanBiliTitle(p.part || `第${pi + 1}P`)}`
+            : title
+        let pageAdded = false
 
-    // === 2. 请求 durl 格式（fnval=1），完整音视频流（有声，画质取决于登录状态）===
-    try {
-        const r = await axios.get('https://api.bilibili.com/x/player/playurl', {
-            params: { bvid, cid, qn: 127, fnval: 1, fourk: 1 },
-            headers: biliHeaders,
-            timeout: 10000
-        })
-        if (r.data?.code === 0 && r.data.data?.durl) {
-            const durl = r.data.data.durl
-            const quality = r.data.data.quality
-            const qLabel = qualityMap[quality] || `${quality}P`
-            durl.forEach((d, i) => {
-                const partTitle = durl.length > 1
-                    ? `${title} - 第${i + 1}段/共${durl.length}段 [${qLabel} 完整·有声]${loggedInfo}`
-                    : `${title} [${qLabel} 完整·有声]${loggedInfo}`
-                addStream(d.url, 'mp4', partTitle, { bili: true })
-            })
-            addedAny = true
-        }
-    } catch (e) {}
-
-    // === 3. 降级：尝试不同清晰度的 durl ===
-    if (!addedAny) {
-        for (const qn of [80, 64, 32, 16]) {
+        // === 1. 登录后优先尝试 DASH 格式（fnval=16），可获取 4K/1080P+ 高画质（音视频分离）===
+        // B站对 durl(fnval=1) 限制了高画质，登录用户的高画质必须走 DASH（音视频分离）
+        // 下载时由下载管理器自动用 ffmpeg 合并 video+audio 成有声 mp4
+        if (isLoggedIn) {
             try {
                 const r = await axios.get('https://api.bilibili.com/x/player/playurl', {
-                    params: { bvid, cid, qn, fnval: 1, fourk: 0 },
+                    params: { bvid, cid: partialCid, qn: 127, fnval: 16, fourk: 1 },
+                    headers: biliHeaders,
+                    timeout: 10000
+                })
+                if (r.data?.code === 0 && r.data.data?.dash) {
+                    const dash = r.data.data.dash
+                    // 取最高音质的 audio（按 id 降序），下载时与 video 合并
+                    const audios = (dash.audio || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                    const bestAudio = audios[0]
+                    const audioUrl = bestAudio ? (bestAudio.baseUrl || bestAudio.base_url) : ''
+                    // 视频流按 id 降序（高画质在前），同时去重相同 id（不同码率备份）
+                    const videos = (dash.video || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                    const seenQ = new Set()
+                    videos.forEach(v => {
+                        if (seenQ.has(v.id)) return
+                        seenQ.add(v.id)
+                        const qLabel = qualityMap[v.id] || `${v.id}P`
+                        addStream(v.baseUrl || v.base_url, 'mp4', `${pTitle} [${qLabel} 高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
+                        pageAdded = true
+                    })
+                }
+            } catch (e) {}
+        }
+
+        // === 2. 请求 durl 格式（fnval=1），完整音视频流（有声，画质取决于登录状态）===
+        if (!pageAdded) {
+            try {
+                const r = await axios.get('https://api.bilibili.com/x/player/playurl', {
+                    params: { bvid, cid: partialCid, qn: 127, fnval: 1, fourk: 1 },
                     headers: biliHeaders,
                     timeout: 10000
                 })
@@ -1514,15 +1559,42 @@ async function parseBilibili(target, addStream) {
                     const qLabel = qualityMap[quality] || `${quality}P`
                     durl.forEach((d, i) => {
                         const partTitle = durl.length > 1
-                            ? `${title} - 第${i + 1}段/共${durl.length}段 [${qLabel}]${loggedInfo}`
-                            : `${title} [${qLabel}]${loggedInfo}`
+                            ? `${pTitle} [${qLabel} 完整·有声] - 第${i + 1}段${loggedInfo}`
+                            : `${pTitle} [${qLabel} 完整·有声]${loggedInfo}`
                         addStream(d.url, 'mp4', partTitle, { bili: true })
                     })
-                    addedAny = true
-                    break
+                    pageAdded = true
                 }
             } catch (e) {}
         }
+
+        // === 3. 降级：尝试不同清晰度的 durl ===
+        if (!pageAdded) {
+            for (const qn of [80, 64, 32, 16]) {
+                try {
+                    const r = await axios.get('https://api.bilibili.com/x/player/playurl', {
+                        params: { bvid, cid: partialCid, qn, fnval: 1, fourk: 0 },
+                        headers: biliHeaders,
+                        timeout: 10000
+                    })
+                    if (r.data?.code === 0 && r.data.data?.durl) {
+                        const durl = r.data.data.durl
+                        const quality = r.data.data.quality
+                        const qLabel = qualityMap[quality] || `${quality}P`
+                        durl.forEach((d, i) => {
+                            const partTitle = durl.length > 1
+                                ? `${pTitle} [${qLabel}] - 第${i + 1}段${loggedInfo}`
+                                : `${pTitle} [${qLabel}]${loggedInfo}`
+                            addStream(d.url, 'mp4', partTitle, { bili: true })
+                        })
+                        pageAdded = true
+                        break
+                    }
+                } catch (e) {}
+            }
+        }
+
+        if (pageAdded) addedAny = true
     }
 
     return addedAny ? { title: pageTitle } : null
@@ -1797,87 +1869,287 @@ async function parseTwitch(target, addStream) {
     return { title }
 }
 
-// ===== 虎牙直播流解析 =====
-// 虎牙直播页面内嵌 stream: [{ gameLiveInfo, gameStreamInfoList }]
-// 每个 gameStreamInfo 含 sFlvUrl/sStreamName/sFlvAntiCode/sHlsUrl/sHlsAntiCode
-// 直接拼接即可得到 FLV 和 HLS 直播流地址（无需签名计算）
-async function parseHuya(target, addStream) {
-    // 1. 提取房间号（支持 huya.com/123 或 huya.com/xxx）
-    let m = target.match(/huya\.com\/([A-Za-z0-9_]+)/i)
+// ===== Kick 直播流解析 =====
+// 频道 API 返回 playback_url（m3u8），再解析 master 列表拆分多清晰度
+async function parseKick(target, addStream) {
+    let m = target.match(/kick\.com\/([A-Za-z0-9_-]+)/i)
     if (!m) return null
-    const room = m[1]
-
-    // 2. 获取页面 HTML
-    let html = ''
+    const user = m[1]
     try {
-        const r = await axios.get(`https://www.huya.com/${room}`, {
-            headers: { 'User-Agent': PARSE_UA, 'Referer': 'https://www.huya.com/' },
+        const r = await axios.get(`https://kick.com/api/v2/channels/${user}`, {
+            headers: { 'User-Agent': PARSE_UA, 'Accept': 'application/json' },
             timeout: 15000, validateStatus: () => true
         })
-        html = r.data || ''
-    } catch (e) { return null }
-    if (!html) return null
+        if (r.status !== 200 || !r.data) return null
+        const data = r.data
+        const name = data.name || data.username || user
+        // 开播时 livestream 不为 null，playback_url 在 livestream 内；未开播时为 null
+        const pb = (data.livestream && data.livestream.playback_url) || data.playback_url
+        if (!pb) return null
+        // 抓取 master.m3u8，拆分出各分辨率变体（Kick 用多码率 HLS）
+        try {
+            const mr = await axios.get(pb, {
+                headers: { 'User-Agent': PARSE_UA, 'Referer': 'https://kick.com/' },
+                timeout: 15000, validateStatus: () => true
+            })
+            if (mr.status === 200 && mr.data && /#EXT-X-STREAM-INF/i.test(mr.data)) {
+                const lines = (mr.data || '').split('\n')
+                let attrs = null
+                let added = 0
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim()
+                    if (/^#EXT-X-STREAM-INF:/i.test(line)) {
+                        attrs = {}
+                        const rr = line.match(/RESOLUTION=(\d+)x(\d+)/)
+                        const bb = line.match(/BANDWIDTH=(\d+)/)
+                        if (rr) attrs.h = rr[2]
+                        if (bb) attrs.kbps = Math.round(parseInt(bb[1], 10) / 1000)
+                        continue
+                    }
+                    if (attrs && line && !line.startsWith('#')) {
+                        const vUrl = /^https?:/i.test(line) ? line : new URL(line, pb).href
+                        const label = attrs.h ? `Kick - ${name} [${attrs.h}p${attrs.kbps ? ' · ' + attrs.kbps + 'k' : ''}]`
+                            : `Kick - ${name} [直播]`
+                        addStream(vUrl, 'm3u8', label)
+                        added++
+                        attrs = null
+                    }
+                }
+                if (added) return { title: name }
+            }
+        } catch (e) { /* 直接使用原链接 */ }
+        addStream(pb, 'm3u8', `Kick - ${name} [直播]`)
+        return { title: name }
+    } catch (e) { /* fallthrough */ }
+    return null
+}
 
-    // 3. 用括号平衡匹配提取 stream: [...]
-    const idx = html.indexOf('stream:')
-    if (idx < 0) return null
-    const startArr = html.indexOf('[', idx)
-    if (startArr < 0) return null
-    let depth = 0, inStr = false, esc = false, quote = '', end = -1
-    for (let i = startArr; i < html.length; i++) {
-        const c = html[i]
-        if (esc) { esc = false; continue }
-        if (inStr) {
-            if (c === '\\') esc = true
-            else if (c === quote) inStr = false
-        } else {
-            if (c === '"' || c === "'") { inStr = true; quote = c }
-            else if (c === '[') depth++
-            else if (c === ']') { depth--; if (depth === 0) { end = i; break } }
+// ===== YouTube 直播/视频流解析 =====
+// 用 yt-dlp 拉取 YouTube 全量元数据 + 已解签名的直播/视频直链（最可靠，自动绕过签名/consent/反爬）
+function runYtDlpOnce(url, useCookie, timeoutMs) {
+    return new Promise((resolve) => {
+        let yt
+        try { yt = getYtDlpPath() } catch (e) { return resolve(null) }
+        const args = ['-J', '--skip-download', '--no-warnings', '--no-playlist']
+        // 已登录（官方 Cookie）时带上账号身份，可解析会员/受限内容
+        if (useCookie) {
+            try {
+                if (youtubeIsLoggedIn()) args.push('--cookies', YT_COOKIE_FILE())
+            } catch (e) {}
         }
+        args.push(String(url))
+        const proc = spawn(yt, args, {
+            stdio: ['ignore', 'pipe', 'pipe']
+        })
+        let out = '', done = false
+        const finish = (val) => { if (!done) { done = true; resolve(val) } }
+        const timer = setTimeout(() => { try { proc.kill() } catch (e) {} }, timeoutMs || 90000)
+        proc.stdout.on('data', (d) => { if (out.length < 12 * 1024 * 1024) out += String(d) })
+        proc.on('error', () => { clearTimeout(timer); finish(null) })
+        proc.on('close', (code) => {
+            clearTimeout(timer)
+            if (!out.trim() && !code) { finish(null); return }
+            try { finish(JSON.parse(out)) } catch (e) { finish(null) }
+        })
+    })
+}
+
+// 先带 Cookie 解析；若失败（陈旧/损坏的 Cookie 会导致错误），回退为不带 Cookie 再次解析
+async function runYtDlpJson(url) {
+    let r
+    try {
+        if (youtubeIsLoggedIn()) {
+            r = await runYtDlpOnce(url, true)
+            if (r) return r
+        }
+    } catch (e) {}
+    r = await runYtDlpOnce(url, false)
+    return r
+}
+
+async function parseYouTube(target, addStream) {
+    const id = (target.match(/youtu\.be\/([\w-]{6,})/) ||
+                target.match(/[?&]v=([\w-]{6,})/) ||
+                target.match(/youtube\.com\/(?:live\/|shorts\/|watch\/|embed\/)([\w-]{6,})/))?.[1]
+    if (!id) return null
+    const U = (s) => String(s || '').replace(/\\(.)/g, '$1')
+    const watchUrl = 'https://www.youtube.com/watch?v=' + id
+
+    const info = await runYtDlpJson(watchUrl)
+    if (!info) return null
+    const title = info.title || ''
+    const formats = Array.isArray(info.formats) ? info.formats : []
+
+    // ===== 直播：优先 HLS m3u8（hls.js 播放），DASH 作为备选 =====
+    // 音频统一用独立 DASH audio URL + <audio> 元素同步播放
+    const isLive = !!(info.is_live || info.live_status === 'is_live' || (info.was_live && !formats.some(f => f.height && f.acodec && f.acodec !== 'none')))
+    if (isLive) {
+        // 获取最优音频流（DASH 音频，播放器用独立 Audio 元素同步播放）
+        const liveBestAudio = formats
+            .filter(f => f.url && (!f.vcodec || f.vcodec === 'none') && f.acodec && f.acodec !== 'none')
+            .sort((a, b) => ((b.abr || 0) || (b.tbr || 0)) - ((a.abr || 0) || (a.tbr || 0)))[0]
+        const liveAudioUrl = liveBestAudio ? liveBestAudio.url : ''
+
+        // 1) 优先 HLS m3u8 流（hls.js 能正确处理，播放体验最好）
+        const hlsAll = formats.filter(f => f.url && /m3u8|hls/i.test((f.protocol || '') + ' ' + (f.format_id || '')))
+        const hlsSeen = new Set()
+        const hlsUnique = hlsAll.filter(f => { if (hlsSeen.has(f.url)) return false; hlsSeen.add(f.url); return true })
+            .sort((a, b) => (b.height || b.tbr || 0) - (a.height || a.tbr || 0))
+        for (const f of hlsUnique) {
+            const h = f.height || 0
+            const lbl = h ? `${h}p` : (f.format_note || '直播')
+            addStream(U(f.url), 'm3u8', `${title} [${lbl}]`, { ytSrc: watchUrl, ytHeight: h, audioUrl: liveAudioUrl, isLive: true })
+        }
+
+        // 2) DASH 视频流（fragmented MP4）：浏览器原生 <video> + 独立 <audio> 同步
+        const liveDashVideos = formats
+            .filter(f => f.url && f.vcodec && f.vcodec !== 'none' && (!f.acodec || f.acodec === 'none') && f.height)
+            .filter((f, i, arr) => arr.findIndex(x => x.format_id === f.format_id) === i)
+            .sort((a, b) => (b.height || 0) - (a.height || 0))
+        const liveSeen = new Set()
+        for (const f of liveDashVideos) {
+            const h = f.height || 0
+            const label = f.format_note || (h ? `${h}p` : '')
+            const key = `live_${h}`
+            if (liveSeen.has(key)) continue
+            liveSeen.add(key)
+            addStream(U(f.url), 'mp4', `${title} [${label || '直播'}]`, { ytSrc: watchUrl, ytHeight: h, audioUrl: liveAudioUrl, isLive: true })
+        }
+
+        // 3) 兜底：无 HLS 也无 DASH 时，随便取一个视频流
+        if (hlsUnique.length === 0 && liveSeen.size === 0) {
+            const fallback = formats.find(f => f.url && f.vcodec && f.vcodec !== 'none' && !/audio/ig.test(f.resolution || ''))
+            if (fallback?.url) addStream(U(fallback.url), 'mp4', `${title} [直播]`, { ytSrc: watchUrl, ytHeight: fallback.height || 0, audioUrl: liveAudioUrl, isLive: true })
+        }
+        return { title: title || 'YouTube Live' }
     }
-    if (end < 0) return null
 
-    let streams
-    try { streams = JSON.parse(html.slice(startArr, end + 1)) } catch (e) { return null }
-    if (!streams || streams.length === 0) return null
+    // ===== 视频：优先用渐进式流（音视频合一、可直接播放）；DASH 流仅用于下载（音视频分离）=====
+    // YouTube 渐进式流（format_id 18/22/37 等）自带音轨，mp4 格式，<video> 可直接播放，
+    // 但最高只有 720p。1080p+ 必须走 DASH（音视频分离），仅适合下载时 yt-dlp 自动合并。
+    const progressive = formats
+        .filter(f => f.url && f.vcodec && f.vcodec !== 'none' && f.acodec && f.acodec !== 'none' && f.height)
+        .sort((a, b) => (b.height || 0) - (a.height || 0))
 
-    // 4. 提取标题
-    const gameLiveInfo = streams[0].gameLiveInfo || {}
-    let title = gameLiveInfo.nick || gameLiveInfo.roomName || `虎牙 - ${room}`
-    if (gameLiveInfo.gameFullName) title += ` - ${gameLiveInfo.gameFullName}`
+    // DASH 视频流（纯画面，无音轨）— 供下载用
+    const bestAudio = formats
+        .filter(f => f.url && (!f.vcodec || f.vcodec === 'none') && f.acodec && f.acodec !== 'none')
+        .sort((a, b) => ((b.abr || 0) || (b.tbr || 0)) - ((a.abr || 0) || (a.tbr || 0)))[0]
+    const bestAudioUrl = bestAudio ? bestAudio.url : ''
+    const dashVideos = formats
+        .filter(f => f.url && f.vcodec && f.vcodec !== 'none' && (!f.acodec || f.acodec === 'none') && f.height)
+        .filter((f, i, arr) => arr.findIndex(x => x.format_id === f.format_id) === i)
+        .sort((a, b) => (b.height || 0) - (a.height || 0))
 
-    // 5. 遍历 gameStreamInfoList 构造直播流 URL
-    const streamInfoList = streams[0].gameStreamInfoList || []
-    if (streamInfoList.length === 0) return null
+    let added = 0
+    const seen = new Set()
+
+    // 1) 渐进式流：可直接播放（有声）
+    for (const f of progressive) {
+        const h = f.height || 0
+        const label = f.format_note || `${h}p`
+        const key = `prog_${h}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        addStream(U(f.url), 'mp4', `${title} [${label}]`, { ytSrc: watchUrl, ytHeight: h })
+        added++
+    }
+
+    // 2) DASH 高画质流：仅用于下载（yt-dlp 自动合并音视频）
+    for (const f of dashVideos) {
+        const h = f.height || 0
+        const qKey = f.format_note || `${h}p`
+        const key = `dash_${h}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        addStream(U(f.url), 'mp4', `${title} [${qKey}·下载用]`, { ytSrc: watchUrl, ytHeight: h, audioUrl: bestAudioUrl })
+        added++
+    }
+
+    return added ? { title: title || 'YouTube' } : null
+}
+
+const DOUYIN_LIVE_URL = 'https://live.douyin.com/'
+const DOUYIN_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
+const DEFAULT_TTWID = '1%7Cu7ogdHsSmHtxbt4hjDCNvcLfVJz78CTM0TTWU8Hio8w%7C1751545220%7C18aac967e501e9d6c13384335ced3523c46a0b1cc4535c7213bc2506a7f462c8'
+const DOUYIN_QUALITY_MAP = { origin: '蓝光', uhd: '超清', hd: '高清', sd: '标清', ld: '流畅', md: '极速' }
+let douyinTtwidCache = null
+
+async function douyinGetTtwid() {
+    if (douyinTtwidCache) return douyinTtwidCache
+    try {
+        const r = await axios.post('https://ttwid.bytedance.com/ttwid/union/register/',
+            JSON.stringify({ region: 'cn', aid: 6383, needFid: false, service: 'https://www.douyin.com', union: true, fid: '' }),
+            { headers: { 'Content-Type': 'application/json' }, timeout: 8000, validateStatus: () => true })
+        const setCookie = r.headers?.['set-cookie']
+        if (Array.isArray(setCookie)) {
+            for (const c of setCookie) {
+                const m = c.match(/ttwid=([^;]+)/)
+                if (m) { douyinTtwidCache = m[1]; return douyinTtwidCache }
+            }
+        }
+    } catch (e) { /* fallback */ }
+    douyinTtwidCache = DEFAULT_TTWID
+    return douyinTtwidCache
+}
+
+async function douyinGetHeaders() {
+    const ttwid = await douyinGetTtwid()
+    const nonce = crypto.randomBytes(11).toString('hex').slice(0, 21)
+    const odinTtid = crypto.randomBytes(80).toString('hex')
+    const cookie = `ttwid=${ttwid}; odin_ttid=${odinTtid}; __ac_nonce=${nonce};`
+    return { 'User-Agent': DOUYIN_USER_AGENT, 'Referer': DOUYIN_LIVE_URL, 'Cookie': cookie }
+}
+
+async function parseDouyinLive(target, addStream) {
+    let m = target.match(/live\.douyin\.com\/([A-Za-z0-9_+]+)/i)
+    if (!m) return null
+    const webRid = m[1]
+    const headers = await douyinGetHeaders()
+
+    // 获取房间信息（不需要 ABogus 签名）
+    let roomInfo = null
+    try {
+        const params = new URLSearchParams({
+            app_name: 'douyin_web', enter_from: 'web_live', live_id: '1',
+            aid: '6383', device_platform: 'web', browser_language: 'zh-CN',
+            browser_platform: 'Win32', browser_name: 'Mozilla', browser_version: '142.0.0.0',
+            web_rid: webRid, is_need_double_stream: 'false'
+        })
+        const r = await axios.get(`https://live.douyin.com/webcast/room/web/enter/?${params}`, {
+            headers, timeout: 10000, validateStatus: () => true, responseType: 'text'
+        })
+        let data
+        try { data = JSON.parse(r.data) } catch (e) { console.log('[DOUYIN] 响应非JSON'); return null }
+        const arr = data?.data?.data
+        if (Array.isArray(arr) && arr.length > 0) roomInfo = arr[0]
+        if (data?.data?.prompts === '直播已结束') return null
+    } catch (e) { console.log('[DOUYIN] API 失败:', e.message) }
+
+    if (!roomInfo) return null
+    if (roomInfo.status !== 2) return null
+    if ((roomInfo.finish_time || 0) > 0) return null
+
+    const title = roomInfo.title || '抖音直播'
+
+    // 提取直播流
+    const pullData = roomInfo.stream_url?.live_core_sdk_data?.pull_data
+    const streamDataText = pullData?.stream_data
+    if (!streamDataText) { console.log('[DOUYIN] stream_data 为空'); return null }
+
+    let streamData
+    try { streamData = JSON.parse(streamDataText) } catch (e) { return null }
+    const qualities = streamData?.data
+    if (!qualities || typeof qualities !== 'object') return null
 
     let addedAny = false
-    // CDN 优先级：HS(华为)优先（测试中只有 HS 节点 HLS 返回 200，AL/TX 返回 403）
-    // 然后 TX(腾讯) > AL(阿里) > BD
-    const cdnPriority = { HS: 0, TX: 1, AL: 2, BD: 3, HW: 4, HX: 5 }
-    streamInfoList.sort((a, b) => (cdnPriority[a.sCdnType] ?? 9) - (cdnPriority[b.sCdnType] ?? 9))
-
-    // 优先返回所有 HLS 直播流（HLS 直播流更稳定，hls.js 会自动刷新 playlist 获取新分片）
-    for (const info of streamInfoList) {
-        const cdn = info.sCdnType || '?'
-        const streamName = info.sStreamName
-        if (!streamName) continue
-
-        // HLS 直播流（优先返回，直播流 hls.js 会自动刷新 playlist）
-        if (info.sHlsUrl && info.sHlsAntiCode) {
-            const hlsUrl = `${info.sHlsUrl}/${streamName}.${info.sHlsUrlSuffix || 'm3u8'}?${info.sHlsAntiCode}`
-            addStream(hlsUrl, 'm3u8', `${title} [HLS ${cdn}节点 直播]`)
-            addedAny = true
-        }
-    }
-    // FLV 作为备选（延迟更低但浏览器播放稳定性不如 HLS）
-    for (const info of streamInfoList) {
-        const cdn = info.sCdnType || '?'
-        const streamName = info.sStreamName
-        if (!streamName) continue
-        if (info.sFlvUrl && info.sFlvAntiCode) {
-            const flvUrl = `${info.sFlvUrl}/${streamName}.${info.sFlvUrlSuffix || 'flv'}?${info.sFlvAntiCode}`
-            addStream(flvUrl, 'flv', `${title} [FLV ${cdn}节点 直播]`)
+    const qualityOrder = ['origin', 'uhd', 'hd', 'sd', 'ld', 'md']
+    for (const q of qualityOrder) {
+        const qData = qualities[q]
+        if (!qData?.main) continue
+        const label = DOUYIN_QUALITY_MAP[q] || q
+        if (qData.main.flv && !qData.main.flv.includes('rtm_expr_tag=reflow_room_info')) {
+            addStream(qData.main.flv.replace('http://', 'https://'), 'flv', `${title} [${label}]`)
             addedAny = true
         }
     }
@@ -1885,145 +2157,336 @@ async function parseHuya(target, addStream) {
     return addedAny ? { title } : null
 }
 
+// ===== 虎牙直播流解析 =====
+// 参考 biliup huya.rs：页面提取 stream JSON → 重建 anticode → 多 CDN / 画质
+const HUYA_CDN_PRIORITY = { AL: 0, TX: 1, HW: 2, HS: 3, BD: 4, HX: 5 }
+const HUYA_SKIP_CDNS = new Set(['HY', 'HUYA', 'HYZJ'])
+
+function huyaBuildAnticode(streamName, anticode, presenterUid) {
+    try {
+        const query = new URLSearchParams(anticode)
+        const fm = query.get('fm')
+        if (!fm) return anticode
+        const ctype = query.get('ctype') || 'huya_live'
+        const platformId = query.get('t') || '100'
+        const uid = presenterUid || huyaRandomUid()
+        const now = Math.floor(Date.now() / 1000)
+        const seqId = uid + Date.now()
+        const secretHash = crypto.createHash('md5').update(`${seqId}|${ctype}|${platformId}`).digest('hex')
+        const convertUid = huyaRotl64(uid)
+        const fmDecoded = decodeURIComponent(fm)
+        const secretPrefix = Buffer.from(fmDecoded, 'base64').toString('utf8').split('_')[0]
+        let wsTime = query.get('wsTime')
+        if (parseInt(wsTime, 16) < now + 20 * 60) {
+            wsTime = (now + 24 * 60 * 60).toString(16)
+        }
+        const isWap = platformId === '103'
+        const calcUid = isWap ? uid : convertUid
+        const wsSecret = crypto.createHash('md5').update(`${secretPrefix}_${calcUid}_${streamName}_${secretHash}_${wsTime}`).digest('hex')
+        const fs = query.get('fs') || 'bgct'
+        const fmEncoded = encodeURIComponent(fm)
+        let result = `wsSecret=${wsSecret}&wsTime=${wsTime}&seqid=${seqId}&ctype=${ctype}&ver=1&fs=${fs}&fm=${fmEncoded}&t=${platformId}`
+        if (isWap) {
+            const ct = Math.floor((parseInt(wsTime, 16) + Math.random()) * 1000)
+            const uuid = Math.floor(((ct % 10000000000) + Math.random()) * 1000 % 4294967295)
+            result += `&uid=${uid}&uuid=${uuid}`
+        } else {
+            result += `&u=${convertUid}`
+        }
+        return result
+    } catch (e) { return anticode }
+}
+function huyaRotl64(value) {
+    const lo = (value & 0xFFFFFFFF) >>> 0
+    const rotated = (((lo << 8) | (lo >>> 24)) & 0xFFFFFFFF) >>> 0
+    return (value - lo) + rotated
+}
+function huyaRandomUid() {
+    return Math.random() < 0.5
+        ? parseInt(`1234${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`)
+        : parseInt(`140000${String(Math.floor(Math.random() * 10000000)).padStart(7, '0')}`)
+}
+
+async function parseHuya(target, addStream) {
+    let m = target.match(/huya\.com\/([A-Za-z0-9_]+)/i)
+    if (!m) return null
+    const room = m[1]
+
+    // 桌面页面有 stream: 数据，移动端没有
+    let html = ''
+    try {
+        const r = await axios.get(`https://www.huya.com/${room}`, {
+            headers: { 'User-Agent': PARSE_UA, 'Referer': 'https://www.huya.com/' },
+            timeout: 10000, validateStatus: () => true
+        })
+        html = typeof r.data === 'string' ? r.data : ''
+    } catch (e) { /* 继续 */ }
+    if (!html || html.length < 1000) return null
+
+    // 括号平衡提取 stream: { ... }（参考 biliup extract_stream_json）
+    const streamIdx = html.indexOf('stream:')
+    if (streamIdx < 0) return null
+    const braceStart = html.indexOf('{', streamIdx)
+    if (braceStart < 0) return null
+    let depth = 0, inStr = false, esc = false, quote = '', braceEnd = -1
+    for (let i = braceStart; i < html.length; i++) {
+        const c = html[i]
+        if (esc) { esc = false; continue }
+        if (inStr) {
+            if (c === '\\') esc = true
+            else if (c === quote) inStr = false
+        } else {
+            if (c === '"' || c === "'") { inStr = true; quote = c }
+            else if (c === '{') depth++
+            else if (c === '}') { depth--; if (depth === 0) { braceEnd = i; break } }
+        }
+    }
+    if (braceEnd < 0) return null
+
+    let streamObj
+    try { streamObj = JSON.parse(html.slice(braceStart, braceEnd + 1)) } catch (e) { return null }
+    const dataList = streamObj?.data
+    if (!Array.isArray(dataList) || dataList.length === 0) return null
+
+    const gameLiveInfo = dataList[0].gameLiveInfo || {}
+    let title = gameLiveInfo.nick || gameLiveInfo.roomName || `虎牙 - ${room}`
+    if (gameLiveInfo.gameFullName) title += ` - ${gameLiveInfo.gameFullName}`
+    const presenterUid = Number(dataList[0].gameStreamInfoList?.[0]?.lPresenterUid) || 0
+
+    const streamInfoList = dataList[0].gameStreamInfoList || []
+    if (streamInfoList.length === 0) return null
+
+    let addedAny = false
+    const sorted = [...streamInfoList].sort((a, b) =>
+        (HUYA_CDN_PRIORITY[a.sCdnType] ?? 9) - (HUYA_CDN_PRIORITY[b.sCdnType] ?? 9))
+
+    // 虎牙画质：ratio 参数控制（0=蓝光8M, 4000=蓝光4M, 2000=超清, 1500=高清, 800=流畅）
+    const HUYA_QUALITIES = [
+        { ratio: 0, label: '蓝光8M' },
+        { ratio: 4000, label: '蓝光4M' },
+        { ratio: 2000, label: '超清' },
+        { ratio: 1500, label: '高清' },
+        { ratio: 800, label: '流畅' },
+    ]
+
+    for (const info of sorted) {
+        const cdn = info.sCdnType || '?'
+        if (HUYA_SKIP_CDNS.has(cdn)) continue
+        const streamName = info.sStreamName
+        if (!streamName) continue
+        const baseName = streamName.replace(/-imgplus/g, '')
+
+        // FLV 直播流（mpegts.js 边下载边播放，延迟最低，接近官方）
+        if (info.sFlvUrl && info.sFlvAntiCode) {
+            const anticode = huyaBuildAnticode(baseName, info.sFlvAntiCode, presenterUid)
+            const suffix = info.sFlvUrlSuffix || 'flv'
+            for (const q of HUYA_QUALITIES) {
+                const ratioParam = q.ratio > 0 ? `&ratio=${q.ratio}` : ''
+                const flvUrl = `${info.sFlvUrl}/${baseName}.${suffix}?${anticode}${ratioParam}`
+                addStream(flvUrl, 'flv', `${title} [${q.label} FLV ${cdn}]`)
+                addedAny = true
+            }
+        }
+        // HLS 直播流（备用，缓冲更稳，延迟略高）
+        if (info.sHlsUrl && info.sHlsAntiCode) {
+            const anticode = huyaBuildAnticode(baseName, info.sHlsAntiCode, presenterUid)
+            const suffix = info.sHlsUrlSuffix || 'm3u8'
+            for (const q of HUYA_QUALITIES) {
+                const ratioParam = q.ratio > 0 ? `&ratio=${q.ratio}` : ''
+                const hlsUrl = `${info.sHlsUrl}/${baseName}.${suffix}?${anticode}${ratioParam}`
+                addStream(hlsUrl, 'm3u8', `${title} [${q.label} HLS ${cdn}]`)
+                addedAny = true
+            }
+        }
+    }
+
+    return addedAny ? { title } : null
+}
+
 // ===== 斗鱼直播流解析 =====
-// 斗鱼改版后签名函数从 ub98484234 改为 web-encrypt-57bbddd0.js 中的混淆代码
-// 新 API 端点：/lapi/live/getH5PlayV1/{roomId}（不再是 getH5Play）
-// 纯 Node 无法实现新签名算法，方案：
-//   用隐藏 BrowserWindow 加载页面，让 Chromium 执行加密 JS
-//   拦截视频流网络请求（FLV/HLS），直接提取 URL
+// 参考 biliup douyu.rs：纯 HTTP API，不再用 BrowserWindow 拦截
+// getEncryption → sign_stream → getH5Play，支持 CDN 线路选择
+const DOUYU_DEFAULT_DID = '10000000000000000000000000001501'
+const DOUYU_CDN_LIST = ['hw-h5', 'tct-h5', 'hs-h5']
+
+function douyuSignStream(encKey, roomId, ts) {
+    const salt = encKey.is_special === 1 ? '' : `${roomId}${ts}`
+    let secret = encKey.rand_str
+    for (let i = 0; i < encKey.enc_time; i++) {
+        secret = crypto.createHash('md5').update(secret + encKey.key).digest('hex')
+    }
+    return crypto.createHash('md5').update(secret + encKey.key + salt).digest('hex')
+}
+
+function randomChromeUA() {
+    const v = 100 + Math.floor(Math.random() * 21)
+    return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v}.0.0.0 Safari/537.36`
+}
+
 async function parseDouyu(target, addStream) {
-    // 1. 提取房间号
     let m = target.match(/douyu\.com\/([A-Za-z0-9_]+)/i)
     if (!m) return null
     const room = m[1]
-    // 排除特殊路径
-    if (['directory', 'following', 'search', 'topic', 'fishsmall'].includes(room.toLowerCase())) {
-        return null
-    }
+    if (['directory', 'following', 'search', 'topic', 'fishsmall'].includes(room.toLowerCase())) return null
 
-    // 2. 用隐藏窗口加载页面，拦截视频流请求
-    return new Promise((resolve) => {
-        let bw = null
-        let settled = false
-        const networkUrls = []  // 拦截到的视频流 URL
+    const douyuReferer = `https://www.douyu.com/${room}`
 
-        // 斗鱼视频 CDN 域名
-        const douyuCdnPattern = /douyucdn|douyuscdn|douyucdn2|akm|tct|wsd|hwcdn|jscdn|txcdn/i
+    // 1. 解析真实房间号（短号 → 真实号）
+    let roomId = room
+    try {
+        const mobileRes = await axios.get(`https://m.douyu.com/${room}`, {
+            headers: { 'User-Agent': PARSE_UA }, timeout: 15000, validateStatus: () => true
+        })
+        const ridMatch = (typeof mobileRes.data === 'string' ? mobileRes.data : '').match(/roomInfo":\{"rid":(\d+)/)
+        if (ridMatch) roomId = ridMatch[1]
+    } catch (e) { /* 继续用原 room */ }
 
-        const finish = (result) => {
-            if (settled) return
-            settled = true
-            try { if (bw) { bw.destroy(); bw = null } } catch (e) {}
-            resolve(result)
-        }
-        const timer = setTimeout(() => {
-            // 超时后返回已收集的流
-            if (networkUrls.length > 0) {
-                let addedAny = false
-                for (const u of networkUrls) {
-                    const type = /\.m3u8/i.test(u) ? 'm3u8' : ( /\.flv/i.test(u) ? 'flv' : 'mp4')
-                    addStream(u, type, `斗鱼 - ${room} [${type.toUpperCase()} 直播]`)
-                    addedAny = true
-                }
-                finish(addedAny ? { title: `斗鱼 - ${room}` } : null)
-            } else {
-                finish(null)
-            }
-        }, 25000)
-
+    // 2. 获取房间信息（betard API，最多重试 3 次）
+    let betardData
+    for (let attempt = 0; attempt < 3; attempt++) {
         try {
-            bw = new BrowserWindow({
-                width: 1280, height: 800, show: false, frame: false,
-                webPreferences: {
-                    nodeIntegration: false,
-                    contextIsolation: true,
-                    sandbox: false,
-                    webSecurity: false,
-                    images: false,
-                    autoplayPolicy: 'no-user-gesture-required',
-                    partition: 'temp-parser'
-                }
+            const betardRes = await axios.get(`https://www.douyu.com/betard/${roomId}`, {
+                headers: { 'User-Agent': PARSE_UA, 'Referer': douyuReferer },
+                timeout: 15000, validateStatus: () => true
             })
+            betardData = betardRes.data
+            if (betardData?.room) break
+        } catch (e) { /* 重试 */ }
+    }
+    if (!betardData?.room) { console.log('[DOUYU] 房间信息获取失败:', roomId); return null }
+    const roomData = betardData.room
+    if (roomData.show_status !== 1 || roomData.video_loop === 1) return null
+    const title = roomData.room_name || `斗鱼 - ${room}`
 
-            // 拦截视频流请求（FLV/HLS/MP4）
-            bw.webContents.session.webRequest.onBeforeRequest(
-                { urls: ['*://*/*.flv*', '*://*/*.m3u8*', '*://*/*.mp4*'] },
-                (details, cb) => {
-                    const u = details.url
-                    // 只收集斗鱼 CDN 域名的请求
-                    if (u && douyuCdnPattern.test(u)) {
-                        // 去重
-                        if (!networkUrls.includes(u)) {
-                            networkUrls.push(u)
-                        }
-                    }
-                    cb({})
-                }
+    // 3. 获取加密密钥 & 4. 签名获取播放信息（鉴权失败时刷新密钥重试，最多 2 轮）
+    let addedAny = false
+    let encKey = null
+    let ua = null
+
+    for (let keyRound = 0; keyRound < 2; keyRound++) {
+        // 每轮使用新 UA 防风控
+        ua = randomChromeUA()
+        try {
+            const encRes = await axios.get(`https://www.douyu.com/wgapi/livenc/liveweb/websec/getEncryption`, {
+                params: { did: DOUYU_DEFAULT_DID },
+                headers: { 'User-Agent': ua, 'Referer': douyuReferer },
+                timeout: 15000, validateStatus: () => true
+            })
+            if (encRes.data?.error !== 0 || !encRes.data?.data) {
+                console.log('[DOUYU] getEncryption 失败:', encRes.data?.error, encRes.data?.msg)
+                continue
+            }
+            encKey = encRes.data.data
+        } catch (e) { console.log('[DOUYU] getEncryption 网络错误:', e.message); continue }
+        if (!encKey) continue
+
+        const ts = Math.floor(Date.now() / 1000)
+        const auth = douyuSignStream(encKey, roomId, ts)
+        const formBase = {
+            ver: 'Douyu_new', iar: '0', ive: '0', rid: roomId,
+            hevc: '0', fa: '0', sov: '0',
+            enc_data: encKey.enc_data, tt: String(ts),
+            did: DOUYU_DEFAULT_DID, auth
+        }
+
+        // 请求主 CDN（使用 V1 API，多个画质）
+        const DOUYU_QUALITIES = [
+            { rate: '0', label: '蓝光' },
+            { rate: '800', label: '高清' },
+            { rate: '500', label: '标清' },
+            { rate: '250', label: '流畅' },
+        ]
+        const cdnToTry = []
+        // 先请求最高画质
+        try {
+            const primaryRes = await axios.post(
+                `https://www.douyu.com/lapi/live/getH5PlayV1/${roomId}`,
+                new URLSearchParams({ ...formBase, cdn: 'hw-h5', rate: '0' }),
+                { headers: { 'User-Agent': ua, 'Referer': douyuReferer, 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000, validateStatus: () => true, responseType: 'text' }
             )
-
-            // 注入 Referer
-            bw.webContents.session.webRequest.onBeforeSendHeaders((details, cb) => {
-                const u = details.url
-                if (douyuCdnPattern.test(u) || /douyu\.com/i.test(u)) {
-                    details.requestHeaders['Referer'] = `https://www.douyu.com/${room}`
-                    details.requestHeaders['User-Agent'] = PARSE_UA
+            const bodyText = primaryRes.data
+            const normalized = typeof bodyText === 'string' ? bodyText.trim().replace(/["'\s]/g, '') : ''
+            if (primaryRes.status === 403 || normalized.includes('鉴权失败')) {
+                console.log('[DOUYU] 鉴权失败(HTTP', primaryRes.status, ')，刷新密钥重试')
+                continue
+            }
+            let pBody
+            try { pBody = JSON.parse(bodyText) } catch (e) {
+                console.log('[DOUYU] getH5PlayV1 响应非JSON:', String(bodyText).slice(0, 200))
+                continue
+            }
+            if (pBody?.msg && String(pBody.msg).includes('鉴权失败')) {
+                console.log('[DOUYU] 鉴权失败(JSON msg)，刷新密钥重试')
+                continue
+            }
+            const primaryData = pBody?.data
+            if (primaryData?.rtmp_url && primaryData?.rtmp_live) {
+                const streamUrl = `${primaryData.rtmp_url}/${primaryData.rtmp_live}`
+                addStream(streamUrl, 'flv', `${title} [蓝光 ${primaryData.rtmp_cdn || 'hw-h5'}]`)
+                addedAny = true
+                if (primaryData.cdnsWithName) {
+                    for (const c of primaryData.cdnsWithName) {
+                        if (c.cdn && c.cdn !== primaryData.rtmp_cdn) cdnToTry.push(c.cdn)
+                    }
                 }
-                cb({ requestHeaders: details.requestHeaders })
-            })
-
-            bw.webContents.on('did-finish-load', () => {
-                // 自动静音播放视频，触发视频流请求
-                bw.webContents.executeJavaScript(`
+                // 请求其他画质（同一 CDN）
+                const otherQualities = DOUYU_QUALITIES.filter(q => q.rate !== '0')
+                const qualResults = await Promise.allSettled(
+                    otherQualities.map(q =>
+                        axios.post(`https://www.douyu.com/lapi/live/getH5PlayV1/${roomId}`,
+                            new URLSearchParams({ ...formBase, cdn: primaryData.rtmp_cdn || 'hw-h5', rate: q.rate }),
+                            { headers: { 'User-Agent': ua, Referer: douyuReferer, 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000, validateStatus: () => true, responseType: 'text' }
+                        )
+                    )
+                )
+                qualResults.forEach((r, i) => {
+                    if (r.status !== 'fulfilled') return
                     try {
-                        const videos = document.querySelectorAll('video');
-                        for (const v of videos) {
-                            v.muted = true;
-                            v.play().catch(() => {});
-                        }
-                        // 点击播放按钮
-                        const playBtns = document.querySelectorAll('[class*="play"], [class*="Play"], [class*="start"]');
-                        for (const btn of playBtns) {
-                            try { btn.click(); } catch (e) {}
+                        const d = JSON.parse(r.value?.data)?.data
+                        if (d?.rtmp_url && d?.rtmp_live) {
+                            addStream(`${d.rtmp_url}/${d.rtmp_live}`, 'flv', `${title} [${otherQualities[i].label} ${d.rtmp_cdn || 'hw-h5'}]`)
                         }
                     } catch (e) {}
-                `).catch(() => {})
+                })
+            } else if (pBody?.error === -5) {
+                console.log('[DOUYU] 主播未开播:', roomId)
+                return null
+            } else if (pBody?.error === 126) {
+                console.log('[DOUYU] 版权限制:', pBody?.msg)
+                return null
+            } else {
+                console.log('[DOUYU] getH5PlayV1 error:', pBody?.error, 'msg:', pBody?.msg)
+            }
+        } catch (e) { console.log('[DOUYU] getH5PlayV1 网络错误:', e.message) }
 
-                // 多轮检查：每 2 秒检查一次，看是否已拦截到视频流
-                let attempts = 0
-                const maxAttempts = 10
-                const checkInterval = setInterval(() => {
-                    attempts++
-                    if (networkUrls.length > 0) {
-                        // 已拦截到视频流，立即返回
-                        clearInterval(checkInterval)
-                        clearTimeout(timer)
-                        let addedAny = false
-                        for (const u of networkUrls) {
-                            const type = /\.m3u8/i.test(u) ? 'm3u8' : ( /\.flv/i.test(u) ? 'flv' : 'mp4')
-                            addStream(u, type, `斗鱼 - ${room} [${type.toUpperCase()} 直播]`)
-                            addedAny = true
-                        }
-                        finish(addedAny ? { title: `斗鱼 - ${room}` } : null)
-                    } else if (attempts >= maxAttempts) {
-                        clearInterval(checkInterval)
-                        // 超时检查，让 timer 处理
+        // 并行请求其他 CDN 线路
+        if (cdnToTry.length > 0) {
+            const extraResults = await Promise.allSettled(
+                cdnToTry.map(cdn =>
+                    axios.post(`https://www.douyu.com/lapi/live/getH5PlayV1/${roomId}`,
+                        new URLSearchParams({ ...formBase, cdn, rate: '0' }),
+                        { headers: { 'User-Agent': ua, 'Referer': douyuReferer, 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000, validateStatus: () => true, responseType: 'text' }
+                    )
+                )
+            )
+            for (const r of extraResults) {
+                if (r.status !== 'fulfilled') continue
+                try {
+                    const d = JSON.parse(r.value?.data)?.data
+                    if (d?.rtmp_url && d?.rtmp_live) {
+                        addStream(`${d.rtmp_url}/${d.rtmp_live}`, 'flv', `${title} [蓝光 ${d.rtmp_cdn || '?'}]`)
+                        addedAny = true
                     }
-                }, 2000)
-            })
-
-            bw.webContents.on('did-fail-load', (_, errorCode) => {
-                if (errorCode !== -3 && errorCode !== 0) {
-                    clearTimeout(timer)
-                    finish(null)
-                }
-            })
-
-            bw.loadURL(`https://www.douyu.com/${room}`, { userAgent: PARSE_UA })
-        } catch (e) {
-            clearTimeout(timer)
-            finish(null)
+                } catch (e) { /* 非JSON响应跳过 */ }
+            }
         }
-    })
+
+        // 如果已拿到流，无需再刷新密钥
+        if (addedAny) break
+    }
+
+    if (!addedAny) console.log('[DOUYU] 所有 CDN 线路获取失败:', roomId)
+    return addedAny ? { title } : null
 }
 
 // ===== B站登录（二维码扫码，获取 Cookie 提升画质） =====
@@ -2145,6 +2608,248 @@ ipcMain.handle('bilibili:logout', async () => {
     return { success: true }
 })
 
+// ===== YouTube 登录（官方网页登录，用邮箱/账号，捕获 Cookie 供 yt-dlp） =====
+// yt-dlp 新版已移除 OAuth 设备码授权，官方通道仅剩 Cookie。这里打开一个无边框浏览器窗口
+// 加载 YouTube 官方登录页，用户用邮箱正常登录后，把该会话 Cookie 落盘为 yt-dlp 的 Netscape
+// 格式 cookie 文件，从而实现会员画质/受限内容的下载与解析。
+const YT_LOGIN_MARKER = () => path.join(app.getPath('userData'), 'youtube-login.json')
+const YT_COOKIE_FILE = () => path.join(app.getPath('userData'), 'youtube-cookies.txt')
+let ytLoginWin = null
+let ytLoginTimer = null
+
+function readYtLoginMarker() {
+    try {
+        const f = YT_LOGIN_MARKER()
+        if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf8'))
+    } catch (e) {}
+    return null
+}
+function writeYtLoginMarker(info) {
+    try { fs.writeFileSync(YT_LOGIN_MARKER(), JSON.stringify({ ...info, loggedAt: Date.now() }), 'utf8') } catch (e) {}
+}
+function youtubeCookieExists() {
+    try { return fs.existsSync(YT_COOKIE_FILE()) && fs.statSync(YT_COOKIE_FILE()).size > 0 } catch (e) { return false }
+}
+function youtubeIsLoggedIn() { return youtubeCookieExists() }
+
+// 把当前会话中 Google/YouTube 域的 Cookie 落盘为 yt-dlp 可用的 Netscape 格式
+async function persistYoutubeCookies() {
+    try {
+        const cookies = await session.defaultSession.cookies.get({})
+        const lines = [
+            '# Netscape HTTP Cookie File',
+            '# This file is generated by MingYunTime. Do not edit.'
+        ]
+        const seen = new Set()
+        for (const c of cookies) {
+            if (!/youtube\.com|youtube-nocookie\.com|google\.com|youtubei\.googleapis\.com/i.test(c.domain || '')) continue
+            const key = c.domain + '|' + c.name + '|' + c.path
+            if (seen.has(key)) continue
+            seen.add(key)
+            const secure = c.secure ? 'TRUE' : 'FALSE'
+            const name = c.httpOnly ? '#HttpOnly_' + c.name : c.name
+            const domain = c.domain?.startsWith('.') ? c.domain : '.' + (c.domain || '')
+            const expire = Math.floor(c.expirationDate || 0)
+            lines.push(`${domain}\tTRUE\t${c.path || '/'}\t${secure}\t${expire}\t${name}\t${c.value}`)
+        }
+        fs.writeFileSync(YT_COOKIE_FILE(), lines.join('\n') + '\n', 'utf8')
+        return true
+    } catch (e) { return false }
+}
+
+// 已登录时补一条用户信息（Cookie 无法取头像，用通用昵称）
+function defaultYtUserInfo() {
+    const m = readYtLoginMarker()
+    if (m && (m.uname || m.face)) return { uid: m.uid || 'youtube', uname: m.uname, face: m.face }
+    return { uid: 'youtube', uname: 'YouTube \u5df2\u767b\u5f55', face: '' }
+}
+
+function closeYtLoginWin() {
+    if (ytLoginTimer) { clearInterval(ytLoginTimer); ytLoginTimer = null }
+    if (ytLoginWin && !ytLoginWin.isDestroyed()) {
+        try { ytLoginWin.removeAllListeners('closed'); ytLoginWin.destroy() } catch (e) {}
+    }
+    ytLoginWin = null
+}
+
+// 生成 YouTube API 认证所需的 SAPISIDHASH
+async function getYtSapiSidHash() {
+    try {
+        const cookies = await session.defaultSession.cookies.get({ domain: '.youtube.com' })
+        const sapisid = cookies.find(c => c.name === 'SAPISID' || c.name === '__Secure-3PAPISID')
+        if (!sapisid?.value) return null
+        const timestamp = Math.floor(Date.now() / 1000)
+        const hash = crypto.createHash('sha1').update(`${timestamp} ${sapisid.value} https://www.youtube.com`).digest('hex')
+        return `SAPISIDHASH ${timestamp}_${hash}`
+    } catch (e) { return null }
+}
+
+async function extractYtUserInfo() {
+    // 从登录窗口已加载的 YouTube 页面中提取用户信息
+    if (!ytLoginWin || ytLoginWin.isDestroyed()) return null
+    try {
+        for (let i = 0; i < 3; i++) {
+            if (i > 0) await new Promise(r => setTimeout(r, 2000))
+            if (!ytLoginWin || ytLoginWin.isDestroyed()) return null
+            const result = await ytLoginWin.webContents.executeJavaScript(`
+                (function() {
+                    try {
+                        var d = window.ytInitialData;
+                        if (!d) return JSON.stringify({error: 'no_ytInitialData'});
+                        // 递归搜索用户头像和名称
+                        var avatar = '', name = '', found = false;
+                        function search(obj, depth) {
+                            if (!obj || depth > 15 || found) return;
+                            if (typeof obj === 'object') {
+                                // 找 topbar 中的头像和名称
+                                if (obj.topbarMenuButtonRenderer) {
+                                    var btn = obj.topbarMenuButtonRenderer;
+                                    if (btn.avatar && btn.avatar.thumbnails && btn.avatar.thumbnails.length) {
+                                        avatar = btn.avatar.thumbnails[0].url;
+                                    }
+                                    if (btn.accessibility && btn.accessibility.accessibilityData && btn.accessibility.accessibilityData.label) {
+                                        name = btn.accessibility.accessibilityData.label;
+                                    }
+                                    if (!name && btn.tooltip) name = btn.tooltip;
+                                }
+                                // 找 activeAccountHeaderRenderer
+                                if (obj.activeAccountHeaderRenderer) {
+                                    var h = obj.activeAccountHeaderRenderer;
+                                    if (h.accountPhoto && h.accountPhoto.thumbnails) avatar = h.accountPhoto.thumbnails[0].url;
+                                    if (h.channelName) name = h.channelName.simpleText || '';
+                                    if (!name && h.accountName) name = h.accountName.simpleText || '';
+                                }
+                                // 找 channelHeader 或 metadata
+                                if (obj.channelMetadataRenderer && obj.channelMetadataRenderer.title) {
+                                    name = obj.channelMetadataRenderer.title;
+                                }
+                                // 找 ownerText (视频频道名)
+                                if (!name && obj.ownerText && obj.ownerText.runs) {
+                                    name = obj.ownerText.runs.map(function(r){return r.text}).join('');
+                                }
+                                if (avatar && name) { found = true; return; }
+                                for (var k in obj) {
+                                    if (obj.hasOwnProperty(k) && typeof obj[k] === 'object') {
+                                        search(obj[k], depth + 1);
+                                    }
+                                }
+                            }
+                        }
+                        search(d, 0);
+                        // 兜底: 从 ytcfg 获取
+                        if (!name && window.ytcfg) {
+                            name = window.ytcfg.get && window.ytcfg.get('CHANNEL_NAME') || '';
+                        }
+                        if (!name) {
+                            // 从 DOM 获取用户名
+                            var btn = document.querySelector('#avatar-btn, ytd-topbar-menu-button-renderer');
+                            if (btn) {
+                                var label = btn.getAttribute('aria-label') || btn.getAttribute('title') || '';
+                                if (label) name = label;
+                            }
+                        }
+                        if (avatar) avatar = avatar.replace(/^`|`$/g, '');
+                        if (avatar || name) return JSON.stringify({uname: name || '', face: avatar || ''});
+                        return JSON.stringify({error: 'not_found'});
+                    } catch(e) { return JSON.stringify({error: e.message}); }
+                })()
+            `)
+            const parsed = JSON.parse(result)
+            if (parsed.uname || parsed.face) {
+                const face = parsed.face || ''
+                return { uname: parsed.uname || 'YouTube \u7528\u6237', face: face.startsWith('//') ? 'https:' + face : face }
+            }
+        }
+    } catch (e) {}
+    return null
+}
+
+function tryFinalizeYtLogin() {
+    return new Promise(async (resolve) => {
+        const ok = await persistYoutubeCookies()
+        if (ok && youtubeCookieExists()) {
+            const userInfo = await extractYtUserInfo()
+            const uname = userInfo?.uname || 'YouTube \u5df2\u767b\u5f55'
+            const face = userInfo?.face || ''
+            writeYtLoginMarker({ uid: 'youtube', uname, face })
+            win?.webContents.send('youtube-login-done', { success: true, userInfo: { uid: 'youtube', uname, face } })
+            closeYtLoginWin()
+            resolve(true)
+            return
+        }
+        resolve(false)
+    })
+}
+
+// 轮询检测是否已登录（Google 登录成功后在 youtube.com 会写入 SID/APISID 等会话 Cookie）
+function pollYtLogin(winObj) {
+    if (ytLoginTimer) clearInterval(ytLoginTimer)
+    let pollCount = 0
+    ytLoginTimer = setInterval(async () => {
+        if (!winObj || winObj.isDestroyed()) { closeYtLoginWin(); return }
+        let logged = false
+        try {
+            const cookies = await session.defaultSession.cookies.get({})
+            const ytCookies = cookies.filter(c => /youtube\.com|google\.com/i.test(c.domain || ''))
+            logged = ytCookies.some(c => ['SID', 'LOGIN_INFO', 'APISID', '__Secure-3PAPISID'].includes(c.name))
+        } catch (e) {}
+        if (logged) {
+            const done = await tryFinalizeYtLogin()
+            if (done) clearInterval(ytLoginTimer)
+        }
+    }, 1500)
+}
+
+// 打开官方网页登录（Youtube 登录页，用户用邮箱正常登录）
+ipcMain.handle('youtube:login-open', async () => {
+    if (ytLoginWin && !ytLoginWin.isDestroyed()) {
+        try { ytLoginWin.focus() } catch (e) {}
+        return { success: true }
+    }
+    // 复用默认会话，登录态会随持久化 Cookie 保留
+    const parent = win
+    ytLoginWin = new BrowserWindow({
+        width: 1024,
+        height: 720,
+        frame: true,
+        title: 'YouTube 登录',
+        autoHideMenuBar: true,
+        backgroundColor: '#ffffff',
+        minimizable: true,
+        maximizable: false,
+        ...(parent ? { parent, modal: false } : {})
+    })
+    ytLoginWin.setMenuBarVisibility(false)
+    ytLoginWin.loadURL('https://www.youtube.com/')
+    ytLoginWin.on('closed', () => {
+        // 若窗口被用户直接关闭，尝试把已登录的 Cookie 落盘
+        tryFinalizeYtLogin()
+    })
+    pollYtLogin(ytLoginWin)
+    return { success: true }
+})
+
+// 关闭登录窗口
+ipcMain.handle('youtube:login-close', async () => {
+    tryFinalizeYtLogin()
+    return { success: true }
+})
+
+// 检查登录状态
+ipcMain.handle('youtube:login-status', async () => {
+    const cookieExists = youtubeCookieExists()
+    if (!cookieExists) return { success: true, loggedIn: false }
+    return { success: true, loggedIn: true, userInfo: defaultYtUserInfo() }
+})
+
+// 退出登录（删除 Cookie 文件与本地标记）
+ipcMain.handle('youtube:logout', async () => {
+    try { fs.unlinkSync(YT_COOKIE_FILE()) } catch (e) {}
+    try { fs.unlinkSync(YT_LOGIN_MARKER()) } catch (e) {}
+    closeYtLoginWin()
+    return { success: true }
+})
+
 ipcMain.handle('video:parse-url', async (_, { url }) => {
     try {
         const target = String(url || '').trim()
@@ -2165,6 +2870,9 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             // 透传 DASH 音频地址（用于下载时 ffmpeg 合并）等附加字段
             if (extra.audioUrl) item.audioUrl = extra.audioUrl
             if (extra.bili) item.bili = true
+            if (extra.ytSrc) item.ytSrc = extra.ytSrc
+            if (extra.ytHeight) item.ytHeight = extra.ytHeight
+            if (extra.isLive) item.isLive = true
             found.set(clean, item)
         }
 
@@ -2188,6 +2896,16 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             return { success: false, message: '未能解析斗鱼直播流（可能未开播或房间号无效）', pageUrl: target }
         }
 
+        // === 抖音直播解析（优先尝试直播流） ===
+        if (/live\.douyin\.com/i.test(target)) {
+            const douyinResult = await parseDouyinLive(target, addStream)
+            if (douyinResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: douyinResult.title || '', pageUrl: target, isLive: true }
+            }
+            return { success: false, message: '未能解析抖音直播流（可能未开播或房间号无效）', pageUrl: target }
+        }
+
         // === Twitch 直播解析 ===
         if (/twitch\.tv/i.test(target)) {
             const twResult = await parseTwitch(target, addStream)
@@ -2196,6 +2914,26 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
                 return { success: true, streams, pageTitle: twResult.title || '', pageUrl: target, isLive: true }
             }
             return { success: false, message: '未能解析 Twitch 直播流（可能未开播或频道名无效）', pageUrl: target }
+        }
+
+        // === Kick 直播解析 ===
+        if (/kick\.com/i.test(target)) {
+            const kResult = await parseKick(target, addStream)
+            if (kResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: kResult.title || '', pageUrl: target, isLive: true }
+            }
+            return { success: false, message: '未能解析 Kick 直播流（可能未开播或频道名无效）', pageUrl: target }
+        }
+
+        // === YouTube 直播/视频解析 ===
+        if (/youtu\.be|youtube\.com/i.test(target)) {
+            const ytResult = await parseYouTube(target, addStream)
+            if (ytResult) {
+                const streams = Array.from(found.values())
+                return { success: true, streams, pageTitle: ytResult.title || '', pageUrl: target, isLive: true }
+            }
+            return { success: false, message: '未能解析 YouTube 直播流', pageUrl: target }
         }
 
         // === B站解析（区分视频 / 直播 / 番剧/电影）===

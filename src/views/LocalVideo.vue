@@ -3,11 +3,11 @@
 // - 本地视频：通过文件对话框导入，扫描元数据
 // - 链接/直播流：用户添加 http(s)://...mp4/m3u8/flv 或直播流地址
 //   支持：mp4/webm 直链、HLS(m3u8)、FLV；直播流自动识别并标记 LIVE
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
-import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw } from 'lucide-vue-next'
-import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout } from '../api'
+import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube } from 'lucide-vue-next'
+import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout, youtubeLoginOpen, youtubeLoginClose, youtubeLoginStatus, youtubeLogout, onYoutubeLoginDone } from '../api'
 import CustomSelect from '../components/CustomSelect.vue'
 
 const playerStore = usePlayerStore()
@@ -143,6 +143,88 @@ const biliQrImgUrl = computed(() => {
 
 loadBiliStatus()
 
+// ===== YouTube 登录（官方网页登录，用邮箱/账号，捕获 Cookie 供 yt-dlp） =====
+const ytLoggedIn = ref(false)
+const ytUserInfo = ref(null)
+const showYtLogin = ref(false)
+const ytStatus = ref('')  // '' | 'opening' | 'error'
+const ytError = ref('')
+let ytLoginDoneListener = null
+
+async function loadYtStatus() {
+    try {
+        const res = await youtubeLoginStatus()
+        if (res?.success && res.loggedIn) {
+            ytLoggedIn.value = true
+            ytUserInfo.value = res.userInfo
+        } else {
+            ytLoggedIn.value = false
+            ytUserInfo.value = null
+        }
+    } catch (e) {}
+}
+
+// 监听主进程登录成功事件，自动刷新状态
+function setupYtLoginDoneListener() {
+    ytLoginDoneListener = onYoutubeLoginDone(async () => {
+        ytStatus.value = ''
+        showYtLogin.value = false
+        await loadYtStatus()
+        if (ytLoggedIn.value) messageStore.success('YouTube已登录，画质已提升', 3000)
+    })
+}
+
+async function openYtLogin() {
+    try {
+        const res = await youtubeLoginOpen()
+        if (!res?.success) {
+            ytStatus.value = 'error'
+            ytError.value = (res && res.message) || '打开登录窗口失败'
+            return
+        }
+        // 打开官方网页登录窗口（用邮箱/账号在浏览器里正常登录）
+        ytStatus.value = 'opening'
+        showYtLogin.value = true
+    } catch (e) {
+        ytStatus.value = 'error'
+        ytError.value = e.message || '打开登录窗口失败'
+    }
+}
+
+async function closeYtLogin() {
+    showYtLogin.value = false
+    ytStatus.value = ''
+    try { await youtubeLoginClose() } catch (e) {}
+    await loadYtStatus()
+}
+
+async function logoutYt() {
+    if (!await messageStore.confirm('确定退出YouTube登录？', '退出登录')) return
+    try {
+        await youtubeLogout()
+        ytLoggedIn.value = false
+        ytUserInfo.value = null
+        messageStore.success('已退出YouTube登录')
+    } catch (e) { messageStore.error('退出失败') }
+}
+
+function onYtAvatarError() {
+    if (ytUserInfo.value) ytUserInfo.value = { ...ytUserInfo.value, face: '' }
+}
+
+async function copyText(text) {
+    try {
+        await navigator.clipboard.writeText(text || '')
+        messageStore.success('已复制')
+    } catch (e) {
+        messageStore.error('复制失败，请手动选择复制')
+    }
+}
+
+loadBiliStatus()
+loadYtStatus()
+setupYtLoginDoneListener()
+
 const handleParseUrl = async () => {
     const url = parseInput.value.trim()
     if (!url) {
@@ -151,6 +233,7 @@ const handleParseUrl = async () => {
     }
     parseLoading.value = true
     parseResults.value = []
+    for (const k in parseGroupOpen) delete parseGroupOpen[k]
     parsePageTitle.value = ''
     try {
         const res = await parseVideoUrl(url)
@@ -174,9 +257,72 @@ const handleParseUrl = async () => {
     }
 }
 
-const playParsedStream = (s) => {
-    const baseName = parsePageTitle.value || '网址解析视频'
-    const name = s.title ? `${baseName} - ${s.title}` : baseName
+// ===== 画质分组与折叠 =====
+// 同一视频的不同画质（仅标题里的画质/分辨率/码率标记不同）归为一组，
+// 组内默认只留最高画质、其余折叠；不同命名之间的分组用分割线隔开。
+const qualityScore = (s) => {
+    const t = ((s.title || '') + ' ' + (s.url || '')).toLowerCase()
+    if (/8k/.test(t)) return 4320
+    if (/\b4k\b/.test(t)) return 2160
+    if (/蓝光8m|蓝光8 /.test(t)) return 4000
+    if (/蓝光4m|蓝光4 /.test(t)) return 3500
+    if (/蓝光/.test(t)) return 3000
+    if (/原画|最佳|best|source|origin|最高|最大/.test(t)) return 2500
+    if (/超清/.test(t)) return 2000
+    if (/高清/.test(t)) return 1500
+    if (/720p/.test(t)) return 720
+    if (/标清|540p/.test(t)) return 600
+    if (/流畅|极速|240p|360p/.test(t)) return 360
+    const m = t.match(/(\d{3,4})p/)
+    if (m) return parseInt(m[1], 10)
+    const br = t.match(/(\d+(?:\.\d+)?)\s*(mbps|m|kbps|kb)\b/i)
+    if (br) {
+        const val = parseFloat(br[1])
+        const unit = (br[2] || '').toLowerCase()
+        return (unit === 'kbps' || unit === 'kb') ? Math.round(val * 0.3) : Math.round(val * 300)
+    }
+    return 720
+}
+const sortStreams = (list) => [...list].sort((a, b) => qualityScore(b) - qualityScore(a))
+
+// 提取括号内"结构标识"（协议/线路/来源等非画质信息），作为分组依据；
+// 纯画质括号返回空串（表示该括号可整体剥离）。
+const groupTag = (inner) => String(inner || '')
+    .replace(/[2-8]k|\d{3,4}p|mbps|kbps/ig, '')
+    .replace(/\d+(?:\.\d+)?\s*(?:k|mb|p|mbps|kbps)?/ig, '')
+    .replace(/蓝光\d*m?|原画|超清|高清|标清|流畅|极速|直播|itag|best|source|origin|最高|最大|全高清|夜月|hd|sd/ig, '')
+    .replace(/[^0-9a-z\u4e00-\u9fa5]/ig, '')
+    .toUpperCase()
+
+// 按命名 + 结构标识（协议/线路）分组，组内按画质降序
+// - 标题括号内含协议/线路（如 [蓝光8M FLV AL]）→ 保留 [FLVAL]，FLV 与 HLS 各自成组，画质在组内折叠
+// - 标题括号只有纯画质（如 [1080P]）→ 用流类型二次区分 FLV/HLS
+const makeGroups = (list) => {
+    const map = new Map()
+    for (const s of list) {
+        let hasTag = false
+        const base = String(s.title || '')
+            .replace(/\s*[\[【｛（(]([^\]】｝）)]*)[\]】｝）)]/g, (m, inner) => {
+                const tag = groupTag(inner)
+                if (tag) { hasTag = true; return ` [${tag}]` }
+                return ''
+            })
+            .replace(/\s+/g, ' ').trim()
+        let key = base || String(s.title || '').trim() || '—'
+        if (!hasTag && s.type) key = key + ` [${s.type}]`
+        if (!map.has(key)) map.set(key, [])
+        map.get(key).push(s)
+    }
+    return [...map.entries()].map(([key, arr]) => ({ key, list: sortStreams(arr) }))
+}
+const parseGroups = computed(() => makeGroups(parseResults.value))
+const parseGroupOpen = reactive({})   // 组 key -> 是否展开该组更多画质
+const liveGroups = computed(() => makeGroups(livePickStreams.value))
+const liveGroupOpen = reactive({})
+
+const playParsedStream = (s, baseOverride) => {
+    const baseName = baseOverride || parsePageTitle.value || '网址解析视频'
+    const name = baseOverride ? baseName : (s.title ? `${baseName} - ${s.title}` : baseName)
     playerStore.currentSong = {
         id: 'parse-' + Date.now(),
         name,
@@ -190,17 +336,55 @@ const playParsedStream = (s) => {
     playerStore.currentMvId = null
     playerStore.currentMvTitle = name
     playerStore.currentMvAudioUrl = s.audioUrl || ''  // DASH 流的音频地址，供播放器内下载时合并
-    // 根据解析流类型设置播放提示（m3u8/flv/live/direct）
+    // 根据解析流类型设置播放模式（m3u8/flv/live/direct）
+    // YouTube DASH 流（type='mp4'）用 direct 模式：原生 <video> 播放 + 独立 <audio> 同步音频
+    // 真正的 HLS/FLV 直播才用 live/flv 模式
     const st = s.type || ''
-    if (st === 'flv' || /\.flv(\?|$|#)/i.test(s.url)) playerStore.currentMvPlayType = 'flv'
-    else if (st === 'm3u8' || /\.m3u8(\?|$|#)/i.test(s.url)) playerStore.currentMvPlayType = 'm3u8'
-    else if (st === 'live' || /live|stream/i.test(s.url)) playerStore.currentMvPlayType = 'live'
+    const isM3u8 = st === 'm3u8' || /\.m3u8(\?|$|#)/i.test(s.url)
+    const isFlv = st === 'flv' || /\.flv(\?|$|#)/i.test(s.url)
+    if (s.isLive && isM3u8) playerStore.currentMvPlayType = 'm3u8'
+    else if (s.isLive && isFlv) playerStore.currentMvPlayType = 'flv'
+    else if (isFlv) playerStore.currentMvPlayType = 'flv'
+    else if (isM3u8) playerStore.currentMvPlayType = 'm3u8'
     else playerStore.currentMvPlayType = 'direct'
     playerStore.showMvPlayer = true
     if (playerStore.isPlaying) {
         playerStore.audio.pause()
         playerStore.isPlaying = false
     }
+}
+
+// ===== 直播链接解析（表单保存后，点击播放时解析并行弹出选画质/线路）=====
+const liveParseUrl = ref('')
+const liveParseLoading = ref(false)
+const showLivePick = ref(false)
+const livePickStreams = ref([])
+const livePickTitle = ref('')
+const handleLiveParse = async (urlArg) => {
+    const url = (urlArg || liveParseUrl.value || '').trim()
+    if (!url) { messageStore.warning('链接无效'); return }
+    liveParseLoading.value = true
+    livePickStreams.value = []
+    for (const k in liveGroupOpen) delete liveGroupOpen[k]
+    try {
+        const res = await parseVideoUrl(url)
+        if (res?.success && res.streams?.length) {
+            livePickTitle.value = res.pageTitle || ''
+            livePickStreams.value = res.streams
+            showLivePick.value = true
+        } else {
+            messageStore.error(res?.message || '未解析到直播流，该链接可能是点播或其他格式')
+        }
+    } catch (e) {
+        messageStore.error('解析失败: ' + (e.message || e))
+    } finally {
+        liveParseLoading.value = false
+    }
+}
+const playLivePick = (s) => {
+    const name = s.title || livePickTitle.value || '直播流'
+    playParsedStream(s, name)
+    showLivePick.value = false
 }
 
 // 下载解析到的视频流（B站 DASH 流会自动合并音频，可选去水印）
@@ -212,7 +396,16 @@ const downloadParsedStream = async (s) => {
     parsingDownloadingUrl.value = s.url
     try {
         const baseName = parsePageTitle.value || '网址解析视频'
-        const name = s.title ? `${baseName} - ${s.title}` : baseName
+        // B站流：文件名只取原标题主体（剥离 [画质]/（已登录） 等装饰），其它平台沿用旧命名
+        let name
+        if (s.bili) {
+            name = (s.title || baseName).replace(/\s*\[[^\]]*\]\s*/g, '').replace(/\s*[（(]已登录[）)]\s*/g, '').trim() || baseName
+        } else if (s.ytSrc) {
+            // YouTube：文件名取原标题主体，去掉 [画质] 装饰，交给 yt-dlp 下载
+            name = (s.title || baseName).replace(/\s*\[[^\]]*\]\s*/g, '').trim() || baseName
+        } else {
+            name = s.title ? `${baseName} - ${s.title}` : baseName
+        }
         const params = {
             url: s.url,
             name,
@@ -221,6 +414,11 @@ const downloadParsedStream = async (s) => {
         }
         // B站 DASH 流：传递 audioUrl 让后端用 ffmpeg 合并音视频
         if (s.audioUrl) params.audioUrl = s.audioUrl
+        // YouTube：传递 ytSrc/ytHeight 让后端用 yt-dlp 下载（自动合并音视频并可选账号画质）
+        if (s.ytSrc) {
+            params.ytSrc = s.ytSrc
+            if (s.ytHeight) params.ytHeight = s.ytHeight
+        }
         const result = await downloadVideo(params)
         if (result?.success) {
             messageStore.success(`已开始下载：${name}（进度见下载专区）`, 3000)
@@ -401,7 +599,15 @@ const playVideo = (video) => {
 }
 
 // 播放链接/直播流
-const playStream = (s) => {
+// 若填的是平台直播网页链接（斗鱼/虎牙/抖音/B站直播/Twitch/Kick 等），点击播放时先解析，
+// 弹窗列出各画质/线路供选择；否则按媒体直链直接播放
+const STREAM_HOSTS = /(douyu\.com|huya\.com|live\.douyin\.com|live\.bilibili\.com|twitch\.tv|kick\.com|youtube\.com|youtu\.be)/i
+const isMediaDirect = (u) => /\.(m3u8|mp4|flv|m4s|webm|mkv|avi|mov)(\?|#|$)/i.test(u) || /^rtmp:|^rtsp:/i.test(u)
+const playStream = async (s) => {
+    if (STREAM_HOSTS.test(s.url) && !isMediaDirect(s.url)) {
+        await handleLiveParse(s.url)
+        return
+    }
     playerStore.currentSong = {
         id: 'stream-' + s.id,
         name: s.name,
@@ -518,6 +724,35 @@ const removeVideo = async (video) => {
     }
 }
 
+// ===== 批量删除 =====
+const batchDeleteMode = ref(false)
+const selectedDelete = reactive(new Set())
+const toggleBatchDelete = () => {
+    batchDeleteMode.value = !batchDeleteMode.value
+    selectedDelete.clear()
+}
+const toggleSelect = (video) => {
+    if (selectedDelete.has(video.path)) selectedDelete.delete(video.path)
+    else selectedDelete.add(video.path)
+}
+const exitBatch = () => {
+    batchDeleteMode.value = false
+    selectedDelete.clear()
+}
+const toggleSelectAll = () => {
+    if (selectedDelete.size === localVideos.value.length) { selectedDelete.clear(); return }
+    selectedDelete.clear()
+    localVideos.value.forEach(v => selectedDelete.add(v.path))
+}
+const batchRemove = async () => {
+    if (selectedDelete.size === 0) { messageStore.error('请先勾选要移除的视频'); return }
+    if (await messageStore.confirm(`确定要移除选中的 ${selectedDelete.size} 个视频吗？`, '批量移除')) {
+        localVideos.value = localVideos.value.filter(v => !selectedDelete.has(v.path))
+        saveVideos()
+        exitBatch()
+    }
+}
+
 const formatSize = (bytes) => {
     if (!bytes) return '0 MB'
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
@@ -558,13 +793,48 @@ const typeLabel = (s) => {
         </div>
       </div>
       <div class="actions">
+        <!-- B站 / YouTube 登录胶囊（始终显示在右上角） -->
+        <div class="login-capsules">
+          <button v-if="!biliLoggedIn" class="login-capsule bili" @click="openBiliLogin">
+            <User :size="13" /><span>B站登录</span>
+          </button>
+          <button v-else class="login-capsule bili logged" title="点击退出B站登录" @click="logoutBili">
+            <img v-if="biliUserInfo?.face" :src="biliUserInfo.face" class="capsule-avatar" alt="" referrerpolicy="no-referrer" @error="onAvatarError" />
+            <User v-else :size="13" />
+            <span class="capsule-name">{{ biliUserInfo?.uname || 'B站' }}</span>
+          </button>
+          <button v-if="!ytLoggedIn" class="login-capsule yt" @click="openYtLogin">
+            <Youtube :size="13" /><span>YT登录</span>
+          </button>
+          <button v-else class="login-capsule yt logged" title="点击退出YouTube登录" @click="logoutYt">
+            <img v-if="ytUserInfo?.face" :src="ytUserInfo.face" class="capsule-avatar" alt="" referrerpolicy="no-referrer" @error="onYtAvatarError" />
+            <User v-else :size="13" />
+            <span class="capsule-name">{{ ytUserInfo?.uname || 'YT' }}</span>
+          </button>
+        </div>
         <template v-if="activeTab === 'local'">
-            <button class="import-btn" @click="importFiles">
-                <FolderOpen :size="16" /> 添加文件
-            </button>
-            <button class="import-btn" @click="importFolder" :disabled="loading">
-                <FolderPlus :size="16" /> {{ loading ? '扫描中...' : '添加文件夹' }}
-            </button>
+            <template v-if="batchDeleteMode">
+                <button class="import-btn" @click="toggleSelectAll">
+                    <Check :size="16" /> {{ selectedDelete.size === localVideos.length ? '取消全选' : '全选' }}
+                </button>
+                <button class="import-btn danger" @click="batchRemove" :disabled="selectedDelete.size === 0">
+                    <Trash2 :size="16" /> 删除选中 ({{ selectedDelete.size }})
+                </button>
+                <button class="import-btn" @click="exitBatch">
+                    <X :size="16" /> 取消
+                </button>
+            </template>
+            <template v-else>
+                <button class="import-btn" @click="importFiles">
+                    <FolderOpen :size="16" /> 添加文件
+                </button>
+                <button class="import-btn" @click="importFolder" :disabled="loading">
+                    <FolderPlus :size="16" /> {{ loading ? '扫描中...' : '添加文件夹' }}
+                </button>
+                <button v-if="localVideos.length > 0" class="import-btn" @click="toggleBatchDelete">
+                    <Check :size="16" /> 批量删除
+                </button>
+            </template>
         </template>
         <template v-else-if="activeTab === 'streams'">
             <button class="import-btn primary" @click="openAddForm">
@@ -581,20 +851,25 @@ const typeLabel = (s) => {
                 v-for="video in localVideos"
                 :key="video.path"
                 class="video-card"
+                :class="{ selecting: batchDeleteMode, selected: selectedDelete.has(video.path) }"
                 @dblclick="playVideo(video)"
+                @click="batchDeleteMode && toggleSelect(video)"
             >
-                <div class="card-poster" @click="playVideo(video)">
+                <div class="card-poster" @click.stop="batchDeleteMode ? toggleSelect(video) : playVideo(video)">
                     <!-- ffmpeg 截帧封面；无封面时回退 Film 图标 -->
                     <img v-if="video.thumbnail" :src="video.thumbnail" class="poster-img" :alt="video.name" @error="video.thumbnail = ''" />
                     <Film v-else :size="40" class="poster-icon" />
                     <div class="play-overlay"><Play :size="28" fill="white" /></div>
+                    <div v-if="batchDeleteMode" class="card-select">
+                        <Check v-if="selectedDelete.has(video.path)" :size="16" />
+                    </div>
                 </div>
                 <div class="card-info">
                     <span class="card-name" :title="video.name">{{ video.name }}</span>
                     <span class="card-meta">{{ video.format }} · {{ formatSize(video.size) }}</span>
                     <span class="card-dur"><Clock :size="10" /> {{ formatTime(video.duration) }}</span>
                 </div>
-                <button class="card-remove" title="移除" @click.stop="removeVideo(video)">
+                <button v-if="!batchDeleteMode" class="card-remove" title="移除" @click.stop="removeVideo(video)">
                     <Trash2 :size="14" />
                 </button>
             </div>
@@ -612,7 +887,7 @@ const typeLabel = (s) => {
         <div v-if="streams.length === 0" class="empty-state">
             <Radio :size="48" />
             <p>还没有添加链接或直播流</p>
-            <p class="empty-hint">支持 MP4/WebM 直链、HLS(m3u8)、FLV 流；直播流自动标记 LIVE</p>
+            <p class="empty-hint">支持 MP4/WebM 直链、HLS(m3u8)、FLV 流；也可填斗鱼/虎牙/抖音/B站/Twitch/Kick 直播链接，播放时自动解析。</p>
             <button class="import-link" @click="openAddForm">立即添加</button>
         </div>
 
@@ -649,24 +924,6 @@ const typeLabel = (s) => {
 
     <!-- 网址解析 -->
     <div v-else-if="activeTab === 'parse'" class="parse-section">
-        <!-- B站登录状态栏 -->
-        <div class="bili-status-bar">
-            <div class="bili-status-info">
-                <img v-if="biliLoggedIn && biliUserInfo?.face" :src="biliUserInfo.face" class="bili-avatar" alt="头像" referrerpolicy="no-referrer" @error="onAvatarError" />
-                <User v-else :size="14" />
-                <span v-if="biliLoggedIn" class="bili-logged">
-                    B站已登录<span v-if="biliUserInfo?.uname"> · {{ biliUserInfo.uname }}</span><span v-if="biliUserInfo?.vip" class="bili-vip"> 大会员</span>
-                </span>
-                <span v-else class="bili-guest">B站未登录（仅 360P，登录后解锁 1080P/4K）</span>
-            </div>
-            <button v-if="!biliLoggedIn" class="bili-login-btn" @click="openBiliLogin">
-                <User :size="14" /> 扫码登录
-            </button>
-            <button v-else class="bili-logout-btn" @click="logoutBili">
-                <LogOut :size="14" /> 退出
-            </button>
-        </div>
-
         <div class="parse-input-bar">
             <Globe :size="18" class="parse-input-icon" />
             <input
@@ -691,28 +948,73 @@ const typeLabel = (s) => {
             <div class="parse-results-title">
                 共解析到 {{ parseResults.length }} 个视频流{{ parsePageTitle ? ` · ${parsePageTitle}` : '' }}
             </div>
-            <div v-for="(s, i) in parseResults" :key="s.url" class="parse-result-card">
-                <div class="parse-result-index" @click="playParsedStream(s)">{{ i + 1 }}</div>
-                <div class="parse-result-info" @click="playParsedStream(s)">
-                    <div class="parse-result-name">
-                        {{ s.title || parsePageTitle || `视频流 ${i + 1}` }}
-                        <span class="parse-type-tag">{{ s.type }}</span>
-                        <span v-if="s.audioUrl" class="parse-dash-tag" title="DASH 音视频分离，下载时自动合并">DASH·合并</span>
+            <template v-for="(g, gi) in parseGroups" :key="gi">
+                <div v-if="gi > 0" class="parse-group-divider"></div>
+                <transition-group name="fold" tag="div" class="parse-group-wrap">
+                    <div v-for="(s, i) in (parseGroupOpen[g.key] ? g.list : g.list.slice(0, 1))" :key="s.url" class="parse-result-card" :class="{ 'parse-group-sub': i > 0 }">
+                        <div class="parse-result-index" @click="playParsedStream(s)">{{ i + 1 }}</div>
+                        <div class="parse-result-info" @click="playParsedStream(s)">
+                            <div class="parse-result-name">
+                                {{ s.title || parsePageTitle || `视频流 ${i + 1}` }}
+                                <span class="parse-type-tag">{{ s.type }}</span>
+                                <span v-if="s.audioUrl" class="parse-dash-tag" title="DASH 音视频分离，下载时自动合并">DASH·合并</span>
+                            </div>
+                            <div class="parse-result-url" :title="s.url">{{ s.url }}</div>
+                        </div>
+                        <button class="parse-result-download" :disabled="parsingDownloadingUrl === s.url" :title="parsingDownloadingUrl === s.url ? '下载中...' : '下载'" @click.stop="downloadParsedStream(s)">
+                            <Clock v-if="parsingDownloadingUrl === s.url" :size="16" class="spin" />
+                            <Download v-else :size="16" />
+                        </button>
+                        <div class="parse-result-play" @click="playParsedStream(s)">
+                            <Play :size="20" fill="currentColor" />
+                        </div>
                     </div>
-                    <div class="parse-result-url" :title="s.url">{{ s.url }}</div>
+                </transition-group>
+                <div v-if="g.list.length > 1" class="parse-more-toggle" @click="parseGroupOpen[g.key] = !parseGroupOpen[g.key]">
+                    {{ parseGroupOpen[g.key] ? '收起画质' : `该视频还有其他画质（${g.list.length - 1}）` }}
                 </div>
-                <button class="parse-result-download" :disabled="parsingDownloadingUrl === s.url" :title="parsingDownloadingUrl === s.url ? '下载中...' : '下载'" @click.stop="downloadParsedStream(s)">
-                    <Clock v-if="parsingDownloadingUrl === s.url" :size="16" class="spin" />
-                    <Download v-else :size="16" />
-                </button>
-                <div class="parse-result-play" @click="playParsedStream(s)">
-                    <Play :size="20" fill="currentColor" />
-                </div>
-            </div>
+            </template>
         </div>
     </div>
 
+    <!-- 直播解析结果选择弹窗 -->
+    <transition name="modal">
+    <div v-if="showLivePick" class="form-overlay" @click.self="showLivePick = false">
+        <div class="live-pick-modal">
+            <div class="form-header">
+                <h3>选择直播线路/画质</h3>
+                <X :size="18" class="clickable" @click="showLivePick = false" />
+            </div>
+            <div class="live-pick-title" v-if="livePickTitle">{{ livePickTitle }}</div>
+            <div class="live-pick-list">
+                <template v-for="(g, gi) in liveGroups" :key="gi">
+                    <div v-if="gi > 0" class="parse-group-divider"></div>
+                    <transition-group name="fold" tag="div" class="parse-group-wrap">
+                        <div v-for="(s, i) in (liveGroupOpen[g.key] ? g.list : g.list.slice(0, 1))" :key="s.url" class="parse-result-card live-pick-item" :class="{ 'parse-group-sub': i > 0 }" @click="playLivePick(s)">
+                            <div class="parse-result-index">{{ i + 1 }}</div>
+                            <div class="parse-result-info">
+                                <div class="parse-result-name">
+                                    {{ s.title || `线路 ${i + 1}` }}
+                                    <span class="parse-type-tag">{{ s.type }}</span>
+                                </div>
+                                <div class="parse-result-url" :title="s.url">{{ s.url }}</div>
+                            </div>
+                            <div class="parse-result-play" @click.stop="playLivePick(s)">
+                                <Play :size="20" fill="currentColor" />
+                            </div>
+                        </div>
+                    </transition-group>
+                    <div v-if="g.list.length > 1" class="parse-more-toggle" @click="liveGroupOpen[g.key] = !liveGroupOpen[g.key]">
+                        {{ liveGroupOpen[g.key] ? '收起画质' : `该线路还有其他画质（${g.list.length - 1}）` }}
+                    </div>
+                </template>
+            </div>
+        </div>
+    </div>
+    </transition>
+
     <!-- 添加/编辑链接表单 -->
+    <transition name="modal">
     <div v-if="showStreamForm" class="form-overlay" @click.self="cancelForm">
         <div class="form-modal">
             <div class="form-header">
@@ -746,8 +1048,10 @@ const typeLabel = (s) => {
             </div>
         </div>
     </div>
+    </transition>
 
     <!-- B站二维码登录弹窗 -->
+    <transition name="modal">
     <div v-if="showBiliQr" class="form-overlay" @click.self="closeBiliQr">
         <div class="bili-qr-modal">
             <div class="form-header">
@@ -782,6 +1086,38 @@ const typeLabel = (s) => {
             </div>
         </div>
     </div>
+    </transition>
+
+    <!-- YouTube 官方网页登录弹窗 -->
+    <transition name="modal">
+    <div v-if="showYtLogin" class="form-overlay" @click.self="closeYtLogin">
+        <div class="yt-login-modal">
+            <div class="form-header">
+                <h3>YouTube 登录</h3>
+                <X :size="18" class="clickable" @click="closeYtLogin" />
+            </div>
+            <div class="yt-login-body">
+                <div v-if="ytStatus === 'error'" class="yt-login-error">
+                    <p>{{ ytError }}</p>
+                    <div class="yt-login-err-actions">
+                        <button class="form-btn save" @click="openYtLogin">
+                            <RefreshCw :size="14" /> 重新打开
+                        </button>
+                        <button class="form-btn" @click="closeYtLogin">关闭</button>
+                    </div>
+                </div>
+                <div v-else class="yt-login-loading">
+                    <Youtube :size="26" class="spin" />
+                    <p>已在独立窗口打开 YouTube 官方登录页</p>
+                    <div class="yt-login-tip">请在窗口中用 <strong>邮箱/账号</strong> 正常登录 Google 或 YouTube，登录成功后窗口会自动关闭并提升画质。</div>
+                    <div class="yt-login-err-actions">
+                        <button class="form-btn" @click="closeYtLogin">关闭登录窗口</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    </transition>
   </div>
 </template>
 
@@ -982,10 +1318,78 @@ const typeLabel = (s) => {
 .video-card:hover .card-remove { opacity: 1; }
 .card-remove:hover { background: rgba(220, 38, 38, 0.85); }
 
+/* 批量删除选择模式 */
+.video-card.selecting { cursor: pointer; }
+.video-card.selected { border-color: #e60012; box-shadow: 0 0 0 2px rgba(230,0,18,0.15); }
+.card-select {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.9);
+  background: rgba(0,0,0,0.35);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+.video-card.selected .card-select { background: #e60012; border-color: #e60012; }
+.import-btn.danger { background: #fdecec; color: #d92c2c; border-color: #f5c6c6; cursor: pointer; }
+.import-btn.danger:hover:not(:disabled) { background: #d92c2c; color: #fff; }
+.import-btn.danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* 链接/直播流 */
 .streams-section {
     padding-top: 8px;
 }
+
+.stream-parse-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fff;
+    border: 1px solid #e5e5e5;
+    border-radius: 12px;
+    padding: 6px 6px 6px 16px;
+    transition: border-color 0.2s;
+    max-width: 900px;
+    margin-bottom: 14px;
+}
+.stream-parse-bar:focus-within {
+    border-color: var(--primary-color, #c20c0c);
+    box-shadow: 0 0 0 3px rgba(194, 12, 12, 0.08);
+}
+
+.live-pick-modal {
+    width: 480px;
+    max-width: 92vw;
+    max-height: 78vh;
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.18);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.live-pick-title {
+    padding: 8px 20px 0;
+    font-size: 13px;
+    color: #888;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.live-pick-list {
+    padding: 12px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.live-pick-item { cursor: pointer; }
 
 .streams-list {
     display: flex;
@@ -1159,6 +1563,48 @@ const typeLabel = (s) => {
     backdrop-filter: blur(4px);
 }
 
+/* 弹窗淡入/缩放动画 */
+.modal-enter-active,
+.modal-leave-active {
+    transition: opacity 0.2s ease;
+}
+.modal-enter-active .form-modal,
+.modal-leave-active .form-modal,
+.modal-enter-active .live-pick-modal,
+.modal-leave-active .live-pick-modal,
+.modal-enter-active .bili-qr-modal,
+.modal-leave-active .bili-qr-modal,
+.modal-enter-active .yt-login-modal,
+.modal-leave-active .yt-login-modal {
+    transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.modal-enter-from,
+.modal-leave-to {
+    opacity: 0;
+}
+.modal-enter-from .form-modal,
+.modal-leave-to .form-modal,
+.modal-enter-from .live-pick-modal,
+.modal-leave-to .live-pick-modal,
+.modal-enter-from .bili-qr-modal,
+.modal-leave-to .bili-qr-modal,
+.modal-enter-from .yt-login-modal,
+.modal-leave-to .yt-login-modal {
+    transform: scale(0.92) translateY(10px);
+    opacity: 0;
+}
+.modal-enter-to .form-modal,
+.modal-leave-from .form-modal,
+.modal-enter-to .live-pick-modal,
+.modal-leave-from .live-pick-modal,
+.modal-enter-to .bili-qr-modal,
+.modal-leave-from .bili-qr-modal,
+.modal-enter-to .yt-login-modal,
+.modal-leave-from .yt-login-modal {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+}
+
 .form-modal {
     background: #fff;
     border-radius: 14px;
@@ -1270,54 +1716,63 @@ const typeLabel = (s) => {
     max-width: 900px;
 }
 
-/* B站登录状态栏 */
-.bili-status-bar {
+/* B站 / YouTube 登录胶囊（右上角） */
+.login-capsules {
     display: flex;
+    gap: 8px;
     align-items: center;
-    justify-content: space-between;
-    background: linear-gradient(135deg, #fb7299, #fc3a6e);
-    color: #fff;
-    padding: 10px 16px;
-    border-radius: 10px;
-    margin-bottom: 14px;
 }
 
-.bili-status-info {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-}
-
-.bili-logged { color: #fff; font-weight: 500; }
-.bili-guest { color: rgba(255,255,255,0.9); }
-.bili-vip { color: #ffd700; font-weight: 600; margin-left: 4px; }
-.bili-avatar {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    border: 1.5px solid rgba(255,255,255,0.85);
-    object-fit: cover;
-    flex-shrink: 0;
-    background: rgba(255,255,255,0.2);
-}
-
-.bili-login-btn, .bili-logout-btn {
+.login-capsule {
     display: flex;
     align-items: center;
     gap: 5px;
-    padding: 5px 14px;
-    border-radius: 16px;
-    border: 1px solid rgba(255,255,255,0.6);
-    background: rgba(255,255,255,0.2);
-    color: #fff;
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 14px;
+    border: 1px solid transparent;
     font-size: 12px;
     cursor: pointer;
+    white-space: nowrap;
     transition: all 0.15s;
 }
 
-.bili-login-btn:hover, .bili-logout-btn:hover {
-    background: rgba(255,255,255,0.35);
+.login-capsule.bili {
+    background: rgba(251, 114, 153, 0.12);
+    color: #fc3a6e;
+    border-color: rgba(251, 114, 153, 0.35);
+}
+.login-capsule.bili:hover {
+    background: rgba(251, 114, 153, 0.2);
+}
+
+.login-capsule.yt {
+    background: rgba(255, 0, 0, 0.08);
+    color: #e60012;
+    border-color: rgba(255, 0, 0, 0.3);
+}
+.login-capsule.yt:hover {
+    background: rgba(255, 0, 0, 0.14);
+}
+
+.login-capsule.logged {
+    padding: 0 6px 0 4px;
+}
+.login-capsule.logged:hover { opacity: 0.85; }
+
+.capsule-avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: rgba(0,0,0,0.08);
+}
+
+.capsule-name {
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* B站二维码弹窗 */
@@ -1386,6 +1841,122 @@ const typeLabel = (s) => {
 .bili-qr-tips strong { color: var(--primary-color, #c20c0c); }
 .bili-qr-benefit { color: #fb7299; margin-top: 4px; }
 
+/* YouTube 设备码登录弹窗 */
+.yt-login-modal {
+    background: #fff;
+    border-radius: 14px;
+    width: min(420px, 92vw);
+    box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    overflow: hidden;
+}
+.yt-login-body {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+}
+.yt-login-error {
+    text-align: center;
+    color: #ef4444;
+    font-size: 14px;
+    padding: 30px 0;
+}
+.yt-login-error .form-btn { margin-top: 14px; }
+.yt-login-err-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    align-items: center;
+    margin-top: 14px;
+}
+.yt-login-waiting {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.yt-login-step {
+    font-size: 13px;
+    color: #444;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.yt-step-num {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #e60012;
+    color: #fff;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+.yt-verify-url {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #f9f9fb;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 8px 10px;
+}
+.yt-verify-text {
+    flex: 1;
+    font-size: 12px;
+    color: #555;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.yt-verify-url a {
+    color: var(--primary-color, #c20c0c);
+    text-decoration: none;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+.yt-copy {
+    font-size: 11px;
+    color: #999;
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 2px 6px;
+    border: 1px solid #e5e5e5;
+    border-radius: 6px;
+}
+.yt-copy:hover { color: #333; }
+.yt-code-box {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: 6px;
+    color: #1a1a2e;
+    text-align: center;
+    padding: 14px;
+    border: 2px dashed #e5e5e5;
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: all;
+}
+.yt-code-box:hover { border-color: var(--primary-color, #c20c0c); }
+.yt-login-tip {
+    font-size: 12px;
+    color: #999;
+    text-align: center;
+}
+.yt-login-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    color: #999;
+    padding: 30px 0;
+    font-size: 13px;
+}
+
 .parse-input-bar {
     display: flex;
     align-items: center;
@@ -1450,6 +2021,63 @@ const typeLabel = (s) => {
 
 .parse-results {
     margin-top: 20px;
+}
+
+.parse-more-toggle {
+    margin-top: 4px;
+    padding: 8px 0;
+    text-align: center;
+    font-size: 12px;
+    color: #e0454b;
+    background: #fff;
+    border: 1px dashed #e8d0d2;
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.2s;
+}
+
+.parse-more-toggle:hover {
+    background: #fdf3f4;
+}
+
+.parse-group-divider {
+    height: 1px;
+    margin: 14px 0;
+    background: linear-gradient(90deg, transparent, #e6e6ea, transparent);
+}
+
+.parse-group-sub {
+    opacity: 0.86;
+}
+
+/* 画质折叠加收起动画 */
+.fold-enter-active,
+.fold-leave-active {
+    transition: all 0.22s ease;
+    overflow: hidden;
+}
+.fold-enter-from,
+.fold-leave-to {
+    opacity: 0;
+    transform: translateY(-6px);
+    height: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+}
+.fold-enter-to,
+.fold-leave-from {
+    opacity: 1;
+}
+.fold-move {
+    transition: transform 0.22s ease;
+}
+.parse-group-wrap {
+    display: flex;
+    flex-direction: column;
+}
+.parse-group-wrap .parse-result-card {
+    margin-top: 8px;
 }
 
 .parse-results-title {
