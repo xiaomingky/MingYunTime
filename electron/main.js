@@ -1594,6 +1594,47 @@ async function parseBilibili(target, addStream) {
             }
         }
 
+        // === 4. 兜底：官方电影账号投稿（rights.movie=1，如「哔哩哔哩电影」）普通接口 x/player/playurl 一律 -404，
+        //        必须回退 pgc 接口 pgc/player/web/playurl（bvid+cid 参数实测可用，返回 durl） ===
+        if (!pageAdded) {
+            try {
+                const r = await axios.get('https://api.bilibili.com/pgc/player/web/playurl', {
+                    params: { bvid, cid: partialCid, qn: 127, fnval: 16, fourk: 1 },
+                    headers: biliHeaders,
+                    timeout: 10000,
+                    validateStatus: () => true
+                })
+                if (r.data?.code === 0) {
+                    const res = r.data.result || {}
+                    if (res.durl && res.durl.length) {
+                        const quality = res.quality
+                        const qLabel = qualityMap[quality] || `${quality}P`
+                        res.durl.forEach((d, i) => {
+                            const partTitle = res.durl.length > 1
+                                ? `${pTitle} [${qLabel} 电影·有声] - 第${i + 1}段${loggedInfo}`
+                                : `${pTitle} [${qLabel} 电影·有声]${loggedInfo}`
+                            addStream(d.url, 'mp4', partTitle, { bili: true })
+                        })
+                        pageAdded = true
+                    } else if (res.dash && (res.dash.video || []).length) {
+                        const dash = res.dash
+                        const audios = (dash.audio || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                        const bestAudio = audios[0]
+                        const audioUrl = bestAudio ? (bestAudio.baseUrl || bestAudio.base_url) : ''
+                        const videos = (dash.video || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                        const seenQ = new Set()
+                        videos.forEach(v => {
+                            if (seenQ.has(v.id)) return
+                            seenQ.add(v.id)
+                            const qLabel = qualityMap[v.id] || `${v.id}P`
+                            addStream(v.baseUrl || v.base_url, 'mp4', `${pTitle} [${qLabel} 电影·高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
+                            pageAdded = true
+                        })
+                    }
+                }
+            } catch (e) {}
+        }
+
         if (pageAdded) addedAny = true
     }
 
@@ -1980,32 +2021,61 @@ async function parseYouTube(target, addStream) {
     const title = info.title || ''
     const formats = Array.isArray(info.formats) ? info.formats : []
 
-    // ===== 直播：优先 HLS m3u8（hls.js 播放），DASH 作为备选 =====
-    // 音频统一用独立 DASH audio URL + <audio> 元素同步播放
+    // ===== 直播：与 biliup/yt-dlp 一致 —— HLS 视频流 + 独立音频流同步播放；DASH(fMP4) 标「下载用」供下载合并 =====
     const isLive = !!(info.is_live || info.live_status === 'is_live' || (info.was_live && !formats.some(f => f.height && f.acodec && f.acodec !== 'none')))
     if (isLive) {
-        // 获取最优音频流（DASH 音频，播放器用独立 Audio 元素同步播放）
-        const liveBestAudio = formats
-            .filter(f => f.url && (!f.vcodec || f.vcodec === 'none') && f.acodec && f.acodec !== 'none')
-            .sort((a, b) => ((b.abr || 0) || (b.tbr || 0)) - ((a.abr || 0) || (a.tbr || 0)))[0]
-        const liveAudioUrl = liveBestAudio ? liveBestAudio.url : ''
+        // biliup/yt-dlp：YouTube 直播音视频分离 —— HLS 视频流多为纯画面(video-only)，音频是独立一条 HLS/DASH 流。
+        // 因此对「无自带音轨」的视频流附带 audioUrl，由播放器 initDashAudio 同步播放；
+        // 若变体本身带音轨(acodec 非 none)，则直接可播，不再叠加音频，避免冲突。
+        // 1) 最优音频流：优先 m3u8 音频(hls.js)，其次 AAC fMP4/m4a(原生 <audio>)
+        //    注意：yt-dlp 对 YouTube 直播的 audio-only 流（如 format_id 233/234）常缺失 acodec 字段，
+        //    只有 resolution:"audio only" / format_note:"audio only"，必须一并纳入判定，否则会漏选导致无音频。
+        const isAudioOnly = (f) => {
+            if (f.vcodec && f.vcodec !== 'none' && f.vcodec !== '') return false
+            const text = `${f.resolution || ''} ${f.format_note || ''} ${f.format_id || ''}`.toLowerCase()
+            return !!(f.acodec && f.acodec !== 'none') || /audio/i.test(text)
+        }
+        // 有 url 的音频流：可直接用于附加播放
+        const audioCands = formats.filter(f => f.url && isAudioOnly(f))
+        const liveAudio = audioCands
+            .sort((a, b) => {
+                const aMux = /m3u8/i.test((a.protocol || '') + (a.format_id || '')) ? 1 : 0
+                const bMux = /m3u8/i.test((b.protocol || '') + (b.format_id || '')) ? 1 : 0
+                if (aMux !== bMux) return bMux - aMux
+                const aacA = /mp4a|aac/i.test(a.acodec || '') ? 1 : 0
+                const aacB = /mp4a|aac/i.test(b.acodec || '') ? 1 : 0
+                if (aacA !== aacB) return aacB - aacA
+                return ((b.abr || 0) || (b.tbr || 0)) - ((a.abr || 0) || (a.tbr || 0))
+            })[0]
+        const liveAudioUrl = liveAudio ? liveAudio.url : ''
 
-        // 1) 优先 HLS m3u8 流（hls.js 能正确处理，播放体验最好）
-        const hlsAll = formats.filter(f => f.url && /m3u8|hls/i.test((f.protocol || '') + ' ' + (f.format_id || '')))
+        // 2) HLS 视频流（首选，hls.js 可播 fMP4）；无音轨的附带独立音频
+        //    排序：优先「自带音轨」(avc+mp4a 合一) 的 HLS，保证默认选中的线路有声音；纯画面 HLS 再按清晰度排
+        const liveHlsVideos = formats
+            .filter(f => f.url && f.vcodec && f.vcodec !== 'none' && /m3u8|hls/i.test((f.protocol || '') + ' ' + (f.format_id || '')))
         const hlsSeen = new Set()
-        const hlsUnique = hlsAll.filter(f => { if (hlsSeen.has(f.url)) return false; hlsSeen.add(f.url); return true })
-            .sort((a, b) => (b.height || b.tbr || 0) - (a.height || a.tbr || 0))
+        const hlsUnique = liveHlsVideos.filter(f => { if (hlsSeen.has(f.url)) return false; hlsSeen.add(f.url); return true })
+            .sort((a, b) => {
+                const aOwn = a.acodec && a.acodec !== 'none' ? 1 : 0
+                const bOwn = b.acodec && b.acodec !== 'none' ? 1 : 0
+                if (aOwn !== bOwn) return bOwn - aOwn
+                return (b.height || b.tbr || 0) - (a.height || a.tbr || 0)
+            })
+        let hlsAdded = 0
         for (const f of hlsUnique) {
             const h = f.height || 0
+            const hasOwnAudio = f.acodec && f.acodec !== 'none'
             const lbl = h ? `${h}p` : (f.format_note || '直播')
-            addStream(U(f.url), 'm3u8', `${title} [${lbl}]`, { ytSrc: watchUrl, ytHeight: h, audioUrl: liveAudioUrl, isLive: true })
+            addStream(U(f.url), 'm3u8', `${title} [${lbl}]`, { ytSrc: watchUrl, ytHeight: h, audioUrl: hasOwnAudio ? '' : liveAudioUrl, isLive: true })
+            hlsAdded++
         }
 
-        // 2) DASH 视频流（fragmented MP4）：浏览器原生 <video> + 独立 <audio> 同步
+        // 3) DASH fMP4 纯画面流：在线 <video> 无法直接播 fMP4，标注「下载用」供 yt-dlp/ffmpeg 合并音视频
         const liveDashVideos = formats
             .filter(f => f.url && f.vcodec && f.vcodec !== 'none' && (!f.acodec || f.acodec === 'none') && f.height)
             .filter((f, i, arr) => arr.findIndex(x => x.format_id === f.format_id) === i)
             .sort((a, b) => (b.height || 0) - (a.height || 0))
+        let liveDashAdded = 0
         const liveSeen = new Set()
         for (const f of liveDashVideos) {
             const h = f.height || 0
@@ -2013,11 +2083,12 @@ async function parseYouTube(target, addStream) {
             const key = `live_${h}`
             if (liveSeen.has(key)) continue
             liveSeen.add(key)
-            addStream(U(f.url), 'mp4', `${title} [${label || '直播'}]`, { ytSrc: watchUrl, ytHeight: h, audioUrl: liveAudioUrl, isLive: true })
+            addStream(U(f.url), 'mp4', `${title} [${label}·下载用]`, { ytSrc: watchUrl, ytHeight: h, audioUrl: liveAudioUrl, isLive: true })
+            liveDashAdded++
         }
 
-        // 3) 兜底：无 HLS 也无 DASH 时，随便取一个视频流
-        if (hlsUnique.length === 0 && liveSeen.size === 0) {
+        // 4) 兜底：既无 HLS 也无 DASH 时，随便取一个视频流
+        if (hlsAdded === 0 && liveDashAdded === 0) {
             const fallback = formats.find(f => f.url && f.vcodec && f.vcodec !== 'none' && !/audio/ig.test(f.resolution || ''))
             if (fallback?.url) addStream(U(fallback.url), 'mp4', `${title} [直播]`, { ytSrc: watchUrl, ytHeight: fallback.height || 0, audioUrl: liveAudioUrl, isLive: true })
         }
@@ -2849,6 +2920,721 @@ ipcMain.handle('youtube:logout', async () => {
     closeYtLoginWin()
     return { success: true }
 })
+
+// ===== B站直播开播（获取自己的推流地址与串流密钥，供 OBS 推流）=====
+// 说明：仅获取用户自己直播间的推流参数，合规使用；遇到平台人脸认证等要求时不绕过，直接提示。
+function biliLiveHeaders(cookies) {
+    return {
+        'User-Agent': PARSE_UA,
+        'Referer': 'https://link.bilibili.com/',
+        'Origin': 'https://link.bilibili.com',
+        'Cookie': biliCookieString(cookies)
+    }
+}
+
+// 获取自己直播间信息：uid -> room_id（真实长号）
+ipcMain.handle('bilibili:live-room', async () => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    const uid = cookies.DedeUserID
+    if (!uid) return { success: false, message: '登录信息缺少用户ID，请重新登录' }
+    try {
+        // 1) 用 uid 查自己的房间号（可能为短号）
+        const r1 = await axios.get('https://api.live.bilibili.com/room/v1/Room/getRoomInfoOld', {
+            params: { mid: uid },
+            headers: biliLiveHeaders(cookies),
+            timeout: 10000
+        })
+        if (r1.data?.code !== 0 || !r1.data?.data) {
+            return { success: false, message: r1.data?.message || '获取直播间信息失败' }
+        }
+        const roomData = r1.data.data
+        if (roomData.roomStatus !== 1) {
+            return { success: false, message: '尚未开通直播间，请先在B站直播中心开通后重试', notOpen: true }
+        }
+        // 2) 短号转真实长号，并取上次使用的分区(area_v2)与封面/标题（get_info 含 area_v2）
+        let roomId = roomData.roomid
+        let areaV2 = roomData.area_v2 || roomData.areaV2 || null
+        let title = roomData.title || ''
+        let cover = roomData.user_cover || roomData.cover || ''
+        try {
+            const r2 = await axios.get('https://api.live.bilibili.com/room/v1/Room/get_info', {
+                params: { room_id: roomId },
+                headers: biliLiveHeaders(cookies),
+                timeout: 10000
+            })
+            const d2 = r2.data?.data
+            if (d2?.room_id) roomId = d2.room_id
+            // get_info 返回的是 area_id（不是 area_v2），以此记忆上次使用的分区
+            if (d2?.area_id !== undefined && d2?.area_id !== null) areaV2 = d2.area_id
+            if (d2?.title) title = d2.title
+            if (d2?.user_cover || d2?.cover || d2?.keyframe) cover = d2.user_cover || d2.cover || d2.keyframe || ''
+        } catch (e) {}
+        return {
+            success: true,
+            roomId,
+            shortId: roomData.short_id,
+            liveStatus: roomData.liveStatus,
+            title,
+            areaV2,
+            // 之前的直播封面（user_cover 为实际生效封面，fallback 到 cover/keyframe）
+            cover
+        }
+    } catch (e) {
+        return { success: false, message: '请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+})
+
+// 获取直播分区列表（父分区 -> 子分区）
+ipcMain.handle('bilibili:live-areas', async () => {
+    try {
+        const r = await axios.get('https://api.live.bilibili.com/room/v1/Area/getList', {
+            headers: { 'User-Agent': PARSE_UA },
+            timeout: 10000
+        })
+        if (r.data?.code !== 0) return { success: false, message: r.data?.message || '获取分区失败' }
+        // 扁平化为 [{parent_id, parent_name, id, name}]
+        const areas = []
+        for (const p of r.data.data || []) {
+            for (const c of p.list || []) {
+                areas.push({ id: c.id, name: c.name, parentId: p.id, parentName: p.name })
+            }
+        }
+        return { success: true, areas }
+    } catch (e) {
+        return { success: false, message: '请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+})
+
+// 开始直播：获取推流地址与串流密钥
+ipcMain.handle('bilibili:live-start', async (_, { roomId, areaV2, title, platform, cover }) => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    const csrf = cookies.bili_jct
+    if (!csrf) return { success: false, message: '登录信息缺少bili_jct，请重新登录' }
+    // 封面为 dataURI 时先上传为永久 URL
+    let coverUrl = cover
+    if (coverUrl && typeof coverUrl === 'string' && /^data:/i.test(coverUrl)) {
+        const up = await uploadBiliLiveCover(cookies, coverUrl)
+        if (up.err) return { success: false, message: up.err }
+        coverUrl = up.url
+    }
+    const doStart = async (platform, extra = {}) => {
+        const params = new URLSearchParams()
+        params.set('room_id', String(roomId))
+        params.set('area_v2', String(areaV2))
+        // 注意：Room/startLive 不接收 title/cover（文档无此参数，传了会被静默忽略）。
+        // 标题与封面由开播成功后的 UpdatePreLiveInfo 设置。
+        params.set('platform', platform)
+        params.set('csrf', csrf)
+        for (const [k, v] of Object.entries(extra)) params.set(k, String(v))
+        const r = await axios.post('https://api.live.bilibili.com/room/v1/Room/startLive', params.toString(), {
+            headers: {
+                ...biliLiveHeaders(cookies),
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            timeout: 15000
+        })
+        return r.data
+    }
+    // 根据用户选择组合尝试顺序：优先用户指定的 platform，再尝试默认组合，
+    // 规避"仅支持直播姬开播"限制（60034）
+    const attempts = []
+    if (platform) {
+        attempts.push({ platform, extra: { build: '1', version: '3.0.0' } })
+        attempts.push({ platform, extra: {} })
+    }
+    attempts.push(
+        { platform: 'pc', extra: { build: '1', version: '3.0.0' } },
+        { platform: 'pc_link', extra: { build: '1', version: '3.0.0' } },
+        { platform: 'pc', extra: {} },
+        { platform: 'pc_link', extra: {} }
+    )
+    let errCode = null
+    let errMsg = ''
+    for (const { platform, extra } of attempts) {
+        try {
+            const data = await doStart(platform, extra)
+            if (data?.code === 0) {
+                const d = data.data || {}
+                const rtmp = d.rtmp || {}
+                let addr = rtmp.addr || ''
+                const code = rtmp.code || ''
+                // 规范化：OBS 服务器地址要求以 / 结尾，否则拼接/解析容易重连失败
+                if (addr && !addr.endsWith('/')) addr = addr + '/'
+                // 开播成功后设置标题/封面（UpdatePreLiveInfo 是唯一接受 cover 的接口，title 也走这里生效）。
+                // 失败不阻断开播结果，仅附加提示。
+                let coverSet = false
+                let coverErr = ''
+                if (title || coverUrl) {
+                    const up = await updateBiliLivePreInfo(cookies, { title, coverUrl })
+                    if (up.ok) coverSet = true
+                    else coverErr = up.err || ''
+                }
+                return {
+                    success: true,
+                    platform,
+                    liveKey: d.live_key || '',
+                    fullUrl: addr + code,
+                    serverAddr: addr,
+                    streamCode: code,
+                    streamCodeNoQ: code.replace(/^\?/, ''),
+                    coverSet,
+                    coverErr
+                }
+            }
+            if (!errCode) { errCode = data?.code; errMsg = data?.message || '开播失败' }
+            // 60034 需要换 platform 重试；其它错误（如60024人脸）不重试
+            if (data?.code !== 60034) {
+                // 60024 人脸认证：不绕过，直接提示
+                if (data?.code === 60024) {
+                    return { success: false, code: 60024, message: '该分区开播需要人脸认证，请到B站直播中心完成认证后重试' }
+                }
+                return { success: false, code: data?.code, message: data?.message || '开播失败' }
+            }
+        } catch (e) {
+            if (!errCode) { errCode = e?.response?.data?.code; errMsg = e?.response?.data?.message || e.message }
+            return { success: false, message: '请求失败：' + (e?.response?.data?.message || e.message) }
+        }
+    }
+    return { success: false, code: errCode, message: errMsg || '开播失败' }
+})
+
+// 上传 B站直播封面：不做任何压缩、不设大小限制。
+// 主链路用 BFS 通用图床 bucket=openplatform（实测限制 20MB，ElainaBot 等开源项目同款参数），
+// 返回 .hdslb.com/bfs/ 域名 URL，供 UpdatePreLiveInfo 使用。
+// 旧参数 bucket=live&dir=new_room_cover 为直播封面专用目录，服务器限制极小（<500KB 即 -617），已弃用。
+async function uploadBiliLiveCover(cookies, dataUri) {
+    const csrf = cookies.bili_jct
+    if (!csrf) return { err: '登录信息缺少bili_jct，请重新登录' }
+    const m = /^data:(image\/(?:png|jpe?g|webp));base64,([\s\S]+)$/i.exec(dataUri)
+    if (!m) return { err: '封面格式不正确（需 base64 dataURI 图片）' }
+    const buf = Buffer.from(m[2], 'base64')
+    if (!buf.length) return { err: '封面内容为空' }
+    const mime = m[1].toLowerCase()
+    // BFS 图床 multipart 二进制（bucket=openplatform，20MB 限制）
+    const ext = mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg'
+    const boundary = '----WB' + Date.now().toString(36)
+    const head = Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="bucket"\r\n\r\nopenplatform\r\n` +
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="blob.${ext}"\r\nContent-Type: ${mime}\r\n\r\n`
+    )
+    const tail = Buffer.from(`\r\n--${boundary}--\r\n`)
+    const body = Buffer.concat([head, buf, tail])
+    try {
+        const r = await axios.post('https://api.bilibili.com/x/upload/web/image', body, {
+            params: { csrf },
+            headers: {
+                'User-Agent': PARSE_UA,
+                'Referer': 'https://www.bilibili.com/',
+                'Origin': 'https://www.bilibili.com',
+                'Cookie': biliCookieString(cookies),
+                'Content-Type': `multipart/form-data; boundary=${boundary}`
+            },
+            timeout: 30000
+        })
+        if (r.data?.code === 0 && r.data?.data?.location) return { url: r.data.data.location }
+        return { err: r.data?.message || '上传封面失败' }
+    } catch (e) {
+        return { err: '上传封面请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+}
+
+// 设置直播封面/标题：xlive/app-blink/v1/preLive/UpdatePreLiveInfo
+// 唯一接受 cover 的直播接口；cover 必须是 .hdslb.com 域名 URL（上传接口返回的 location）
+async function updateBiliLivePreInfo(cookies, { title, coverUrl }) {
+    const csrf = cookies.bili_jct
+    if (!csrf) return { err: '登录信息缺少bili_jct，请重新登录' }
+    const params = new URLSearchParams()
+    params.set('platform', 'web')
+    params.set('mobi_app', 'web')
+    params.set('build', '1')
+    if (title) params.set('title', String(title))
+    if (coverUrl) params.set('cover', String(coverUrl))
+    params.set('csrf_token', csrf)
+    params.set('csrf', csrf)
+    params.set('visit_id', '')
+    try {
+        const r = await axios.post('https://api.live.bilibili.com/xlive/app-blink/v1/preLive/UpdatePreLiveInfo', params.toString(), {
+            headers: {
+                ...biliLiveHeaders(cookies),
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            timeout: 15000
+        })
+        if (r.data?.code === 0) return { ok: true }
+        return { err: r.data?.message || r.data?.msg || '设置直播封面失败' }
+    } catch (e) {
+        return { err: '请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+}
+
+// 保存直播间信息（标题/分区/封面，同步到直播间资料）
+// 依据 bilibili-API-collect live/manage.md 权威文档：
+// - Room/update 合法参数：room_id/title/area_id/add_tag/del_tag/csrf（分区参数名是 area_id，无 cover）
+// - 封面唯一入口：xlive/app-blink/v1/preLive/UpdatePreLiveInfo（cover 必须是 .hdslb.com 域名 URL）
+ipcMain.handle('bilibili:live-update', async (_, { roomId, title, areaV2, cover }) => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    const csrf = cookies.bili_jct
+    if (!csrf) return { success: false, message: '登录信息缺少bili_jct，请重新登录' }
+    // 封面为本地选择(dataURI)时先上传为 .hdslb.com/bfs/live/ 永久 URL
+    let coverUrl = cover
+    if (coverUrl && typeof coverUrl === 'string' && /^data:/i.test(coverUrl)) {
+        const up = await uploadBiliLiveCover(cookies, coverUrl)
+        if (up.err) return { success: false, message: up.err }
+        coverUrl = up.url
+    }
+    // 1) 标题/分区：Room/update（分区参数名 area_id）
+    let updateErr = ''
+    const params = new URLSearchParams()
+    params.set('room_id', String(roomId))
+    if (title !== undefined && title !== null && String(title)) params.set('title', String(title))
+    if (areaV2 !== undefined && areaV2 !== null && String(areaV2)) params.set('area_id', String(areaV2))
+    params.set('csrf', csrf)
+    try {
+        const r = await axios.post('https://api.live.bilibili.com/room/v1/Room/update', params.toString(), {
+            headers: {
+                ...biliLiveHeaders(cookies),
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            timeout: 15000
+        })
+        if (r.data?.code !== 0) updateErr = r.data?.message || r.data?.msg || '保存直播间信息失败'
+    } catch (e) {
+        return { success: false, message: '请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+    // 2) 封面：UpdatePreLiveInfo（Room/update 不接受 cover 参数）
+    let preErr = ''
+    if (coverUrl) {
+        const up = await updateBiliLivePreInfo(cookies, { coverUrl })
+        if (!up.ok) preErr = up.err || '设置直播封面失败'
+    }
+    if (updateErr) return { success: false, code: 1, message: updateErr }
+    if (preErr) return { success: false, code: 1, message: '标题/分区已保存，但封面设置失败：' + preErr }
+    return { success: true }
+})
+
+// 停止直播
+ipcMain.handle('bilibili:live-stop', async (_, { roomId, platform }) => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    const csrf = cookies.bili_jct
+    const doStop = async (platform, extra = {}) => {
+        const params = new URLSearchParams()
+        params.set('room_id', String(roomId))
+        params.set('platform', platform)
+        params.set('csrf', csrf)
+        for (const [k, v] of Object.entries(extra)) params.set(k, String(v))
+        const r = await axios.post('https://api.live.bilibili.com/room/v1/Room/stopLive', params.toString(), {
+            headers: {
+                ...biliLiveHeaders(cookies),
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            timeout: 10000
+        })
+        return r.data
+    }
+    // 与开播保持一致：优先使用开播成功的 platform，其它尝试同样规避"仅支持直播姬"（60034）
+    const attempts = []
+    if (platform) {
+        attempts.push({ platform, extra: { build: '1', version: '3.0.0' } })
+        attempts.push({ platform, extra: {} })
+    }
+    attempts.push(
+        { platform: 'pc', extra: { build: '1', version: '3.0.0' } },
+        { platform: 'pc_link', extra: { build: '1', version: '3.0.0' } },
+        { platform: 'pc', extra: {} },
+        { platform: 'pc_link', extra: {} }
+    )
+    let errMsg = ''
+    for (const a of attempts) {
+        try {
+            const data = await doStop(a.platform, a.extra)
+            if (data?.code === 0) return { success: true }
+            if (!errMsg) errMsg = data?.message || '停止直播失败'
+            // 60034 需换 platform 重试；其它错误直接返回
+            if (data?.code !== 60034) return { success: false, message: errMsg }
+        } catch (e) {
+            return { success: false, message: '请求失败：' + e.message }
+        }
+    }
+    return { success: false, message: errMsg || '停止直播失败' }
+})
+
+// ===== B站管理（收藏夹 / 空间数据 / 稿件管理）=====
+// 依据 bilibili-API-collect 文档实现；均需登录 Cookie(SESSDATA)
+
+// 收藏夹列表（自己创建的）
+ipcMain.handle('bilibili:fav-list', async () => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    const uid = cookies.DedeUserID
+    if (!uid) return { success: false, message: '登录信息缺少用户ID，请重新登录' }
+    try {
+        const r = await axios.get('https://api.bilibili.com/x/v3/fav/folder/created/list-all', {
+            params: { up_mid: uid, rid: 0 },
+            headers: { 'User-Agent': PARSE_UA, 'Referer': 'https://space.bilibili.com/' + uid, 'Cookie': biliCookieString(cookies) },
+            timeout: 10000
+        })
+        if (r.data?.code !== 0) return { success: false, message: r.data?.message || '获取收藏夹失败' }
+        const list = (r.data?.data?.list || []).map(f => ({
+            id: f.id, title: f.title, mediaCount: f.media_count || 0, cover: f.cover || ''
+        }))
+        return { success: true, list }
+    } catch (e) {
+        return { success: false, message: '请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+})
+
+// 收藏夹内容（分页，仅视频）
+ipcMain.handle('bilibili:fav-content', async (_, { fid, pn = 1, ps = 20 }) => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    try {
+        const r = await axios.get('https://api.bilibili.com/x/v3/fav/resource/list', {
+            params: { media_id: fid, pn, ps: Math.min(ps, 50), platform: 'web' },
+            headers: { 'User-Agent': PARSE_UA, 'Referer': 'https://space.bilibili.com/', 'Cookie': biliCookieString(cookies) },
+            timeout: 10000
+        })
+        if (r.data?.code !== 0) return { success: false, message: r.data?.message || '获取收藏内容失败' }
+        const d = r.data?.data || {}
+        // 收藏类型枚举：2/1/22=视频 21=合集(season) 4=番剧/影视 24=番剧/有声剧(网页显示"番剧"，非音频) 11/12/10=直播(回放)
+        // 番剧/电影项通常不带 ep_id/season_id 字段，ep 号藏在 link 里（https://www.bilibili.com/bangumi/play/ep737427）
+        const typeNames = { 2: '视频', 21: '合集', 1: '视频', 22: '视频', 4: '番剧/影视', 24: '番剧', 11: '直播', 12: '直播回放', 10: '直播' }
+        const medias = (d.medias || []).map(m => {
+            // 番剧 ep_id：优先字段，其次从 link 提取
+            let epId = m.ep_id || m.epId || 0
+            const linkStr = m.link || ''
+            const epM = /bangumi\/play\/ep(\d+)/.exec(linkStr)
+            if (!epId && epM) epId = Number(epM[1])
+            const isBangumi = m.type === 4 || m.type === 24 || /bangumi\/play/.test(linkStr) || !!epId
+            return {
+                id: m.id,
+                bvid: m.bvid || '',
+                title: m.title || '',
+                cover: m.cover || '',
+                duration: m.duration || 0,
+                upper: (m.upper && m.upper.name) || '',
+                upperMid: (m.upper && m.upper.mid) || 0,
+                // type=21 合集项的 id 本身就是 season_id
+                seasonId: m.season_id || m.seasonId || (m.type === 21 ? m.id : 0) || 0,
+                epId,
+                isBangumi,
+                link: linkStr,
+                cid: (m.page && m.page.length) ? m.page[0].cid || 0 : 0,
+                type: m.type || 2,
+                typeName: typeNames[m.type] || (m.type ? '类型' + m.type : '视频'),
+                // 普通视频/有声剧(type24)可直接下载
+                downloadable: !!(m.bvid),
+                // 所有项都给"展开/查合集"入口：
+                //  - 番剧(type4/24/带 epId) → "展开番剧"（pgc 集数接口）
+                //  - 带 season_id 或 type 21 → "展开合集"
+                //  - type=2 普通视频 → "查合集"（可能属于某个 UP主合集，走 ugc_season 查询）
+                expandable: true
+            }
+        })
+        // 总数取 data.info.media_count（整个收藏夹的条目数），d.count 只是当前页数量
+        return { success: true, folderTitle: d.info?.title || '', medias, hasMore: !!d.has_more, total: d.info?.media_count || d.count || medias.length }
+    } catch (e) {
+        return { success: false, message: '请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+})
+
+// 拉取 UP主合集全部视频（自动翻页：seasons_archives_list page_size 上限 100，合集可超百集）
+async function fetchSeasonAll(mid, seasonId, ps) {
+    const cookies = loadBiliCookie()
+    const all = []
+    let seasonName = ''
+    let pn = 1
+    let total = 0
+    const pageSize = Math.min(ps || 100, 100)
+    for (let i = 0; i < 10; i++) {
+        const r = await axios.get('https://api.bilibili.com/x/polymer/web-space/seasons_archives_list', {
+            params: { mid, season_id: seasonId, sort_reverse: false, page_num: pn, page_size: pageSize },
+            headers: {
+                'User-Agent': PARSE_UA,
+                'Referer': `https://space.bilibili.com/${mid}/channel/collectiondetail?sid=${seasonId}`,
+                'Cookie': biliCookieString(cookies)
+            },
+            timeout: 10000,
+            validateStatus: () => true
+        })
+        const body = r.data
+        if (typeof body !== 'object' || body?.code !== 0) {
+            if (!all.length) return { err: (body && (body.message || body.msg)) || '获取合集内容失败' }
+            break
+        }
+        const d = body.data || {}
+        const arch = (d.archives || []).map(v => ({
+            id: v.aid || v.id, bvid: v.bvid || '', title: v.title || '', cover: v.pic || '',
+            duration: v.duration || 0, play: v.play || 0, created: v.created || 0
+        }))
+        all.push(...arch)
+        total = d.page?.total || all.length
+        if (!seasonName) seasonName = (d.meta && d.meta.name) || d.title || ''
+        if (!arch.length || all.length >= total) break
+        pn++
+    }
+    return { archives: all, total, seasonName }
+}
+
+// 合集/番剧展开：获取内部视频列表（内层是普通视频可下载）
+// 三种形态：
+//   isPgc / epId       → 番剧/影视：有 seasonId 直接查 pgc season；只有 epId 先抓 ep 页 HTML 提取 ss 号再查
+//   bvid && !seasonId  → 普通视频查"所属合集"（x/web-interface/view 返回 data.ugc_season）
+//   mid && seasonId    → UP主合集 seasons_archives_list
+// 说明：收藏夹里收藏"合集下的单条视频"时，B站返回 type=2 普通视频，
+//       只有通过 ugc_season 才能得知它属于哪个合集、有哪些集数。
+ipcMain.handle('bilibili:fav-season', async (_, { mid, seasonId, bvid, epId, pn = 1, ps = 20, isPgc }) => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    try {
+        // 番剧/影视：拿全部集数
+        if (isPgc || epId) {
+            let sid = seasonId
+            // 只有 ep_id 时：抓 ep 播放页 HTML 提取 season_id（ss 号）
+            if (!sid && epId) {
+                try {
+                    const ph = await axios.get(`https://www.bilibili.com/bangumi/play/ep${epId}`, {
+                        headers: { 'User-Agent': PARSE_UA, 'Referer': `https://www.bilibili.com/bangumi/play/ep${epId}`, 'Cookie': biliCookieString(cookies) },
+                        timeout: 10000,
+                        validateStatus: () => true,
+                        maxRedirects: 0
+                    })
+                    const html = typeof ph.data === 'string' ? ph.data : ''
+                    const ssM = /ss(\d+)/.exec(html) || /"season_id":(\d+)/.exec(html)
+                    if (ssM) sid = Number(ssM[1])
+                } catch (e) { /* 页面抓取失败则直接尝试用 epId 当 season_id */ }
+            }
+            if (!sid) return { success: false, message: '无法获取该番剧的季号（season_id）' }
+            const r = await axios.get('https://api.bilibili.com/pgc/view/web/season', {
+                params: { season_id: sid },
+                headers: {
+                    'User-Agent': PARSE_UA,
+                    'Referer': `https://www.bilibili.com/bangumi/play/ss${sid}`,
+                    'Cookie': biliCookieString(cookies)
+                },
+                timeout: 10000,
+                validateStatus: () => true
+            })
+            const body = r.data
+            if (typeof body !== 'object' || body?.code !== 0) {
+                return { success: false, message: (body && (body.message || body.msg)) || '获取番剧信息失败' }
+            }
+            // 注意：pgc 系列接口返回字段是 result 而非 data（与 x/ 系列接口不同）
+            const d = body.data || body.result || {}
+            const episodes = (d.episodes || []).map(ep => ({
+                id: ep.id,
+                bvid: ep.bvid || '',
+                title: ep.long_title ? `${ep.title || ''} ${ep.long_title}`.trim() : (ep.title || ''),
+                cover: ep.cover || d.cover || '',
+                duration: 0, play: 0, created: 0
+            }))
+            return { success: true, seasonTitle: d.title || '', archives: episodes, total: episodes.length, hasMore: false }
+        }
+        // 普通视频查所属合集（UGP合集）：view 接口返回 data.ugc_season（只有 id/title/cover，没有集数！）
+        // 拿到 season_id 后必须再调 seasons_archives_list 拉取全部集数
+        if (bvid && !seasonId) {
+            const rv = await axios.get('https://api.bilibili.com/x/web-interface/view', {
+                params: { bvid },
+                headers: {
+                    'User-Agent': PARSE_UA,
+                    'Referer': `https://www.bilibili.com/video/${bvid}`,
+                    'Cookie': biliCookieString(cookies)
+                },
+                timeout: 10000,
+                validateStatus: () => true
+            })
+            const bv = rv.data
+            if (typeof bv !== 'object' || bv?.code !== 0) {
+                return { success: false, message: (bv && (bv.message || bv.msg)) || '获取视频信息失败' }
+            }
+            const ugc = bv.data?.ugc_season
+            if (!ugc || !ugc.id) {
+                // UP主注销/删除时合集信息一并消失，给出针对性提示
+                const ownerName = bv.data?.owner?.name || ''
+                const ownerMid = bv.data?.owner?.mid || ''
+                if (/注销|已删除/.test(ownerName)) {
+                    return { success: false, message: '该视频UP主已注销，合集信息无法获取（视频仍可单独下载）' }
+                }
+                // 无 ugc_season：B站服务端未给该视频挂载合集信息（视频页也无合集标签）
+                return {
+                    success: false,
+                    message: `该视频未挂载合集（仅单条视频）· 可复制分享链接到「网址解析」尝试解析；若确认在合集内，可能是合集信息更新延迟，稍后再试`
+                }
+            }
+            // 用合集 id + UP主 mid 拉取全部集数（seasons_archives_list 是权威接口，自动翻页拉全）
+            const ownerMid = bv.data?.owner?.mid
+            if (!ownerMid) {
+                return { success: false, message: '无法获取UP主信息，无法展开合集' }
+            }
+            const sa = await fetchSeasonAll(ownerMid, ugc.id, ps)
+            if (sa.err) return { success: false, message: sa.err }
+            return {
+                success: true,
+                seasonTitle: ugc.title || '',
+                archives: sa.archives,
+                total: sa.total,
+                hasMore: false,
+                viaUgc: true
+            }
+        }
+        if (!seasonId || !mid) {
+            return { success: false, message: '缺少合集信息（seasonId/mid）' }
+        }
+        const sa = await fetchSeasonAll(mid, seasonId, ps)
+        if (sa.err) return { success: false, message: sa.err }
+        return {
+            success: true,
+            seasonTitle: sa.seasonName || '',
+            archives: sa.archives,
+            total: sa.total,
+            hasMore: false
+        }
+    } catch (e) {
+        return { success: false, message: '请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+})
+
+// 空间数据：自己账号信息 + 粉丝/关注 + 播放/点赞/阅读（数据小助手）
+// 三个接口各自容错：任一失败不影响其他数据（acc/info 偶发 -401 反爬，重试一次）
+async function biliGetJson(url, params, h, timeout = 10000) {
+    const r = await axios.get(url, { params, headers: h, timeout, validateStatus: () => true })
+    return r.data
+}
+ipcMain.handle('bilibili:space-info', async () => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    const uid = cookies.DedeUserID
+    if (!uid) return { success: false, message: '登录信息缺少用户ID，请重新登录' }
+    const h = { 'User-Agent': PARSE_UA, 'Referer': `https://space.bilibili.com/${uid}`, 'Origin': 'https://space.bilibili.com', 'Cookie': biliCookieString(cookies) }
+    const warns = []
+    // 账号信息（偶发反爬，失败重试一次）
+    let info = {}
+    try {
+        let d = await biliGetJson('https://api.bilibili.com/x/space/acc/info', { mid: uid }, h)
+        if (d?.code !== 0) {
+            d = await biliGetJson('https://api.bilibili.com/x/space/acc/info', { mid: uid }, h)
+            if (d?.code !== 0) warns.push('账号信息获取失败：' + (d?.message || '风控拦截'))
+        }
+        info = d?.data || {}
+    } catch (e) { warns.push('账号信息获取失败') }
+    // 粉丝/关注
+    let relD = {}
+    try {
+        const d = await biliGetJson('https://api.bilibili.com/x/relation/stat', { vmid: uid }, h)
+        relD = d?.data || {}
+        if (d?.code !== 0) warns.push('粉丝数据获取失败：' + (d?.message || '风控拦截'))
+    } catch (e) { warns.push('粉丝数据获取失败') }
+    // 播放/点赞/阅读
+    let upD = {}
+    try {
+        const d = await biliGetJson('https://api.bilibili.com/x/space/upstat', { mid: uid }, h)
+        upD = d?.data || {}
+        if (d?.code !== 0) warns.push('播放数据获取失败：' + (d?.message || '风控拦截'))
+    } catch (e) { warns.push('播放数据获取失败') }
+    return {
+        success: true,
+        uid,
+        name: info.name || '',
+        face: info.face || '',
+        sign: info.sign || '',
+        level: info.level || 0,
+        follower: relD.follower || 0,
+        following: relD.following || 0,
+        archiveView: upD.archive?.view || 0,
+        archiveLike: upD.archive?.like || 0,
+        articleView: upD.article?.view || 0,
+        likes: upD.likes || 0,
+        warns
+    }
+})
+
+
+
+// ===== B站 WBI 签名（部分 space/polymer 接口需要） =====
+const MIXIN_KEY_ENC_TAB = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52]
+let wbiMixinKey = ''
+let wbiKeyTime = 0
+async function getWbiMixinKey(cookies) {
+    // 缓存 1 小时
+    if (wbiMixinKey && Date.now() - wbiKeyTime < 3600 * 1000) return wbiMixinKey
+    try {
+        const r = await axios.get('https://api.bilibili.com/x/web-interface/nav', {
+            headers: { 'User-Agent': PARSE_UA, 'Referer': 'https://www.bilibili.com/', 'Cookie': biliCookieString(cookies) },
+            timeout: 10000,
+            validateStatus: () => true
+        })
+        const wbi = r.data?.data?.wbi_img
+        if (!wbi) return ''
+        const getKey = (url) => {
+            const base = String(url || '').split('?')[0]
+            const m = base.match(/\/([\w-]+)\.(?:png|jpg|webp)$/i)
+            return m ? m[1] : ''
+        }
+        const imgKey = getKey(wbi.img_url)
+        const subKey = getKey(wbi.sub_url)
+        if (!imgKey || !subKey) return ''
+        const raw = imgKey + subKey
+        let mixin = ''
+        for (const i of MIXIN_KEY_ENC_TAB) mixin += raw[i] || ''
+        wbiMixinKey = mixin.slice(0, 32)
+        wbiKeyTime = Date.now()
+        return wbiMixinKey
+    } catch (e) {
+        return ''
+    }
+}
+// 对 params 应用 WBI 签名，返回带 wts/w_rid 的新参数对象
+async function wbiSignParams(cookies, params) {
+    const mixin = await getWbiMixinKey(cookies)
+    if (!mixin) return null
+    const wts = Math.round(Date.now() / 1000)
+    const merged = { ...params, wts }
+    const keys = Object.keys(merged).sort()
+    let query = ''
+    for (const k of keys) query += `${k}=${encodeURIComponent(merged[k])}&`
+    query = query.slice(0, -1)
+    const wRid = crypto.createHash('md5').update(query + mixin).digest('hex')
+    return { ...merged, w_rid: wRid }
+}
+
+
+// 稿件管理：已投稿列表
+// 创作中心接口 x/vu/web/archive/list 对部分账号返回 404/HTML（需 WBI 或风控），
+// 改用已验证可用的空间投稿接口 x/space/arc/search（mid=自己，返回自己的全部投稿）
+ipcMain.handle('bilibili:archives', async (_, { pn = 1, ps = 10 }) => {
+    const cookies = loadBiliCookie()
+    if (!cookies?.SESSDATA) return { success: false, message: '请先登录B站账号' }
+    const uid = cookies.DedeUserID
+    if (!uid) return { success: false, message: '登录信息缺少用户ID，请重新登录' }
+    try {
+        const r = await axios.get('https://api.bilibili.com/x/space/arc/search', {
+            params: { mid: uid, pn, ps: Math.min(ps, 30), order: 'pubdate' },
+            headers: {
+                'User-Agent': PARSE_UA,
+                'Referer': `https://space.bilibili.com/${uid}`,
+                'Cookie': biliCookieString(cookies)
+            },
+            timeout: 10000,
+            validateStatus: () => true
+        })
+        const body = r.data
+        if (typeof body !== 'object' || body?.code !== 0) {
+            return { success: false, message: (body && (body.message || body.msg)) || '获取稿件列表失败' }
+        }
+        const vlist = body.data?.list?.vlist || []
+        const archives = vlist.map(v => ({
+            aid: v.aid, bvid: v.bvid || '', title: v.title || '', cover: v.pic || '',
+            state: 0, pubtime: v.created || 0, play: v.play || 0, danmaku: v.video_review || 0
+        }))
+        return { success: true, archives, count: body.data?.page?.count || archives.length }
+    } catch (e) {
+        return { success: false, message: '请求失败：' + (e?.response?.data?.message || e.message) }
+    }
+})
+
 
 ipcMain.handle('video:parse-url', async (_, { url }) => {
     try {

@@ -62,3 +62,7 @@ BLOG*.md
 CHANGELOG.md
 kgapi*.md
 update_report.md
+
+# 构建缓存/工作区
+.eb-cache/
+.workbuddy/

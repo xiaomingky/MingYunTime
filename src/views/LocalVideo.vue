@@ -3,11 +3,11 @@
 // - 本地视频：通过文件对话框导入，扫描元数据
 // - 链接/直播流：用户添加 http(s)://...mp4/m3u8/flv 或直播流地址
 //   支持：mp4/webm 直链、HLS(m3u8)、FLV；直播流自动识别并标记 LIVE
-import { ref, computed, reactive, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
-import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube } from 'lucide-vue-next'
-import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout, youtubeLoginOpen, youtubeLoginClose, youtubeLoginStatus, youtubeLogout, onYoutubeLoginDone } from '../api'
+import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube, Copy, Send, MonitorPlay, ListFilter, ImagePlus, Bookmark, Square, CheckSquare } from 'lucide-vue-next'
+import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout, youtubeLoginOpen, youtubeLoginClose, youtubeLoginStatus, youtubeLogout, onYoutubeLoginDone, biliLiveRoom, biliLiveAreas, biliLiveStart, biliLiveUpdate, biliLiveStop, biliFavList, biliFavContent, biliFavSeason, biliArchives, downloadStart, onDownloadDone, onDownloadError, downloadDefaultDir } from '../api'
 import CustomSelect from '../components/CustomSelect.vue'
 
 const playerStore = usePlayerStore()
@@ -17,6 +17,24 @@ const localVideos = ref(JSON.parse(localStorage.getItem('local_videos') || '[]')
 
 // 链接/直播流列表
 const streams = ref(JSON.parse(localStorage.getItem('video_streams') || '[]'))
+
+// ===== 列表分页（本地视频、链接/直播流）=====
+const localPage = ref(1)
+const localPageSize = 24
+const streamsPage = ref(1)
+const streamsPageSize = 10
+const paginatedLocalVideos = computed(() => {
+    const start = (localPage.value - 1) * localPageSize
+    return localVideos.value.slice(start, start + localPageSize)
+})
+const localPageCount = computed(() => Math.max(1, Math.ceil(localVideos.value.length / localPageSize)))
+const paginatedStreams = computed(() => {
+    const start = (streamsPage.value - 1) * streamsPageSize
+    return streams.value.slice(start, start + streamsPageSize)
+})
+const streamsPageCount = computed(() => Math.max(1, Math.ceil(streams.value.length / streamsPageSize)))
+watch(localVideos, () => { if (localPage.value > localPageCount.value) localPage.value = localPageCount.value })
+watch(streams, () => { if (streamsPage.value > streamsPageCount.value) streamsPage.value = streamsPageCount.value })
 // 添加/编辑表单
 const showStreamForm = ref(false)
 const editingId = ref(null)
@@ -29,7 +47,7 @@ const streamTypes = [
     { value: 'live', label: '直播流（HLS/FLV）' }
 ]
 
-// 当前活动标签：local | streams | parse
+// 当前活动标签：local | streams | parse | biliLive
 const activeTab = ref('local')
 
 // ===== 网址解析 =====
@@ -130,6 +148,491 @@ async function logoutBili() {
     } catch (e) { messageStore.error('退出失败') }
 }
 
+// ===== B站直播开播（OBS 推流参数）=====
+// 状态：idle | ready | starting | live | stopping
+const biliLiveState = ref('idle')
+const liveRoomLoading = ref(false)
+const liveRoomInfo = ref(null)   // {roomId, shortId, liveStatus, title}
+const liveAreas = ref([])
+const liveAreaLoading = ref(false)
+const liveTitle = ref('')
+const liveAreaV2 = ref(null)
+// 上次使用的分区ID（来自直播间信息 area_v2），用于加载分区列表后自动选中
+const lastLiveArea = ref(null)
+// 推流平台：pc（电脑直播姬）| pc_link（直播间伴侣）
+const livePlatform = ref('pc')
+const livePlatformOptions = [
+    { value: 'pc', label: 'PC 电脑直播姬' },
+    { value: 'pc_link', label: 'pc_link 直播间伴侣' }
+]
+const liveStartLoading = ref(false)
+const liveStreamInfo = ref(null) // {fullUrl, serverAddr, streamCode, streamCodeNoQ, liveKey}
+const liveStopLoading = ref(false)
+// 直播封面：dataURI 字符串；仅供 startLive 开播时附带
+const liveCover = ref('')
+const coverInputRef = ref(null)
+// 封面预览比例切换：169（Web 端 16:9）| 43（移动端 4:3）
+const coverRatio = ref('169')
+const liveSaveLoading = ref(false)
+
+// 选择封面图片并读取为 dataURI（B站 startLive 的 cover 参数）
+// 不压缩、不限制大小：原图直传，由主进程官方接口链路上传
+function onCoverPick(e) {
+    const file = e.target.files && e.target.files[0]
+    e.target.value = ''
+    if (!file) return
+    if (!/^image\/(jpeg|png|jpg)$/i.test(file.type)) {
+        messageStore.warning('仅支持 JPG/PNG 格式封面图', 3000)
+        return
+    }
+    const reader = new FileReader()
+    reader.onload = () => { liveCover.value = reader.result }
+    reader.onerror = () => messageStore.error('读取封面图片失败')
+    reader.readAsDataURL(file)
+}
+
+function clearLiveCover() {
+    liveCover.value = ''
+}
+
+// ===== B站管理子 Tab（直播推流 / 收藏夹 / UP投稿）=====
+const biliSubTab = ref('live')
+function switchBiliSubTab(t) {
+    biliSubTab.value = t
+    if (t === 'favs') { if (!favList.value.length) loadFavList() }
+}
+
+
+// ---------- 收藏夹 ----------
+const favList = ref([])
+const favLoading = ref(false)
+const favOpen = ref(false)
+const favFolderTitle = ref('')
+const favMedias = ref([])
+const favPage = ref(1)
+const favTotal = ref(0)
+const favHasMore = ref(false)
+const favSelected = ref(new Set())
+const favLoadingContent = ref(false)
+const favTotalPages = computed(() => Math.max(1, Math.ceil(favTotal.value / 20)))
+async function loadFavList() {
+    favLoading.value = true
+    try {
+        const res = await biliFavList()
+        if (res?.success) favList.value = res.list || []
+        else messageStore.warning(res?.message || '获取收藏夹失败', 3000)
+    } catch (e) { messageStore.error('获取收藏夹失败') }
+    finally { favLoading.value = false }
+}
+async function openFav(f) {
+    favOpen.value = true
+    favFolderTitle.value = f.title
+    favPage.value = 1
+    favMedias.value = []
+    favTotal.value = 0
+    favSelected.value = new Set()
+    await loadFavContent(1)
+}
+function closeFav() {
+    favOpen.value = false
+    favFolderTitle.value = ''
+    favMedias.value = []
+    favTotal.value = 0
+    favSelected.value = new Set()
+}
+async function loadFavContent(pn) {
+    favLoadingContent.value = true
+    try {
+        const cur = favList.value.find(x => x.title === favFolderTitle.value)
+        if (!cur) return
+        const res = await biliFavContent({ fid: cur.id, pn, ps: 20 })
+        if (res?.success) {
+            favMedias.value = res.medias || []
+            favHasMore.value = !!res.hasMore
+            favTotal.value = res.total || 0
+            favPage.value = pn
+        } else {
+            messageStore.warning(res?.message || '获取收藏内容失败', 3000)
+        }
+    } catch (e) { messageStore.error('获取收藏内容失败') }
+    finally { favLoadingContent.value = false }
+}
+function toggleFavSel(id) {
+    const s = new Set(favSelected.value)
+    if (s.has(id)) s.delete(id); else s.add(id)
+    favSelected.value = s
+}
+const favAllChecked = computed(() => favMedias.value.length > 0 && favSelected.value.size === favMedias.value.filter(m => m.downloadable).length)
+function toggleFavAll() {
+    if (favAllChecked.value) favSelected.value = new Set()
+    else favSelected.value = new Set(favMedias.value.filter(m => m.downloadable).map(m => m.id))
+}
+// 复制收藏项分享链接（带 bvid 用标准分享格式；无 bvid 用原始链接），可粘贴到「网址解析」
+function copyBiliShare(m) {
+    const url = m.bvid
+        ? `https://www.bilibili.com/video/${m.bvid}/?share_source=copy_web&vd_source=`
+        : (m.link || '')
+    if (!url) { messageStore.warning('该收藏项无分享链接', 2000); return }
+    copyToClipboard(url, '分享链接')
+}
+
+// ---------- 收藏夹：合集/番剧展开 ----------
+// 合集(type21)展开为普通视频；番剧/影视(type4)走 pgc 集数接口；
+// 普通视频(type2)点"查合集"走 ugc_season 查询（收藏的可能是合集下的单条视频）
+const seasonExpanded = ref(new Set())
+const seasonData = ref({})
+async function toggleSeason(m) {
+    const id = m.id
+    const s = new Set(seasonExpanded.value)
+    if (s.has(id)) { s.delete(id); seasonExpanded.value = s; return }
+    s.add(id)
+    seasonExpanded.value = s
+    if (!seasonData.value[id]) {
+        seasonData.value = { ...seasonData.value, [id]: { title: m.title, archives: [], loading: true, error: '' } }
+        try {
+            const res = await biliFavSeason({
+                mid: m.upperMid,
+                seasonId: m.seasonId || 0,
+                bvid: m.bvid || '',
+                epId: m.epId || 0,
+                pn: 1, ps: 30,
+                isPgc: m.type === 4 || m.isBangumi
+            })
+            if (res?.success) {
+                seasonData.value = { ...seasonData.value, [id]: { title: res.seasonTitle || m.title, archives: res.archives || [], loading: false, error: '' } }
+            } else {
+                seasonData.value = { ...seasonData.value, [id]: { title: m.title, archives: [], loading: false, error: res?.message || '加载失败' } }
+            }
+        } catch (e) {
+            seasonData.value = { ...seasonData.value, [id]: { title: m.title, archives: [], loading: false, error: '加载失败' } }
+        }
+    }
+}
+async function downloadSeasonBatch(seasonId) {
+    const data = seasonData.value[seasonId]
+    if (!data || !data.archives.length) return
+    if (!await messageStore.confirm(`将串行下载本合集 ${data.archives.length} 个视频到下载专区（完成一个再下下一个），确定？`, '批量下载合集')) return
+    batchDownloading.value = true
+    batchTotal.value = data.archives.length
+    batchDone.value = 0
+    batchFail.value = 0
+    for (const v of data.archives) {
+        batchCurrentName.value = v.title
+        try {
+            const ok = await downloadOne('https://www.bilibili.com/video/' + v.bvid, v.title)
+            if (ok) batchDone.value++; else batchFail.value++
+        } catch (e) { batchFail.value++ }
+    }
+    batchDownloading.value = false
+    batchCurrentName.value = ''
+    messageStore.success(`合集下载完成：成功 ${batchDone.value} 个，失败 ${batchFail.value} 个`, 4000)
+}
+
+// ---------- 批量下载（串行：第一个完成后再下第二个） ----------
+// 下载目录：设置页"下载专区"配置（localStorage: video_download_dir），为空时自动用系统下载区
+const getVideoDownloadDir = () => (localStorage.getItem('video_download_dir') || '').replace(/[\\/]+$/, '')
+async function resolveVideoDownloadDir() {
+    const saved = getVideoDownloadDir()
+    if (saved) return saved
+    try {
+        const d = await downloadDefaultDir()
+        if (d?.success && d.dir) return d.dir.replace(/[\\/]+$/, '')
+    } catch (e) {}
+    return ''
+}
+const batchDownloading = ref(false)
+const batchTotal = ref(0)
+const batchDone = ref(0)
+const batchFail = ref(0)
+const batchCurrentName = ref('')
+function waitDownloadDone(id) {
+    return new Promise((resolve) => {
+        let settled = false
+        const finish = (ok) => {
+            if (settled) return
+            settled = true
+            try { offD() } catch (e) {}
+            try { offE() } catch (e) {}
+            resolve(ok)
+        }
+        const offD = onDownloadDone((d) => { if (d && d.id === id) finish(true) })
+        const offE = onDownloadError((d) => { if (d && d.id === id) finish(false) })
+        setTimeout(() => finish(false), 30 * 60 * 1000)
+    })
+}
+async function downloadOne(input, title, tag) {
+    let s
+    if (typeof input === 'string') {
+        const res = await parseVideoUrl(input)
+        if (!res?.success || !res.streams?.length) throw new Error((tag ? tag + '：' : '') + (res?.message || '解析失败，无可用视频流'))
+        s = res.streams[0]
+    } else {
+        s = input
+    }
+    const safe = String(title || 'video').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'video'
+    const baseDir = await resolveVideoDownloadDir()
+    const filePath = baseDir ? `${baseDir}\\${safe}\\${safe}.mp4` : ''
+    const params = {
+        url: s.url,
+        name: safe,
+        category: 'video',
+        type: s.type === 'm3u8' ? 'm3u8' : undefined,
+        audioUrl: s.audioUrl || '',
+        ytSrc: s.ytSrc || '',
+        ytHeight: s.ytHeight || 0,
+        askPath: false,
+        savePath: filePath || undefined
+    }
+    const r = await downloadStart(params)
+    if (!r?.success) throw new Error((tag ? tag + '：' : '') + (r?.error || '启动下载失败'))
+    return await waitDownloadDone(r.downloadId)
+}
+async function downloadBiliVideo(url, title) {
+    if (batchDownloading.value) { messageStore.info('批量下载进行中，请稍候', 2500); return }
+    try {
+        await downloadOne(url, title)
+        messageStore.success('下载完成：' + title, 3000)
+    } catch (e) {
+        messageStore.error('下载失败：' + (e.message || e), 4000)
+    }
+}
+async function downloadFavBatch() {
+    const items = favMedias.value.filter(m => favSelected.value.has(m.id))
+    if (!items.length) { messageStore.warning('请先勾选要下载的视频', 2500); return }
+    if (!await messageStore.confirm(`将串行下载 ${items.length} 个视频到下载专区（完成一个再下下一个），确定？`, '批量下载')) return
+    batchDownloading.value = true
+    batchTotal.value = items.length
+    batchDone.value = 0
+    batchFail.value = 0
+    for (const m of items) {
+        batchCurrentName.value = m.title
+        try {
+            const ok = await downloadOne('https://www.bilibili.com/video/' + m.bvid, m.title)
+            if (ok) batchDone.value++; else batchFail.value++
+        } catch (e) { batchFail.value++ }
+    }
+    batchDownloading.value = false
+    batchCurrentName.value = ''
+    messageStore.success(`批量下载完成：成功 ${batchDone.value} 个，失败 ${batchFail.value} 个`, 4000)
+}
+
+// ===== 网址解析结果：多选批量下载（串行）=====
+const parseSel = ref(new Set())
+const parseAllChecked = computed(() => parseResults.value.length > 0 && parseSel.value.size === parseResults.value.length)
+function toggleParseSel(url) {
+    const s = new Set(parseSel.value)
+    if (s.has(url)) s.delete(url); else s.add(url)
+    parseSel.value = s
+}
+function toggleParseAll() {
+    if (parseAllChecked.value) parseSel.value = new Set()
+    else parseSel.value = new Set(parseResults.value.map(x => x.url))
+}
+async function downloadParseBatch() {
+    const items = parseResults.value.filter(x => parseSel.value.has(x.url))
+    if (!items.length) { messageStore.warning('请先勾选要下载的视频流', 2500); return }
+    if (!await messageStore.confirm(`将串行下载 ${items.length} 个视频流到下载专区（完成一个再下下一个），确定？`, '批量下载')) return
+    batchDownloading.value = true
+    batchTotal.value = items.length
+    batchDone.value = 0
+    batchFail.value = 0
+    for (const s of items) {
+        batchCurrentName.value = s.title || parsePageTitle.value || '视频流'
+        try {
+            const ok = await downloadOne(s, batchCurrentName.value, '下载')
+            if (ok) batchDone.value++; else batchFail.value++
+        } catch (e) { batchFail.value++ }
+    }
+    batchDownloading.value = false
+    batchCurrentName.value = ''
+    messageStore.success(`批量下载完成：成功 ${batchDone.value} 个，失败 ${batchFail.value} 个`, 4000)
+}
+
+// 数字/时长格式化（空间数据、收藏夹展示）
+function fmtNum(n) {    if (n === null || n === undefined) return '-'
+    if (n >= 100000000) return (n / 100000000).toFixed(1) + '亿'
+    if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+    return String(n)
+}
+function fmtDuration(s) {
+    if (!s) return ''
+    s = Math.floor(s)
+    const h = Math.floor(s / 3600)
+    const m = Math.floor((s % 3600) / 60)
+    const sec = s % 60
+    return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(sec).padStart(2, '0')
+}
+function formatPubTime(ts) {
+    if (!ts) return ''
+    const d = new Date(ts * 1000)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// 父分区分组（供 CustomSelect 分组渲染）
+const liveAreaOptions = computed(() => {
+    const groups = {}
+    for (const a of liveAreas.value) {
+        if (!groups[a.parentName]) groups[a.parentName] = []
+        groups[a.parentName].push({ value: a.id, label: a.name })
+    }
+    return Object.entries(groups).map(([name, children]) => ({ group: name, children }))
+})
+
+async function loadBiliLiveRooms() {
+    if (!biliLoggedIn.value) return
+    liveRoomLoading.value = true
+    try {
+        const res = await biliLiveRoom()
+        if (res?.success) {
+            liveRoomInfo.value = res
+            if (res.title) liveTitle.value = res.title
+            // 读取之前设置的直播封面（仅当用户尚未新选封面时才覆盖，避免覆盖正在选择的图）
+            if (!liveCover.value && res.cover) liveCover.value = res.cover
+            // 记住上次使用的分区ID，加载分区列表后自动选中
+            if (res.areaV2) lastLiveArea.value = res.areaV2
+            if (res.liveStatus === 1) biliLiveState.value = 'live'
+            else biliLiveState.value = 'ready'
+            if (liveAreas.value.length === 0) loadBiliLiveAreas()
+        } else {
+            liveRoomInfo.value = null
+            biliLiveState.value = 'idle'
+            if (res?.notOpen) messageStore.warning('尚未开通直播间，请先在B站直播中心开通', 4000)
+            else if (res?.message) messageStore.warning(res.message, 4000)
+        }
+    } catch (e) {
+        biliLiveState.value = 'idle'
+        messageStore.error('获取直播间信息失败')
+    } finally {
+        liveRoomLoading.value = false
+    }
+}
+
+async function loadBiliLiveAreas() {
+    if (liveAreas.value.length > 0) return
+    liveAreaLoading.value = true
+    try {
+        const res = await biliLiveAreas()
+        if (res?.success) {
+            liveAreas.value = res.areas || []
+            // 优先选中上次使用的分区（若存在），否则默认选“视频”/“聊天”
+            const remembered = lastLiveArea.value && liveAreas.value.find(a => a.id === lastLiveArea.value)
+            if (remembered) {
+                liveAreaV2.value = remembered.id
+            } else {
+                const first = liveAreas.value.find(a => a.name === '视频' || a.name === '聊天')
+                if (first) liveAreaV2.value = first.id
+            }
+        } else {
+            messageStore.warning(res?.message || '获取分区列表失败', 3000)
+        }
+    } catch (e) {
+        messageStore.error('获取分区列表失败')
+    } finally {
+        liveAreaLoading.value = false
+    }
+}
+
+async function saveBiliLiveInfo() {
+    if (!liveRoomInfo.value?.roomId) return
+    if (!liveAreaV2.value) { messageStore.warning('请选择直播分区', 3000); return }
+    liveSaveLoading.value = true
+    try {
+        const res = await biliLiveUpdate({
+            roomId: liveRoomInfo.value.roomId,
+            title: liveTitle.value,
+            areaV2: liveAreaV2.value,
+            cover: liveCover.value || undefined
+        })
+        if (res?.success) {
+            messageStore.success('直播间信息已保存', 2500)
+        } else {
+            messageStore.error(res?.message || '保存直播间信息失败', 4000)
+        }
+    } catch (e) {
+        messageStore.error('保存失败：' + (e.message || '网络错误'))
+    } finally {
+        liveSaveLoading.value = false
+    }
+}
+
+async function startBiliLive() {
+    if (!liveRoomInfo.value?.roomId) return
+    if (!liveAreaV2.value) { messageStore.warning('请选择直播分区', 3000); return }
+    // 明确告知：生成推流参数 = 立即开播，黑屏转圈属正常（需 OBS 推流才有画面）
+    if (!await messageStore.confirm('生成推流参数会立即开播直播间（B站将显示"直播中"，黑屏转圈属正常）。\n请先准备好 OBS：确定继续开播？', '开播确认')) return
+    liveStartLoading.value = true
+    try {
+        const res = await biliLiveStart({
+            roomId: liveRoomInfo.value.roomId,
+            areaV2: liveAreaV2.value,
+            title: liveTitle.value,
+            platform: livePlatform.value,
+            cover: liveCover.value || undefined
+        })
+        if (res?.success) {
+            liveStreamInfo.value = res
+            // 记录实际生效的平台，供关播时保持一致
+            if (res.platform) livePlatform.value = res.platform
+            biliLiveState.value = 'live'
+            if (res.coverErr) {
+                messageStore.warning(`已开播！将服务器地址/串流密钥填入 OBS 开始推流（黑屏正常，推流后即有画面）。标题/封面设置失败：${res.coverErr}`, 6000)
+            } else {
+                messageStore.success(`已开播！请将服务器地址/串流密钥复制到 OBS（黑屏正常，推流后即有画面）。平台：${livePlatform.value}`, 5000)
+            }
+        } else {
+            // 平台要求认证时正常提示，不绕过
+            if (res?.code === 60024) {
+                messageStore.error('该分区开播需要人脸认证，请到B站直播中心完成认证后重试', 5000)
+            } else {
+                messageStore.error(res?.message || '开播失败', 4000)
+            }
+        }
+    } catch (e) {
+        messageStore.error('开播失败：' + (e.message || '网络错误'))
+    } finally {
+        liveStartLoading.value = false
+    }
+}
+
+async function stopBiliLive() {
+    if (!liveRoomInfo.value?.roomId) return
+    liveStopLoading.value = true
+    try {
+        const res = await biliLiveStop({ roomId: liveRoomInfo.value.roomId, platform: livePlatform.value })
+        if (res?.success) {
+            liveStreamInfo.value = null
+            biliLiveState.value = 'ready'
+            messageStore.success('已停止直播')
+        } else {
+            messageStore.error(res?.message || '停止直播失败')
+        }
+    } catch (e) {
+        messageStore.error('停止直播失败')
+    } finally {
+        liveStopLoading.value = false
+    }
+}
+
+// 复制文本到剪贴板
+async function copyToClipboard(text, label) {
+    try {
+        await navigator.clipboard.writeText(text)
+        messageStore.success(`${label} 已复制`, 2000)
+    } catch (e) {
+        try {
+            const ta = document.createElement('textarea')
+            ta.value = text
+            document.body.appendChild(ta)
+            ta.select()
+            document.execCommand('copy')
+            document.body.removeChild(ta)
+            messageStore.success(`${label} 已复制`, 2000)
+        } catch (e2) {
+            messageStore.error('复制失败')
+        }
+    }
+}
+
 // 头像加载失败时清空 face，回退到 User 图标
 function onAvatarError() {
     if (biliUserInfo.value) biliUserInfo.value = { ...biliUserInfo.value, face: '' }
@@ -225,8 +728,23 @@ loadBiliStatus()
 loadYtStatus()
 setupYtLoginDoneListener()
 
+// 切换到 B站推流 Tab 时自动加载直播间信息
+watch(activeTab, (tab) => {
+    if (tab === 'biliLive') {
+        if (biliLoggedIn.value) loadBiliLiveRooms()
+        else messageStore.info('请先登录B站账号', 2500)
+    }
+})
+
+// 从粘贴文本中提取第一个链接（支持 B站分享文案如「【标题】 https://...」直接粘贴，无需手动删文字）
+function extractVideoUrl(text) {
+    const t = String(text || '').trim()
+    const m = t.match(/https?:\/\/[^\s"'<>，。！？、]+/i)
+    return m ? m[0].replace(/[，。！？、]+$/, '') : t
+}
+
 const handleParseUrl = async () => {
-    const url = parseInput.value.trim()
+    const url = extractVideoUrl(parseInput.value)
     if (!url) {
         messageStore.warning('请输入网页地址')
         return
@@ -419,7 +937,16 @@ const downloadParsedStream = async (s) => {
             params.ytSrc = s.ytSrc
             if (s.ytHeight) params.ytHeight = s.ytHeight
         }
-        const result = await downloadVideo(params)
+        const result = await (async () => {
+            // 优先使用"下载专区"目录：存到 下载区/标题/标题.mp4（文件夹区分，不弹窗）
+            const baseDir = await resolveVideoDownloadDir()
+            if (baseDir) {
+                const safe = String(name).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'video'
+                return downloadStart({ ...params, askPath: false, savePath: `${baseDir}\\${safe}\\${safe}.mp4` })
+            }
+            // 拿不到目录时：走旧逻辑弹窗选择
+            return downloadVideo(params)
+        })()
         if (result?.success) {
             messageStore.success(`已开始下载：${name}（进度见下载专区）`, 3000)
         } else if (!result?.canceled) {
@@ -620,7 +1147,7 @@ const playStream = async (s) => {
     playerStore.currentMvUrl = s.url
     playerStore.currentMvId = null
     playerStore.currentMvTitle = s.name + (isStreamLive(s) ? ' [LIVE]' : '')
-    playerStore.currentMvAudioUrl = ''
+    playerStore.currentMvAudioUrl = s.audioUrl || ''
     // 设置播放类型提示，解决直播流无 .m3u8/.flv 后缀时播放失败
     playerStore.currentMvPlayType = playTypeForBili(s)
     playerStore.showMvPlayer = true
@@ -790,6 +1317,9 @@ const typeLabel = (s) => {
             <button class="tab-btn" :class="{ active: activeTab === 'parse' }" @click="activeTab = 'parse'">
                 <Globe :size="14" /> 网址解析
             </button>
+            <button class="tab-btn" :class="{ active: activeTab === 'biliLive' }" @click="activeTab = 'biliLive'">
+                <MonitorPlay :size="14" /> B站管理
+            </button>
         </div>
       </div>
       <div class="actions">
@@ -848,7 +1378,7 @@ const typeLabel = (s) => {
     <div v-if="activeTab === 'local'">
         <div class="video-grid" v-if="localVideos.length > 0">
             <div
-                v-for="video in localVideos"
+                v-for="video in paginatedLocalVideos"
                 :key="video.path"
                 class="video-card"
                 :class="{ selecting: batchDeleteMode, selected: selectedDelete.has(video.path) }"
@@ -875,7 +1405,21 @@ const typeLabel = (s) => {
             </div>
         </div>
 
-        <div v-else class="empty-state">
+        <div v-if="localPageCount > 1" class="pagination">
+            <button @click="localPage = 1" :disabled="localPage === 1">首页</button>
+            <button @click="localPage--" :disabled="localPage === 1">上一页</button>
+            <span
+                v-for="i in localPageCount"
+                :key="i"
+                class="page-num"
+                :class="{ active: i === localPage }"
+                @click="localPage = i"
+            >{{ i }}</span>
+            <button @click="localPage++" :disabled="localPage === localPageCount">下一页</button>
+            <button @click="localPage = localPageCount" :disabled="localPage === localPageCount">尾页</button>
+        </div>
+
+        <div v-else-if="localVideos.length === 0" class="empty-state">
             <Film :size="48" />
             <p>还没有添加本地视频</p>
             <button class="import-link" @click="importFiles">立即添加</button>
@@ -892,7 +1436,7 @@ const typeLabel = (s) => {
         </div>
 
         <div v-else class="streams-list">
-            <div v-for="s in streams" :key="s.id" class="stream-card">
+            <div v-for="s in paginatedStreams" :key="s.id" class="stream-card">
                 <div class="stream-icon-wrap" @click="playStream(s)">
                     <Radio v-if="isStreamLive(s)" :size="24" class="stream-icon live" />
                     <Link2 v-else :size="24" class="stream-icon" />
@@ -920,6 +1464,20 @@ const typeLabel = (s) => {
                 </div>
             </div>
         </div>
+
+        <div v-if="streamsPageCount > 1" class="pagination">
+            <button @click="streamsPage = 1" :disabled="streamsPage === 1">首页</button>
+            <button @click="streamsPage--" :disabled="streamsPage === 1">上一页</button>
+            <span
+                v-for="i in streamsPageCount"
+                :key="i"
+                class="page-num"
+                :class="{ active: i === streamsPage }"
+                @click="streamsPage = i"
+            >{{ i }}</span>
+            <button @click="streamsPage++" :disabled="streamsPage === streamsPageCount">下一页</button>
+            <button @click="streamsPage = streamsPageCount" :disabled="streamsPage === streamsPageCount">尾页</button>
+        </div>
     </div>
 
     <!-- 网址解析 -->
@@ -946,12 +1504,27 @@ const typeLabel = (s) => {
 
         <div v-if="parseResults.length > 0" class="parse-results">
             <div class="parse-results-title">
-                共解析到 {{ parseResults.length }} 个视频流{{ parsePageTitle ? ` · ${parsePageTitle}` : '' }}
+                <span>共解析到 {{ parseResults.length }} 个视频流{{ parsePageTitle ? ` · ${parsePageTitle}` : '' }}</span>
+                <span class="parse-batch-actions">
+                    <label class="parse-check-all"><input type="checkbox" :checked="parseAllChecked" @change="toggleParseAll" /> 全选</label>
+                    <button class="live-start-btn small" :disabled="!parseSel.size || batchDownloading" @click="downloadParseBatch">
+                        <Download :size="13" /> 批量下载{{ parseSel.size ? `（${parseSel.size}）` : '' }}
+                    </button>
+                </span>
+            </div>
+            <div v-if="batchDownloading" class="batch-progress">
+                <Clock :size="13" class="spin" />
+                批量下载 {{ batchDone + batchFail }}/{{ batchTotal }} · 当前：{{ batchCurrentName }}
             </div>
             <template v-for="(g, gi) in parseGroups" :key="gi">
                 <div v-if="gi > 0" class="parse-group-divider"></div>
                 <transition-group name="fold" tag="div" class="parse-group-wrap">
                     <div v-for="(s, i) in (parseGroupOpen[g.key] ? g.list : g.list.slice(0, 1))" :key="s.url" class="parse-result-card" :class="{ 'parse-group-sub': i > 0 }">
+                        <label class="parse-check" @click.stop>
+                            <input type="checkbox" class="visually-hidden" :checked="parseSel.has(s.url)" @change="toggleParseSel(s.url)" />
+                            <CheckSquare v-if="parseSel.has(s.url)" :size="16" class="check-icon active" />
+                            <Square v-else :size="16" class="check-icon" />
+                        </label>
                         <div class="parse-result-index" @click="playParsedStream(s)">{{ i + 1 }}</div>
                         <div class="parse-result-info" @click="playParsedStream(s)">
                             <div class="parse-result-name">
@@ -972,6 +1545,281 @@ const typeLabel = (s) => {
                 </transition-group>
                 <div v-if="g.list.length > 1" class="parse-more-toggle" @click="parseGroupOpen[g.key] = !parseGroupOpen[g.key]">
                     {{ parseGroupOpen[g.key] ? '收起画质' : `该视频还有其他画质（${g.list.length - 1}）` }}
+                </div>
+            </template>
+        </div>
+    </div>
+
+<!-- B站管理（直播推流 / 稿件管理 / 空间管理 / 收藏夹） -->
+    <div v-else-if="activeTab === 'biliLive'" class="bili-manage-section">
+        <!-- 子 Tab 导航 -->
+        <div class="bili-sub-tabs">
+            <button :class="{ active: biliSubTab === 'live' }" @click="biliSubTab = 'live'"><Radio :size="13" /> 直播推流</button>
+            <button :class="{ active: biliSubTab === 'favs' }" @click="switchBiliSubTab('favs')"><Bookmark :size="13" /> 收藏夹</button>
+        </div>
+
+        <!-- 直播推流 -->
+        <div v-if="biliSubTab === 'live'" class="bili-live-section">
+        <div v-if="!biliLoggedIn" class="empty-state">
+            <MonitorPlay :size="48" />
+            <p>请先登录B站账号后才能获取推流参数</p>
+            <button class="import-link" @click="openBiliLogin">立即扫码登录</button>
+        </div>
+
+        <div v-else-if="liveRoomLoading" class="empty-state">
+            <Clock :size="48" class="spin" />
+            <p>正在获取直播间信息...</p>
+        </div>
+
+        <!-- 未开通直播间 -->
+        <div v-else-if="biliLiveState === 'idle'" class="empty-state">
+            <MonitorPlay :size="48" />
+            <p>未能获取到直播间信息</p>
+            <p class="empty-hint">请确认已在B站直播中心开通直播间，并检查是否正确登录</p>
+            <button class="import-link" @click="loadBiliLiveRooms">重新检测</button>
+        </div>
+
+        <template v-else>
+            <!-- 步骤一：直播间信息 -->
+            <div class="live-step">
+                <div class="live-step-head">
+                    <span class="live-step-num">1</span>
+                    <h3>直播间信息</h3>
+                    <span v-if="liveRoomInfo" class="live-room-id">房间号：{{ liveRoomInfo.roomId }}<template v-if="liveRoomInfo.shortId && liveRoomInfo.shortId !== liveRoomInfo.roomId">（短号 {{ liveRoomInfo.shortId }}）</template></span>
+                    <button class="refetch-btn" @click="loadBiliLiveRooms" :disabled="liveRoomLoading">
+                        <RefreshCw :size="13" :class="{ spin: liveRoomLoading }" /> 刷新
+                    </button>
+                    <button class="refetch-btn save" :disabled="liveSaveLoading" @click="saveBiliLiveInfo">
+                        <Check v-if="!liveSaveLoading" :size="13" />
+                        <Clock v-else :size="13" class="spin" />
+                        {{ liveSaveLoading ? '保存中...' : '保存信息' }}
+                    </button>
+                </div>
+                <div class="live-form-grid">
+                    <div class="live-form-row">
+                        <label>直播标题</label>
+                        <input type="text" v-model="liveTitle" class="live-input" placeholder="输入吸引观众的直播标题" />
+                    </div>
+                    <div class="live-form-row">
+                        <label>直播分区 <span v-if="liveAreaLoading" class="loading-text">（加载中...）</span></label>
+                        <CustomSelect
+                            v-model="liveAreaV2"
+                            :options="liveAreaOptions"
+                            :disabled="liveAreaLoading"
+                            placeholder="选择分区"
+                        />
+                    </div>
+                    <div class="live-form-row">
+                        <label>推流平台</label>
+                        <CustomSelect
+                            v-model="livePlatform"
+                            :options="livePlatformOptions"
+                            placeholder="选择平台"
+                        />
+                    </div>
+                    <div class="live-form-row live-cover-row">
+                        <label>直播封面 <span class="loading-text">（可选，JPG/PNG）</span></label>
+                        <div class="live-cover-box" @click="coverInputRef && coverInputRef.click()">
+                            <template v-if="liveCover">
+                                <Check :size="18" />
+                                <span>已选择封面，点击更换</span>
+                                <button class="live-cover-clear" @click.stop="clearLiveCover" title="移除封面">
+                                    <X :size="14" />
+                                </button>
+                            </template>
+                            <template v-else>
+                                <ImagePlus :size="22" />
+                                <span>点击选择封面图</span>
+                            </template>
+                            <input
+                                ref="coverInputRef"
+                                type="file"
+                                accept="image/jpeg,image/png,image/jpg"
+                                class="live-cover-input"
+                                @change="onCoverPick"
+                            />
+                        </div>
+                        <!-- 封面预览：比例切换（Web 16:9 / 移动 4:3） -->
+                        <template v-if="liveCover">
+                            <div class="cover-preview-box">
+                                <div class="cover-preview-bar">
+                                    <span class="cover-preview-title">封面预览</span>
+                                    <div class="cover-ratio-switch">
+                                        <button :class="{ active: coverRatio === '169' }" @click="coverRatio = '169'">Web 16:9</button>
+                                        <button :class="{ active: coverRatio === '43' }" @click="coverRatio = '43'">移动 4:3</button>
+                                    </div>
+                                </div>
+                                <div class="cover-frame" :class="coverRatio === '169' ? 'cover-frame-169' : 'cover-frame-43'">
+                                    <img :src="liveCover" :alt="coverRatio === '169' ? 'Web端预览' : '移动端预览'" />
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 步骤二：生成推流参数 -->
+            <div class="live-step">
+                <div class="live-step-head">
+                    <span class="live-step-num">2</span>
+                    <h3>生成推流参数</h3>
+                </div>
+                <p class="live-step-desc">点击按钮获取 B站分配的推流服务器地址和串流密钥，用于配置 OBS</p>
+                <div class="live-start-actions">
+                    <button v-if="biliLiveState !== 'live'" class="live-start-btn" :disabled="liveStartLoading" @click="startBiliLive">
+                        <Send v-if="!liveStartLoading" :size="15" />
+                        <Clock v-else :size="15" class="spin" />
+                        {{ liveStartLoading ? '生成中...' : '生成推流参数' }}
+                    </button>
+                    <button v-else class="live-stop-btn" :disabled="liveStopLoading" @click="stopBiliLive">
+                        <X :size="15" />
+                        {{ liveStopLoading ? '停止中...' : '停止直播' }}
+                    </button>
+                </div>
+            </div>
+
+            <!-- 步骤三：推流参数结果 -->
+            <div v-if="liveStreamInfo" class="live-stream-result">
+                <div class="live-step-head">
+                    <span class="live-step-num">3</span>
+                    <h3>复制推流信息（配置 OBS）</h3>
+                </div>
+
+                <!-- OBS 推荐填法 -->
+                <div class="obs-box">
+                    <div class="obs-box-title">OBS 直播设置推荐填法</div>
+                    <div class="obs-row">
+                        <label>服务器地址</label>
+                        <button class="obs-copy-btn" @click="copyToClipboard(liveStreamInfo.serverAddr, '服务器地址')">
+                            <Copy :size="13" /> 复制
+                        </button>
+                    </div>
+                    <div class="obs-value" :title="liveStreamInfo.serverAddr">{{ liveStreamInfo.serverAddr }}</div>
+                    <div class="obs-row">
+                        <label>串流密钥 <span class="obs-key-hint">（含前导 ?，必填）</span></label>
+                        <button class="obs-copy-btn" @click="copyToClipboard(liveStreamInfo.streamCode, '串流密钥')">
+                            <Copy :size="13" /> 复制
+                        </button>
+                    </div>
+                    <div class="obs-value" :title="liveStreamInfo.streamCode">{{ liveStreamInfo.streamCode }}</div>
+                </div>
+
+                <!-- 完整推流 URL（FFmpeg / 其他推流工具） -->
+                <div class="full-url-box">
+                    <div class="obs-row">
+                        <label>完整推流地址（FFmpeg / 兼容工具）</label>
+                        <button class="obs-copy-btn" @click="copyToClipboard(liveStreamInfo.fullUrl, '完整推流地址')">
+                            <Copy :size="13" /> 复制完整地址
+                        </button>
+                    </div>
+                    <div class="obs-value long" :title="liveStreamInfo.fullUrl">{{ liveStreamInfo.fullUrl }}</div>
+                </div>
+
+                <div class="live-tips">
+                    <p>· 推流地址有效期很短，请「先复制参数→马上填 OBS→立即推流」，超时会被 B站作废导致重连</p>
+                    <p>· OBS：设置 → 直播 → 服务器填「服务器地址」，串流密钥填「串流密钥」</p>
+                    <p>· 串流密钥必须带前导「?」（OBS 会拼成完整推流地址，去掉 ? 会导致发布路径错误而重连）</p>
+                    <p>· 若连接成功但立刻断开重连：多为地址过期，请重新「生成推流参数」；同时关闭代理/VPN（可能干扰 RTMP）</p>
+                    <p>· 若提示需要人脸认证，请先在B站直播中心完成认证后再开播</p>
+                </div>
+            </div>
+        </template>
+        </div>
+
+        <!-- 收藏夹 -->
+        <div v-else-if="biliSubTab === 'favs'" class="bili-sub-page">
+            <div v-if="!biliLoggedIn" class="empty-state">
+                <Bookmark :size="48" /><p>请先登录B站账号</p>
+                <button class="import-link" @click="openBiliLogin">立即扫码登录</button>
+            </div>
+            <div v-else-if="favLoading" class="empty-state"><Clock :size="48" class="spin" /><p>正在加载收藏夹...</p></div>
+
+            <!-- 收藏夹列表 -->
+            <template v-else-if="!favOpen">
+                <div class="bili-list-head">
+                    <span>我的收藏夹</span>
+                    <button class="refetch-btn" @click="loadFavList()"><RefreshCw :size="13" /> 刷新</button>
+                </div>
+                <div v-if="!favList.length" class="bili-sub-empty">暂无收藏夹</div>
+                <div class="bili-item-list">
+                    <div v-for="f in favList" :key="f.id" class="bili-item clickable" @click="openFav(f)">
+                        <img class="bili-item-cover" :src="f.cover" alt="" referrerpolicy="no-referrer" @error="f.cover = ''" />
+                        <div class="bili-item-info">
+                            <div class="bili-item-title" :title="f.title">{{ f.title }}</div>
+                            <div class="bili-item-meta">{{ f.mediaCount }} 个内容</div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+
+            <!-- 收藏夹内容（可勾选批量下载） -->
+            <template v-else>
+                <div class="bili-list-head">
+                    <button class="back-btn" @click="closeFav"><X :size="13" /> 返回</button>
+                    <span class="bili-folder-title">{{ favFolderTitle }}</span>
+                    <div class="bili-batch-actions">
+                        <button class="refetch-btn" @click="toggleFavAll">{{ favAllChecked ? '取消全选' : '全选' }}</button>
+                        <button class="live-start-btn small" :disabled="!favSelected.size || batchDownloading" @click="downloadFavBatch">
+                            <Download :size="13" />
+                            {{ batchDownloading ? '下载中...' : `批量下载${favSelected.size ? `（${favSelected.size}）` : ''}` }}
+                        </button>
+                    </div>
+                </div>
+                <div v-if="batchDownloading" class="batch-progress">
+                    <Clock :size="13" class="spin" />
+                    批量下载 {{ batchDone + batchFail }}/{{ batchTotal }} · 当前：{{ batchCurrentName }}
+                </div>
+                <div v-if="favLoadingContent" class="empty-state mini"><Clock :size="32" class="spin" /><p>加载中...</p></div>
+                <div class="bili-item-list">
+                    <div v-for="m in favMedias" :key="m.id" class="bili-item">
+                        <label class="bili-check" @click.stop>
+                            <input type="checkbox" class="visually-hidden" :disabled="!m.downloadable" :checked="favSelected.has(m.id)" @change="toggleFavSel(m.id)" />
+                            <CheckSquare v-if="favSelected.has(m.id)" :size="16" class="check-icon active" />
+                            <Square v-else :size="16" class="check-icon" />
+                        </label>
+                        <img class="bili-item-cover" :src="m.cover" alt="" referrerpolicy="no-referrer" @error="m.cover = ''" />
+                        <div class="bili-item-info">
+                            <div class="bili-item-title" :title="m.title">
+                                {{ m.title }}
+                                <span v-if="m.typeName && m.typeName !== '视频'" class="bili-type-badge">{{ m.typeName }}</span>
+                            </div>
+                            <div class="bili-item-meta">
+                                {{ m.upper }} · {{ fmtDuration(m.duration) }}
+                                <template v-if="m.type !== 2 && m.type !== 1 && m.type !== 22"><span class="bili-type-raw">类型{{ m.type }}</span></template>
+                            </div>
+                            <!-- 合集展开 / 查合集 / 番剧展开 -->
+                            <div v-if="m.expandable" class="season-block">
+                                <button class="season-toggle" @click="toggleSeason(m)">
+                                    {{ seasonExpanded.has(m.id) ? '收起' : (m.isBangumi ? '展开番剧' : (m.seasonId || m.type === 21 ? '展开合集' : '查合集')) }}
+                                </button>
+                                <transition name="season-fold">
+                                    <div v-if="seasonExpanded.has(m.id)" class="season-list">
+                                        <div v-if="seasonData[m.id]?.loading" class="season-tip"><Clock :size="14" class="spin" /> 加载中...</div>
+                                        <div v-else-if="seasonData[m.id]?.error" class="season-tip error">{{ seasonData[m.id].error }}</div>
+                                        <div v-else-if="seasonData[m.id]?.archives.length">
+                                            <div class="season-title-line">{{ seasonData[m.id].title }}（{{ seasonData[m.id].archives.length }} 集）</div>
+                                            <button class="season-dl-all" :disabled="batchDownloading" @click="downloadSeasonBatch(m.id)">
+                                                <Download :size="13" /> 批量下载本合集（{{ seasonData[m.id].archives.length }}）
+                                            </button>
+                                            <div v-for="v in seasonData[m.id].archives" :key="v.id" class="season-item">
+                                                <img class="season-cover" :src="v.cover" alt="" referrerpolicy="no-referrer" @error="v.cover = ''" />
+                                                <span class="season-title" :title="v.title">{{ v.title }}</span>
+                                                <button class="bili-item-action" :disabled="batchDownloading" @click="downloadBiliVideo('https://www.bilibili.com/video/' + v.bvid, v.title)"><Download :size="13" /> 下载</button>
+                                            </div>
+                                        </div>
+                                        <div v-else class="season-tip">合集暂无内容</div>
+                                    </div>
+                                </transition>
+                            </div>
+                        </div>
+                        <button class="bili-item-action" :disabled="!m.downloadable" :title="m.downloadable ? '下载' : (m.expandable ? '合集请展开后下载' : '番剧/影视暂不支持直接下载')" @click="downloadBiliVideo('https://www.bilibili.com/video/' + m.bvid, m.title)"><Download :size="14" /> 下载</button>
+                        <button class="bili-item-action" title="复制分享链接，可粘贴到「网址解析」" @click="copyBiliShare(m)"><Link2 :size="14" /> 复制链接</button>
+                    </div>
+                </div>
+                <div v-if="favMedias.length > 0" class="bili-pager">
+                    <button class="page-num" :disabled="favPage <= 1 || favLoadingContent" @click="loadFavContent(favPage - 1)">上一页</button>
+                    <span class="bili-pager-info">第 {{ favPage }} / {{ favTotalPages }} 页 · 共 {{ favTotal }} 项</span>
+                    <button class="page-num" :disabled="favPage >= favTotalPages || favLoadingContent" @click="loadFavContent(favPage + 1)">下一页</button>
                 </div>
             </template>
         </div>
@@ -2205,4 +3053,673 @@ const typeLabel = (s) => {
 }
 
 .parse-result-card:hover .parse-result-play { opacity: 1; }
+/* ===== B站直播开播（OBS 推流）===== */
+.bili-live-section {
+    max-width: 860px;
+}
+
+.live-step {
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 16px;
+}
+
+.live-step-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+
+.live-step-num {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: var(--primary-color, #c20c0c);
+    color: #fff;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.live-step-head h3 {
+    margin: 0;
+    font-size: 15px;
+}
+
+.live-room-id {
+    font-size: 12px;
+    color: #888;
+    background: #f5f5f5;
+    padding: 3px 10px;
+    border-radius: 12px;
+}
+
+.refetch-btn {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid #ddd;
+    background: #fff;
+    color: #666;
+    padding: 4px 10px;
+    border-radius: 14px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.refetch-btn:hover { background: #f7f7f7; }
+.refetch-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.refetch-btn.save {
+    margin-left: 0;
+    border-color: var(--primary-color, #c20c0c);
+    color: var(--primary-color, #c20c0c);
+    background: #fff;
+}
+.refetch-btn.save:hover { background: rgba(194, 12, 12, 0.06); }
+
+.live-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.live-form-row { display: flex; flex-direction: column; gap: 6px; }
+
+.live-form-row label {
+    font-size: 12px;
+    color: #666;
+}
+
+.live-cover-row { grid-column: 1 / -1; }
+
+.live-cover-box {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+    height: 96px;
+    border: 1px dashed #d0d0d0;
+    border-radius: 10px;
+    color: #999;
+    font-size: 13px;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color 0.2s, background 0.2s;
+}
+.live-cover-box:hover { border-color: var(--primary-color, #c20c0c); color: var(--primary-color, #c20c0c); background: #fafafa; }
+
+.live-cover-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.live-cover-clear {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    cursor: pointer;
+    z-index: 2;
+}
+.live-cover-clear:hover { background: rgba(0, 0, 0, 0.75); }
+
+.live-cover-input { display: none; }
+
+/* 封面预览：比例切换 */
+.cover-preview-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border: 1px solid #eee;
+    border-radius: 10px;
+    padding: 12px;
+    background: #fafafa;
+    max-width: 360px;
+}
+.cover-preview-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.cover-preview-title {
+    font-size: 12px;
+    color: #888;
+}
+.cover-ratio-switch {
+    display: flex;
+    gap: 4px;
+    background: #f0f0f0;
+    border-radius: 14px;
+    padding: 2px;
+}
+.cover-ratio-switch button {
+    border: none;
+    background: transparent;
+    color: #888;
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+.cover-ratio-switch button.active {
+    background: #fff;
+    color: var(--primary-color, #c20c0c);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+.cover-frame {
+    width: 100%;
+    overflow: hidden;
+    border-radius: 8px;
+    background: #f2f2f2;
+    max-width: 320px;
+}
+.cover-frame-169 { aspect-ratio: 16 / 9; }
+.cover-frame-43 { aspect-ratio: 4 / 3; }
+.cover-frame img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    referrerpolicy: no-referrer;
+}
+
+.loading-text { color: #bbb; }
+
+.live-input {
+    padding: 9px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.live-input:focus { border-color: var(--primary-color, #c20c0c); }
+
+.live-step-desc {
+    font-size: 12px;
+    color: #999;
+    margin: 0 0 14px;
+}
+
+.live-start-actions { display: flex; gap: 12px; }
+
+.live-start-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--primary-color, #c20c0c);
+    color: #fff;
+    border: none;
+    padding: 9px 20px;
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.live-start-btn:hover:not(:disabled) { opacity: 0.9; }
+.live-start-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.live-stop-btn {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    background: #666;
+    color: #fff;
+    border: none;
+    padding: 9px 20px;
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.live-stop-btn:hover:not(:disabled) { opacity: 0.9; }
+.live-stop-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.live-stream-result {
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 12px;
+    padding: 20px 24px;
+}
+
+.obs-box, .full-url-box {
+    margin-top: 12px;
+}
+
+.obs-box-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 10px;
+}
+
+.obs-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 10px;
+}
+
+.obs-row label {
+    font-size: 12px;
+    color: #666;
+}
+.obs-key-hint { font-size: 11px; color: #c20c0c; }
+
+.obs-copy-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--primary-color, #c20c0c);
+    background: transparent;
+    color: var(--primary-color, #c20c0c);
+    padding: 4px 10px;
+    border-radius: 14px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.obs-copy-btn:hover { background: var(--primary-color, #c20c0c); color: #fff; }
+
+.obs-value {
+    margin-top: 6px;
+    background: #f7f7f7;
+    border: 1px solid #eee;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #333;
+    overflow-x: auto;
+    white-space: nowrap;
+    user-select: all;
+}
+
+.obs-value.long {
+    white-space: normal;
+    word-break: break-all;
+    line-height: 1.6;
+}
+
+.full-url-box { margin-top: 16px; padding-top: 16px; border-top: 1px dashed #eee; }
+
+.live-tips {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #f0f0f0;
+}
+
+.live-tips p {
+    font-size: 12px;
+    color: #999;
+    margin: 4px 0;
+}
+
+/* 分区分组的下拉样式保持原生，避免被其它样式覆盖 */
+.bili-live-section select.live-input {
+    max-height: 300px;
+}
+
+/* ===== 列表分页 ===== */
+.pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 20px;
+    flex-wrap: wrap;
+}
+.pagination button {
+    border: none;
+    background: transparent;
+    color: #888;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+.pagination button:hover:not(:disabled) {
+    background: rgba(0, 0, 0, 0.06);
+    color: var(--primary-color, #c20c0c);
+}
+.pagination button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.page-num {
+    min-width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #666;
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;
+}
+.page-num:hover {
+    background: rgba(0, 0, 0, 0.06);
+}
+.page-num.active {
+    background: var(--primary-color, #c20c0c);
+    color: #fff;
+}
+
+/* ===== B站管理：子 Tab 导航 ===== */
+.bili-sub-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid rgba(0, 0, 0, .08);
+    padding-bottom: 10px;
+    flex-wrap: wrap;
+}
+.bili-sub-tabs button {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 14px;
+    border: 1px solid rgba(0, 0, 0, .12);
+    background: transparent;
+    color: #555;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .15s;
+}
+.bili-sub-tabs button:hover { border-color: rgba(194, 12, 12, .4); color: #c20c0c; }
+.bili-sub-tabs button.active {
+    background: #c20c0c;
+    border-color: #c20c0c;
+    color: #fff;
+}
+.bili-sub-page { min-height: 200px; }
+
+/* ===== B站管理：列表通用 ===== */
+.bili-list-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0 10px;
+    font-size: 13px;
+    color: #666;
+    flex-wrap: wrap;
+}
+.bili-list-head .back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid rgba(0, 0, 0, .15);
+    background: transparent;
+    color: #555;
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+}
+.bili-list-head .back-btn:hover { border-color: #c20c0c; color: #c20c0c; }
+.bili-folder-title { font-weight: 500; color: #333; }
+.bili-batch-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.live-start-btn.small {
+    padding: 6px 12px;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+.batch-progress {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    background: rgba(194, 12, 12, .06);
+    border: 1px solid rgba(194, 12, 12, .2);
+    color: #a32d2d;
+    border-radius: 6px;
+    font-size: 12px;
+}
+.bili-item-list { display: flex; flex-direction: column; gap: 8px; }
+.bili-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    border: 1px solid rgba(0, 0, 0, .08);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, .02);
+    transition: background .15s, border-color .15s;
+}
+.bili-item:hover { background: rgba(0, 0, 0, .04); border-color: rgba(0, 0, 0, .15); }
+.bili-item.clickable { cursor: pointer; }
+.bili-item-cover {
+    width: 96px;
+    height: 56px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #eee;
+    flex-shrink: 0;
+}
+.bili-item-info { flex: 1; min-width: 0; }
+.bili-item-title {
+    font-size: 13px;
+    color: #333;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.bili-item-meta { font-size: 12px; color: #999; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bili-item-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px;
+    border: 1px solid rgba(0, 0, 0, .12);
+    background: transparent;
+    color: #555;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all .15s;
+}
+.bili-item-action:hover { border-color: #c20c0c; color: #c20c0c; }
+.bili-load-more { text-align: center; margin-top: 12px; }
+.bili-sub-empty { text-align: center; color: #999; font-size: 13px; padding: 30px 0; }
+/* 复选框（本地音乐样式：Square/CheckSquare 图标） */
+.bili-check, .parse-check {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    position: relative;
+}
+.visually-hidden {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+}
+.bili-check .check-icon, .parse-check .check-icon {
+    color: #ccc;
+    transition: color .2s;
+    flex-shrink: 0;
+}
+.bili-check .check-icon.active, .parse-check .check-icon.active {
+    color: var(--primary-color, #c20c0c);
+}
+.bili-check:hover .check-icon, .parse-check:hover .check-icon { color: #999; }
+.bili-check:hover .check-icon.active, .parse-check:hover .check-icon.active { color: #c20c0c; }
+/* 收藏夹类型徽章 */
+.bili-type-badge {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 11px;
+    color: #0f6e56;
+    border: 1px solid rgba(15, 110, 86, .35);
+    border-radius: 3px;
+    padding: 0 5px;
+    vertical-align: 1px;
+}
+/* 未识别的原始类型（诊断用，用户反馈后补映射） */
+.bili-type-raw {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 11px;
+    color: #a32d2d;
+    border: 1px dashed rgba(163, 45, 45, .4);
+    border-radius: 3px;
+    padding: 0 5px;
+    vertical-align: 1px;
+}
+/* 收藏夹分页 */
+.bili-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-top: 14px;
+}
+.bili-pager .page-num {
+    padding: 5px 12px;
+    border: 1px solid rgba(0, 0, 0, .15);
+    background: transparent;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #555;
+    cursor: pointer;
+    transition: all .15s;
+}
+.bili-pager .page-num:hover:not(:disabled) { border-color: #c20c0c; color: #c20c0c; }
+.bili-pager .page-num:disabled { opacity: .4; cursor: not-allowed; }
+.bili-pager-info { font-size: 12px; color: #999; }
+
+/* ===== 收藏夹：合集展开 ===== */
+.season-block { margin-top: 6px; }
+.season-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border: 1px dashed rgba(15, 110, 86, .4);
+    background: rgba(15, 110, 86, .04);
+    color: #0f6e56;
+    border-radius: 5px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+}
+.season-toggle:hover { background: rgba(15, 110, 86, .1); }
+.season-list {
+    margin-top: 8px;
+    padding: 8px;
+    background: rgba(0, 0, 0, .03);
+    border: 1px solid rgba(0, 0, 0, .06);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.season-tip { font-size: 12px; color: #999; display: flex; align-items: center; gap: 6px; padding: 4px 0; }
+.season-title-line { font-size: 12px; color: #0f6e56; font-weight: 500; padding: 2px 0 6px; }
+/* 合集/番剧展开折叠动画 */
+.season-fold-enter-active, .season-fold-leave-active {
+    transition: opacity .18s ease, transform .18s ease;
+    overflow: hidden;
+}
+.season-fold-enter-from, .season-fold-leave-to {
+    opacity: 0;
+    transform: translateY(-8px);
+}
+.season-tip.error { color: #a32d2d; }
+.season-dl-all {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px;
+    border: none;
+    background: #0f6e56;
+    color: #fff;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: opacity .15s;
+}
+.season-dl-all:disabled { opacity: .5; cursor: not-allowed; }
+.season-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    background: #fff;
+    border: 1px solid rgba(0, 0, 0, .05);
+}
+.season-item:hover { border-color: rgba(0, 0, 0, .15); }
+.season-cover { width: 64px; height: 38px; object-fit: cover; border-radius: 4px; background: #eee; flex-shrink: 0; }
+.season-title {
+    flex: 1;
+    min-width: 0;
+    font-size: 12px;
+    color: #444;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ===== 网址解析：批量下载勾选 ===== */
+.parse-check { display: flex; align-items: center; cursor: pointer; flex-shrink: 0; }
+.parse-batch-actions { display: flex; align-items: center; gap: 10px; }
+.parse-check-all {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: #666;
+    cursor: pointer;
+}
+
+/* ===== UP 投稿页 ===== */
+.up-search-row { display: flex; gap: 8px; margin-bottom: 12px; }
+.up-search-row .live-input { flex: 1; }
+.space-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px;
+    border: 1px solid rgba(0, 0, 0, .08);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, .02);
+    margin-bottom: 12px;
+}
+.space-avatar { width: 52px; height: 52px; border-radius: 50%; object-fit: cover; background: #eee; flex-shrink: 0; }
+.space-ident { min-width: 0; }
+.space-name { font-size: 15px; font-weight: 500; color: #333; }
+.space-sign { font-size: 12px; color: #999; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 </style>

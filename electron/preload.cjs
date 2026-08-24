@@ -47,7 +47,7 @@ const bridgeAPI = {
     biliLoginCheck: (qrcodeKey) => ipcRenderer.invoke('bilibili:login-check', { qrcodeKey }),
     biliLoginStatus: () => ipcRenderer.invoke('bilibili:login-status'),
     biliLogout: () => ipcRenderer.invoke('bilibili:logout'),
-    // YouTube 登录（官方网页登录，捕获 Cookie 供 yt-dlp 使用）
+// YouTube 登录（官方网页登录，捕获 Cookie 供 yt-dlp 使用）
     youtubeLoginOpen: () => ipcRenderer.invoke('youtube:login-open'),
     youtubeLoginClose: () => ipcRenderer.invoke('youtube:login-close'),
     youtubeLoginStatus: () => ipcRenderer.invoke('youtube:login-status'),
@@ -57,6 +57,22 @@ const bridgeAPI = {
         ipcRenderer.on('youtube-login-done', sub)
         return () => ipcRenderer.removeListener('youtube-login-done', sub)
     },
+    // B站直播开播（OBS推流参数）
+    biliLiveRoom: () => ipcRenderer.invoke('bilibili:live-room'),
+    biliLiveAreas: () => ipcRenderer.invoke('bilibili:live-areas'),
+    biliLiveStart: (params) => ipcRenderer.invoke('bilibili:live-start', params),
+    biliLiveUpdate: (params) => ipcRenderer.invoke('bilibili:live-update', params),
+    biliLiveStop: (params) => ipcRenderer.invoke('bilibili:live-stop', params),
+    // B站管理（收藏夹 / 空间 / 稿件）
+    biliFavList: () => ipcRenderer.invoke('bilibili:fav-list'),
+    biliFavContent: (params) => ipcRenderer.invoke('bilibili:fav-content', params),
+    biliFavSeason: (params) => ipcRenderer.invoke('bilibili:fav-season', params),
+    biliSpaceInfo: () => ipcRenderer.invoke('bilibili:space-info'),
+    biliArchives: (params) => ipcRenderer.invoke('bilibili:archives', params),
+    // 下载目录设置
+    downloadDefaultDir: () => ipcRenderer.invoke('download:default-dir'),
+    downloadCheckDir: (dir) => ipcRenderer.invoke('download:check-dir', { dir }),
+    downloadPickDir: () => ipcRenderer.invoke('download:pick-dir'),
     onVideoDownloadProgress: (cb) => {
         const sub = (_, data) => cb(data)
         ipcRenderer.on('video-download-progress', sub)

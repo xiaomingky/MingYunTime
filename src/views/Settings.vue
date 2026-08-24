@@ -34,8 +34,11 @@ import {
     Sparkles,
     CheckCircle2,
     AlertCircle,
-    X
+    X,
+    Download,
+    FolderOpen
 } from 'lucide-vue-next'
+import { downloadDefaultDir, downloadCheckDir, downloadPickDir } from '../api'
 
 const playerStore = usePlayerStore()
 const platformStore = usePlatformStore()
@@ -311,6 +314,49 @@ const claimYouthDayVip = () => {
 const claimYouthVipHours = () => runYouthVipAction(kugouYouthVip, 'hours')
 const upgradeYouthVip = () => runYouthVipAction(kugouYouthDayVipUpgrade, 'upgrade')
 
+// ---------- 下载专区：视频默认下载目录 ----------
+// 存 localStorage('video_download_dir')，批量/单条下载时直接使用，不再弹窗
+const videoDownloadDir = ref(localStorage.getItem('video_download_dir') || '')
+const systemDownloadDir = ref('')
+const dirChecking = ref(false)
+
+async function loadDefaultDownloadDir() {
+    try {
+        const res = await downloadDefaultDir()
+        if (res?.success) systemDownloadDir.value = res.dir
+    } catch (e) {}
+}
+async function pickVideoDownloadDir() {
+    try {
+        const res = await downloadPickDir()
+        if (res?.canceled) return
+        if (!res?.success || !res.dir) {
+            messageStore.error('选择目录失败：' + (res?.error || '未知错误'), 4000)
+            return
+        }
+        const dir = res.dir
+        dirChecking.value = true
+        const ok = await downloadCheckDir(dir)
+        if (ok?.success) {
+            videoDownloadDir.value = dir
+            localStorage.setItem('video_download_dir', dir)
+            messageStore.success('视频下载目录已更新', 2500)
+        } else {
+            messageStore.error('目录不可用：' + (ok?.error || '无法创建'), 4000)
+        }
+    } catch (e) {
+        messageStore.error('选择目录失败：' + (e?.message || e), 4000)
+    } finally {
+        dirChecking.value = false
+    }
+}
+function resetVideoDownloadDir() {
+    videoDownloadDir.value = ''
+    localStorage.removeItem('video_download_dir')
+    messageStore.success('已恢复为系统默认下载目录', 2500)
+}
+loadDefaultDownloadDir()
+
 onMounted(() => {
     window.addEventListener('keydown', onShortcutKeydown)
     if (platformStore.isKugou && kugouUserStore.isLoggedIn) {
@@ -511,6 +557,29 @@ onUnmounted(() => {
               <Sparkles :size="13" class="api-line-icon" />
             </template>
           </CustomSelect>
+        </div>
+      </section>
+
+      <!-- 下载专区 -->
+      <section class="settings-card">
+        <div class="card-head">
+          <div class="card-title">
+            <Download :size="16" />
+            <span>下载专区</span>
+          </div>
+        </div>
+        <p class="card-tip">设置视频下载的默认保存位置后，下载时不再弹窗选择。每个视频会单独存放到「下载目录 / 视频标题 /」文件夹中，互不混淆。</p>
+        <div class="download-dir-row">
+          <span class="download-dir-label">视频下载目录</span>
+          <div class="download-dir-value" :title="videoDownloadDir || systemDownloadDir">
+            {{ videoDownloadDir || systemDownloadDir || '系统下载区' }}
+          </div>
+          <button class="download-dir-btn clickable" :disabled="dirChecking" @click="pickVideoDownloadDir">
+            <FolderOpen :size="13" /> 选择目录
+          </button>
+          <button class="download-dir-btn clickable" :disabled="!videoDownloadDir" @click="resetVideoDownloadDir">
+            <RotateCcw :size="13" /> 恢复默认
+          </button>
         </div>
       </section>
 
@@ -1008,4 +1077,43 @@ onUnmounted(() => {
 .api-line-icon {
     color: var(--primary-color, #c20c0c);
 }
+
+/* ===== 下载专区 ===== */
+.download-dir-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+    flex-wrap: wrap;
+}
+.download-dir-label { font-size: 13px; color: #555; flex-shrink: 0; }
+.download-dir-value {
+    flex: 1;
+    min-width: 160px;
+    padding: 7px 10px;
+    background: rgba(0, 0, 0, .04);
+    border: 1px solid rgba(0, 0, 0, .1);
+    border-radius: 6px;
+    font-size: 12px;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.download-dir-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 7px 12px;
+    border: 1px solid rgba(0, 0, 0, .15);
+    background: transparent;
+    color: #555;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all .15s;
+    flex-shrink: 0;
+}
+.download-dir-btn:hover:not(:disabled) { border-color: #c20c0c; color: #c20c0c; }
+.download-dir-btn:disabled { opacity: .45; cursor: not-allowed; }
 </style>

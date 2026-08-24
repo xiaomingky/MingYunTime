@@ -207,6 +207,13 @@ async function startDownload(params) {
     // 兜底：直接用 documents 目录
     outputPath = path.join(app.getPath('documents'), safeName + ext)
   }
+  // 规范化路径（前端可能传混用分隔符的 Windows 路径）
+  try { outputPath = path.normalize(outputPath) } catch (e) {}
+  // 指定的保存路径可能带不存在的子目录（如"下载区/视频名/视频名.mp4"），自动创建，避免下载失败
+  try {
+    const dir = path.dirname(outputPath)
+    if (dir && dir !== '.') fs.mkdirSync(dir, { recursive: true })
+  } catch (e) { /* 目录创建失败不阻塞，下游下载函数仍会尝试 */ }
 
   const record = {
     id,
@@ -1218,6 +1225,45 @@ ipcMain.handle('download:start', async (_, params) => {
   } catch (e) {
     console.error('[DownloadManager] 启动失败:', e.message)
     return { success: false, error: e.message }
+  }
+})
+
+// 获取系统默认下载目录（前端"下载专区"设置的默认值，避免每次下载弹窗）
+ipcMain.handle('download:default-dir', async () => {
+  try {
+    return { success: true, dir: app.getPath('downloads') }
+  } catch (e) {
+    return { success: false, dir: '', error: e.message }
+  }
+})
+
+// 校验下载目录是否有效（存在或可创建），供设置页使用
+ipcMain.handle('download:check-dir', async (_, { dir }) => {
+  try {
+    if (!dir) return { success: false, error: '路径为空' }
+    fs.mkdirSync(dir, { recursive: true })
+    return { success: true }
+  } catch (e) {
+    return { success: false, error: e.message }
+  }
+})
+
+// 弹窗选择下载目录（供设置页"下载专区"使用）
+ipcMain.handle('download:pick-dir', async () => {
+  try {
+    const opts = {
+      title: '选择视频下载目录',
+      properties: ['openDirectory', 'createDirectory']
+    }
+    // win 可能尚未初始化，分别调用避免传 undefined 参数导致部分版本报错
+    const result = win
+      ? await dialog.showOpenDialog(win, opts)
+      : await dialog.showOpenDialog(opts)
+    if (result.canceled || !result.filePaths.length) return { success: false, canceled: true }
+    return { success: true, dir: result.filePaths[0] }
+  } catch (e) {
+    console.error('[DownloadManager] 选择目录失败:', e)
+    return { success: false, error: String(e?.message || e) }
   }
 })
 

@@ -66,9 +66,16 @@ const updateDropdownPosition = () => {
     }
 }
 
-// 归一化 options 为 { value, label } 数组
+// 归一化 options：支持普通项 { value, label }，也支持分组 { group: '组名', children: [...] }
 const normalizedOptions = computed(() => {
     return props.options.map(opt => {
+        if (typeof opt === 'object' && opt !== null && opt.children) {
+            const children = (opt.children || []).map(c => {
+                if (typeof c === 'object' && c !== null) return { value: c.value, label: c.label ?? String(c.value) }
+                return { value: c, label: String(c) }
+            })
+            return { group: opt.group ?? opt.label ?? '分组', children }
+        }
         if (typeof opt === 'object' && opt !== null) {
             return { value: opt.value, label: opt.label ?? String(opt.value) }
         }
@@ -76,8 +83,28 @@ const normalizedOptions = computed(() => {
     })
 })
 
+// 命中项（无分组时定位选中项）
+const selectedLabel = computed(() => {
+    for (const o of normalizedOptions.value) {
+        if (!o.children) continue
+        if (o.children.find(c => c.value === props.modelValue)) return null
+    }
+    const found = flatOptions.value.find(o => o.value === props.modelValue)
+    return found ? found.label : null
+})
+
+const flatOptions = computed(() => {
+    const out = []
+    for (const o of normalizedOptions.value) {
+        if (o.children) out.push(...o.children)
+        else if (o.value !== undefined) out.push(o)
+    }
+    return out
+})
+
 const currentLabel = computed(() => {
-    const found = normalizedOptions.value.find(o => o.value === props.modelValue)
+    if (selectedLabel.value) return selectedLabel.value
+    const found = flatOptions.value.find(o => o.value === props.modelValue)
     return found ? found.label : props.placeholder
 })
 
@@ -155,15 +182,31 @@ onUnmounted(() => {
         <Teleport to="body">
             <Transition name="cs-dropdown">
                 <div v-if="open" class="cs-dropdown cs-dropdown-fixed" :class="{ compact }" ref="dropdownRef" :style="dropdownStyle" @click.stop>
-                    <div
-                        v-for="opt in normalizedOptions"
-                        :key="opt.value"
-                        class="cs-option"
-                        :class="{ active: opt.value === modelValue }"
-                        @click="selectOption(opt)"
-                    >
-                        {{ opt.label }}
-                    </div>
+                    <template v-for="(opt, gi) in normalizedOptions" :key="opt.group ? 'g' + gi : opt.value">
+                        <!-- 分组 -->
+                        <template v-if="opt.children">
+                            <div class="cs-group-label">{{ opt.group }}</div>
+                            <div
+                                v-for="c in opt.children"
+                                :key="c.value"
+                                class="cs-option"
+                                :class="{ active: c.value === modelValue }"
+                                @click="selectOption(c)"
+                            >
+                                {{ c.label }}
+                            </div>
+                        </template>
+                        <!-- 普通项 -->
+                        <div
+                            v-else-if="opt.value !== undefined"
+                            :key="opt.value"
+                            class="cs-option"
+                            :class="{ active: opt.value === modelValue }"
+                            @click="selectOption(opt)"
+                        >
+                            {{ opt.label }}
+                        </div>
+                    </template>
                 </div>
             </Transition>
         </Teleport>
@@ -345,6 +388,16 @@ onUnmounted(() => {
     background-color: rgba(236, 65, 65, 0.1);
     color: var(--primary-color, #EC4141);
     font-weight: 600;
+}
+
+.cs-dropdown.cs-dropdown-fixed .cs-group-label {
+    padding: 6px 12px 2px;
+    font-size: 11px;
+    color: #999;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    user-select: none;
 }
 
 /* 紧凑模式 */

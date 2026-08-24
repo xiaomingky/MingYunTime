@@ -185,10 +185,11 @@ function playM3u8(video, url, artInstance) {
         const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false, // YouTube 直播关闭低延迟模式，避免音频丢失
-            maxBufferLength: isLive ? 30 : 60,
-            backBufferLength: isLive ? 30 : 30,
-            liveSyncDurationCount: isLive ? 5 : undefined,
-            liveMaxLatencyDurationCount: isLive ? 20 : undefined,
+            // 直播低延迟：播放头贴近直播边缘（liveSyncDurationCount=2 ≈ 4-6s 延迟，20→8 收紧最大容忍）
+            maxBufferLength: isLive ? 20 : 60,
+            backBufferLength: isLive ? 20 : 30,
+            liveSyncDurationCount: isLive ? 2 : undefined,
+            liveMaxLatencyDurationCount: isLive ? 8 : undefined,
             liveDurationInfinity: false,
             // 强制加载音频轨道
             forceKeyFrameOnDiscontinuity: true,
@@ -393,10 +394,21 @@ function initDashAudio() {
     dashAudioEl.muted = v.muted
 
     // 判断音频 URL 是否是 m3u8（YouTube HLS 直播的音频是独立 m3u8）
-    const isM3u8Audio = /\.m3u8(\?|$|#)/i.test(props.audioUrl) || /manifest\.googlevideo\.com/i.test(props.audioUrl)
+    // 注意 YT 音频 URL 可能是 rr*.googlevideo.com/videoplayback?...m3u8...（m3u8 藏在 query 里），
+    // 只要域名是 googlevideo 且 query 含 m3u8 也按 HLS 处理，否则原生 <audio> 播不了 HLS
+    const isM3u8Audio = /\.m3u8(\?|$|#)/i.test(props.audioUrl) ||
+        /manifest\.googlevideo\.com/i.test(props.audioUrl) ||
+        (/googlevideo/i.test(props.audioUrl) && /m3u8/i.test(props.audioUrl))
     if (isM3u8Audio && Hls.isSupported()) {
-        // 用 hls.js 加载 m3u8 音频流
-        dashAudioHls = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 30 })
+        // 用 hls.js 加载 m3u8 音频流（直播时同样贴近直播边缘，避免音视频延迟差触发频繁纠偏）
+        dashAudioHls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: false,
+            maxBufferLength: 20,
+            liveSyncDurationCount: 2,
+            liveMaxLatencyDurationCount: 8
+        })
+        dashAudioHls.on(Hls.Events.FRAG_PARSED, () => { if (dashAudioEl && !dashAudioEl.dataset.done) dashAudioEl.dataset.done = '1' })
         dashAudioHls.loadSource(props.audioUrl)
         dashAudioHls.attachMedia(dashAudioEl)
         dashAudioHls.on(Hls.Events.ERROR, (_, data) => {
@@ -405,8 +417,12 @@ function initDashAudio() {
             }
         })
     } else {
+        // DASH fMP4 / 直链音频：用 hls.js 无法解析 fMP4，交给原生 <audio>
         dashAudioEl.src = props.audioUrl
         dashAudioEl.load()
+        dashAudioEl.addEventListener('error', (e) => {
+            console.warn('[DASH音频] 原生<audio>加载失败:', props.audioUrl?.slice(0, 80))
+        })
     }
 
     // === 同步策略：以视频为准，音频跟随（直播和视频统一逻辑）===
