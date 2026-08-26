@@ -6,9 +6,32 @@
 import { ref, computed, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
-import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube, Copy, Send, MonitorPlay, ListFilter, ImagePlus, Bookmark, Square, CheckSquare } from 'lucide-vue-next'
-import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout, youtubeLoginOpen, youtubeLoginClose, youtubeLoginStatus, youtubeLogout, onYoutubeLoginDone, biliLiveRoom, biliLiveAreas, biliLiveStart, biliLiveUpdate, biliLiveStop, biliFavList, biliFavContent, biliFavSeason, biliArchives, downloadStart, onDownloadDone, onDownloadError, downloadDefaultDir } from '../api'
+import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube, Copy, Send, MonitorPlay, ListFilter, ImagePlus, Bookmark, Square, CheckSquare, Settings } from 'lucide-vue-next'
+import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout, biliTvLoginQr, biliTvLoginCheck, biliTvLoginStatus, biliTvLogout, youtubeLoginOpen, youtubeLoginClose, youtubeLoginStatus, youtubeLogout, onYoutubeLoginDone, biliLiveRoom, biliLiveAreas, biliLiveStart, biliLiveUpdate, biliLiveStop, biliFavList, biliFavContent, biliFavSeason, biliArchives, downloadStart, onDownloadDone, onDownloadError, downloadGetDir, getBiliApiMode, setBiliApiMode } from '../api'
 import CustomSelect from '../components/CustomSelect.vue'
+
+// 平台图标（解析框上方滚动展示）
+import platformDouyin from '../assets/icons/douyin.png'
+import platformBilibili from '../assets/icons/bilibili.svg'
+import platformKuaishou from '../assets/icons/kuaishou.svg'
+import platformHuya from '../assets/icons/huya.png'
+import platformDouyu from '../assets/icons/douyu.png'
+import platformYoutube from '../assets/icons/youtube.svg'
+import platformKick from '../assets/icons/kick.svg'
+import platformTwitch from '../assets/icons/twitch.svg'
+// 解析框上方滚动展示的平台与其用处说明
+const platformScrollItems = [
+    { id: 'douyin', name: '抖音', icon: platformDouyin, desc: '抖音：解析短视频与直播，官方接口无水印，支持播放与批量下载' },
+    { id: 'bilibili', name: 'B站', icon: platformBilibili, desc: 'B站：解析视频/番剧/电影/直播，TV 接口无水印片源，登录解锁高清' },
+    { id: 'kuaishou', name: '快手', icon: platformKuaishou, desc: '快手：解析短视频与直播，官方接口无水印，支持播放与批量下载' },
+    { id: 'huya', name: '虎牙', icon: platformHuya, desc: '虎牙：解析直播流（FLV/HLS），可播放与下载' },
+    { id: 'douyu', name: '斗鱼', icon: platformDouyu, desc: '斗鱼：解析直播流（FLV/HLS），可播放与下载' },
+    { id: 'youtube', name: 'YouTube', icon: platformYoutube, desc: 'YouTube：解析视频与直播，登录后解锁高画质/受限内容' },
+    { id: 'kick', name: 'Kick', icon: platformKick, desc: 'Kick：解析直播流（HLS），可播放与下载' },
+    { id: 'twitch', name: 'Twitch', icon: platformTwitch, desc: 'Twitch：解析直播流，HLS 低延迟实时跟播' }
+]
+// 无缝滚动需要两组相同内容
+const platformScrollGroups = [0, 1]
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
@@ -57,6 +80,37 @@ const parseResults = ref([])  // [{url, type, title, audioUrl?, bili?}]
 const parsePageTitle = ref('')
 // 正在下载的解析结果 URL（用于禁用按钮）
 const parsingDownloadingUrl = ref('')
+
+// ===== 解析设置（B站接口模式：web | tv） =====
+const parseSettingsOpen = ref(false)
+const biliApiMode = ref('web')
+const BILI_API_OPTIONS = [
+    { value: 'web', label: 'Web 接口' },
+    { value: 'tv', label: 'TV 接口' }
+]
+const parseSettingsRef = ref(null)
+// 点击面板外部时关闭
+const handleGlobalClick = (e) => {
+    if (parseSettingsOpen.value && parseSettingsRef.value && !parseSettingsRef.value.contains(e.target)) {
+        parseSettingsOpen.value = false
+    }
+}
+// 读取主进程持久化的 B站解析接口模式
+const loadBiliApiMode = async () => {
+    try {
+        const m = await getBiliApiMode()
+        if (m === 'tv' || m === 'web') biliApiMode.value = m
+    } catch (e) {}
+}
+const switchBiliApiMode = async (m) => {
+    try {
+        const r = await setBiliApiMode(m)
+        if (r?.success) {
+            biliApiMode.value = r.mode
+            messageStore.success(r.mode === 'tv' ? 'B站解析已切换到 TV 接口（无水印片源，右上角 TV登录 可解锁高画质）' : 'B站解析已切换到 Web 接口（登录 Cookie 提画质）')
+        }
+    } catch (e) {}
+}
 
 // ===== B站登录（提升画质） =====
 const biliLoggedIn = ref(false)
@@ -145,6 +199,103 @@ async function logoutBili() {
         biliLoggedIn.value = false
         biliUserInfo.value = null
         messageStore.success('已退出B站登录')
+    } catch (e) { messageStore.error('退出失败') }
+}
+
+// ===== B站 TV 端登录（云视听小电视 access_key，解锁 TV 接口高画质） =====
+// TV 接口（api.snm0516.aisee.tv）不吃网页 Cookie，需用 B站手机 App 扫码完成 TV 端登录。
+const biliTvLoggedIn = ref(false)
+const biliTvMid = ref('')
+const biliTvUserInfo = ref(null)
+const showBiliTvQr = ref(false)
+const biliTvQrUrl = ref('')
+const biliTvAuthCode = ref('')
+const biliTvLocalId = ref('')
+const biliTvQrStatus = ref('')  // '' | 'waiting' | 'scanned' | 'expired' | 'error'
+const biliTvQrError = ref('')
+let biliTvPollTimer = null
+
+async function loadBiliTvStatus() {
+    try {
+        const res = await biliTvLoginStatus()
+        if (res?.success && res.loggedIn) {
+            biliTvLoggedIn.value = true
+            biliTvMid.value = res.mid || ''
+            biliTvUserInfo.value = res.userInfo || null
+        } else {
+            biliTvLoggedIn.value = false
+            biliTvMid.value = ''
+            biliTvUserInfo.value = null
+        }
+    } catch (e) {}
+}
+
+async function openBiliTvLogin() {
+    if (showBiliTvQr.value) return
+    showBiliTvQr.value = true
+    biliTvQrStatus.value = ''
+    biliTvQrError.value = ''
+    try {
+        const res = await biliTvLoginQr()
+        if (res?.success) {
+            biliTvQrUrl.value = res.qrcodeUrl
+            biliTvAuthCode.value = res.authCode
+            biliTvLocalId.value = res.localId
+            biliTvQrStatus.value = 'waiting'
+            startBiliTvPoll()
+        } else {
+            biliTvQrStatus.value = 'error'
+            biliTvQrError.value = res?.message || '获取二维码失败'
+        }
+    } catch (e) {
+        biliTvQrStatus.value = 'error'
+        biliTvQrError.value = e.message || '获取二维码失败'
+    }
+}
+
+function startBiliTvPoll() {
+    stopBiliTvPoll()
+    biliTvPollTimer = setInterval(async () => {
+        try {
+            const res = await biliTvLoginCheck({ authCode: biliTvAuthCode.value, localId: biliTvLocalId.value })
+            if (res?.loggedIn) {
+                stopBiliTvPoll()
+                biliTvLoggedIn.value = true
+                showBiliTvQr.value = false
+                await loadBiliTvStatus()
+                messageStore.success('TV端登录成功，TV 接口已解锁高画质', 3000)
+            } else if (res?.status === 'scanned') {
+                biliTvQrStatus.value = 'scanned'
+            } else if (res?.status === 'expired') {
+                stopBiliTvPoll()
+                biliTvQrStatus.value = 'expired'
+            }
+        } catch (e) {}
+    }, 2000)
+}
+
+function stopBiliTvPoll() {
+    if (biliTvPollTimer) { clearInterval(biliTvPollTimer); biliTvPollTimer = null }
+}
+
+function closeBiliTvQr() {
+    showBiliTvQr.value = false
+    stopBiliTvPoll()
+}
+
+async function refreshBiliTvQr() {
+    stopBiliTvPoll()
+    await openBiliTvLogin()
+}
+
+async function logoutBiliTv() {
+    if (!await messageStore.confirm('确定退出 TV 端登录？TV 接口将回落 720P。', '退出TV登录')) return
+    try {
+        await biliTvLogout()
+        biliTvLoggedIn.value = false
+        biliTvMid.value = ''
+        biliTvUserInfo.value = null
+        messageStore.success('已退出 TV 端登录')
     } catch (e) { messageStore.error('退出失败') }
 }
 
@@ -329,13 +480,10 @@ async function downloadSeasonBatch(seasonId) {
 }
 
 // ---------- 批量下载（串行：第一个完成后再下第二个） ----------
-// 下载目录：设置页"下载专区"配置（localStorage: video_download_dir），为空时自动用系统下载区
-const getVideoDownloadDir = () => (localStorage.getItem('video_download_dir') || '').replace(/[\\/]+$/, '')
+// 下载目录：设置页"下载专区"配置的统一下载目录（音乐/视频等所有下载共用，主进程持久化），未配置时用系统下载区
 async function resolveVideoDownloadDir() {
-    const saved = getVideoDownloadDir()
-    if (saved) return saved
     try {
-        const d = await downloadDefaultDir()
+        const d = await downloadGetDir()
         if (d?.success && d.dir) return d.dir.replace(/[\\/]+$/, '')
     } catch (e) {}
     return ''
@@ -437,7 +585,11 @@ async function downloadParseBatch() {
     batchDone.value = 0
     batchFail.value = 0
     for (const s of items) {
-        batchCurrentName.value = s.title || parsePageTitle.value || '视频流'
+        // 批量下载：文件名剥掉 [画质]（如 [1080p]）/（已登录）等装饰，只留主体标题（与单条下载一致）
+        batchCurrentName.value = (s.title || parsePageTitle.value || '视频流')
+            .replace(/\s*\[[^\]]*\]\s*/g, '')
+            .replace(/\s*[（(]已登录[）)]\s*/g, '')
+            .trim() || parsePageTitle.value || '视频流'
         try {
             const ok = await downloadOne(s, batchCurrentName.value, '下载')
             if (ok) batchDone.value++; else batchFail.value++
@@ -637,11 +789,20 @@ async function copyToClipboard(text, label) {
 function onAvatarError() {
     if (biliUserInfo.value) biliUserInfo.value = { ...biliUserInfo.value, face: '' }
 }
+// TV 端头像加载失败时回退到 MonitorPlay 图标
+function onTvAvatarError() {
+    if (biliTvUserInfo.value) biliTvUserInfo.value = { ...biliTvUserInfo.value, face: '' }
+}
 
 // 二维码图片 URL（用在线 API 生成）
 const biliQrImgUrl = computed(() => {
     if (!biliQrUrl.value) return ''
     return `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(biliQrUrl.value)}`
+})
+// TV 端登录二维码图片 URL（qrcodeUrl 是链接字符串，需转成二维码图片）
+const biliTvQrImgUrl = computed(() => {
+    if (!biliTvQrUrl.value) return ''
+    return `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(biliTvQrUrl.value)}`
 })
 
 loadBiliStatus()
@@ -782,6 +943,7 @@ const qualityScore = (s) => {
     const t = ((s.title || '') + ' ' + (s.url || '')).toLowerCase()
     if (/8k/.test(t)) return 4320
     if (/\b4k\b/.test(t)) return 2160
+    if (/\b2k\b/.test(t)) return 1440
     if (/蓝光8m|蓝光8 /.test(t)) return 4000
     if (/蓝光4m|蓝光4 /.test(t)) return 3500
     if (/蓝光/.test(t)) return 3000
@@ -838,9 +1000,13 @@ const parseGroupOpen = reactive({})   // 组 key -> 是否展开该组更多画�
 const liveGroups = computed(() => makeGroups(livePickStreams.value))
 const liveGroupOpen = reactive({})
 
+// 封面图加载失败时隐藏（抖音/快手封面 CDN 偶尔需要 Referer，加载不出就不显示）
+const onParseCoverError = (e) => { if (e?.target) e.target.style.display = 'none' }
+
 const playParsedStream = (s, baseOverride) => {
     const baseName = baseOverride || parsePageTitle.value || '网址解析视频'
-    const name = baseOverride ? baseName : (s.title ? `${baseName} - ${s.title}` : baseName)
+    // 显示名同样只取 s.title 剥 [画质] 装饰，避免"标题 - 标题 [画质]"重复
+    const name = baseOverride ? baseName : ((s.title || baseName).replace(/\s*\[[^\]]*\]\s*/g, '').trim() || baseName)
     playerStore.currentSong = {
         id: 'parse-' + Date.now(),
         name,
@@ -922,7 +1088,9 @@ const downloadParsedStream = async (s) => {
             // YouTube：文件名取原标题主体，去掉 [画质] 装饰，交给 yt-dlp 下载
             name = (s.title || baseName).replace(/\s*\[[^\]]*\]\s*/g, '').trim() || baseName
         } else {
-            name = s.title ? `${baseName} - ${s.title}` : baseName
+            // 抖音/快手/直播等：s.title 已含完整标题，只剥 [画质] 装饰，
+            // 不再拼接页面标题（否则出现"标题 - 标题 [画质]"重复超长文件名）
+            name = (s.title || baseName).replace(/\s*\[[^\]]*\]\s*/g, '').trim() || baseName
         }
         const params = {
             url: s.url,
@@ -1041,8 +1209,8 @@ function flushVideosSave() {
     if (pendingSaveVideos > 0) { pendingSaveVideos = 0; saveVideos() }
 }
 
-onMounted(() => { loadThumbnails() })
-onBeforeUnmount(() => { thumbActive = false })
+onMounted(() => { loadThumbnails(); loadBiliApiMode(); loadBiliTvStatus(); window.addEventListener('click', handleGlobalClick) })
+onBeforeUnmount(() => { thumbActive = false; window.removeEventListener('click', handleGlobalClick) })
 
 const importFiles = async () => {
     const bridge = getBridge()
@@ -1325,13 +1493,24 @@ const typeLabel = (s) => {
       <div class="actions">
         <!-- B站 / YouTube 登录胶囊（始终显示在右上角） -->
         <div class="login-capsules">
-          <button v-if="!biliLoggedIn" class="login-capsule bili" @click="openBiliLogin">
-            <User :size="13" /><span>B站登录</span>
+          <template v-if="biliApiMode === 'web'">
+            <button v-if="!biliLoggedIn" class="login-capsule bili" @click="openBiliLogin">
+              <User :size="13" /><span>B站登录</span>
+            </button>
+            <button v-else class="login-capsule bili logged" title="点击退出B站登录" @click="logoutBili">
+              <img v-if="biliUserInfo?.face" :src="biliUserInfo.face" class="capsule-avatar" alt="" referrerpolicy="no-referrer" @error="onAvatarError" />
+              <User v-else :size="13" />
+              <span class="capsule-name">{{ biliUserInfo?.uname || 'B站' }}</span>
+            </button>
+          </template>
+          <!-- TV 接口模式下显示 TV 端登录（云视听小电视 access_key，解锁 TV 高画质） -->
+          <button v-if="biliApiMode === 'tv' && !biliTvLoggedIn" class="login-capsule bili-tv" @click="openBiliTvLogin" title="TV 接口需单独扫码登录才能解锁 1080P+">
+            <MonitorPlay :size="13" /><span>TV登录</span>
           </button>
-          <button v-else class="login-capsule bili logged" title="点击退出B站登录" @click="logoutBili">
-            <img v-if="biliUserInfo?.face" :src="biliUserInfo.face" class="capsule-avatar" alt="" referrerpolicy="no-referrer" @error="onAvatarError" />
-            <User v-else :size="13" />
-            <span class="capsule-name">{{ biliUserInfo?.uname || 'B站' }}</span>
+          <button v-else-if="biliApiMode === 'tv'" class="login-capsule bili-tv logged" title="点击退出 TV 端登录" @click="logoutBiliTv">
+            <img v-if="biliTvUserInfo?.face" :src="biliTvUserInfo.face" class="capsule-avatar" alt="" referrerpolicy="no-referrer" @error="onTvAvatarError" />
+            <MonitorPlay v-else :size="13" />
+            <span class="capsule-name">{{ biliTvUserInfo?.uname || (biliTvMid ? `TV·${biliTvMid}` : 'TV已登录') }}</span>
           </button>
           <button v-if="!ytLoggedIn" class="login-capsule yt" @click="openYtLogin">
             <Youtube :size="13" /><span>YT登录</span>
@@ -1482,6 +1661,17 @@ const typeLabel = (s) => {
 
     <!-- 网址解析 -->
     <div v-else-if="activeTab === 'parse'" class="parse-section">
+        <!-- 平台图标滚动条 -->
+        <div class="platform-scroll">
+            <div class="platform-scroll-track">
+                <div class="platform-scroll-group" v-for="(group, gIdx) in platformScrollGroups" :key="gIdx" :aria-hidden="gIdx === 1 ? 'true' : null">
+                    <span v-for="p in platformScrollItems" :key="p.id" class="platform-chip" :title="p.desc">
+                        <img :src="p.icon" :alt="p.name" class="platform-chip-icon" />
+                        <span class="platform-chip-name">{{ p.name }}</span>
+                    </span>
+                </div>
+            </div>
+        </div>
         <div class="parse-input-bar">
             <Globe :size="18" class="parse-input-icon" />
             <input
@@ -1491,6 +1681,33 @@ const typeLabel = (s) => {
                 placeholder="输入影视/视频网页地址，自动解析出视频流"
                 @keyup.enter="handleParseUrl"
             />
+            <div class="parse-settings" ref="parseSettingsRef">
+                <button class="parse-settings-btn" :class="{ active: parseSettingsOpen }" title="解析设置" @click="parseSettingsOpen = !parseSettingsOpen">
+                    <Settings :size="16" />
+                </button>
+                <transition name="pop">
+                    <div v-if="parseSettingsOpen" class="parse-settings-panel">
+                        <div class="parse-settings-head">
+                            <Settings :size="14" />
+                            <span>解析设置</span>
+                        </div>
+                        <div class="parse-setting-row">
+                            <div class="parse-setting-info">
+                                <div class="parse-setting-label">B站解析接口</div>
+                                <div class="parse-setting-desc">{{ biliApiMode === 'tv' ? 'TV 接口：无水印片源，TV端登录可解锁 1080P+' : 'Web 接口：登录 Cookie 提升画质' }}</div>
+                            </div>
+                            <CustomSelect
+                                :model-value="biliApiMode"
+                                :options="BILI_API_OPTIONS"
+                                :width="110"
+                                compact
+                                @change="switchBiliApiMode"
+                            />
+                        </div>
+                        <div class="parse-settings-tip">· TV 接口（云视听小电视）：无水印片源<br />· 未登录 TV 档位封顶 720P；请用右上角「TV登录」扫码，登录后可解锁 1080P+/大会员档<br />· Web 接口：需右上角「B站登录」后 Cookie 解锁 1080P+</div>
+                    </div>
+                </transition>
+            </div>
             <button class="parse-btn" :disabled="parseLoading" @click="handleParseUrl">
                 <Search v-if="!parseLoading" :size="16" />
                 <Clock v-else :size="16" class="spin" />
@@ -1499,6 +1716,7 @@ const typeLabel = (s) => {
         </div>
         <div class="parse-tips">
             <p>· 支持解析影视页面（自动提取 m3u8/mp4 直链）、含 player_aaaa 的 maccms 播放页</p>
+            <p>· 抖音 / 快手 视频：通过官方接口解析，视频流 <b>无水印</b>，可直接播放并批量下载</p>
             <p>· 解析到的视频流会列出供你点击播放</p>
         </div>
 
@@ -1526,10 +1744,14 @@ const typeLabel = (s) => {
                             <Square v-else :size="16" class="check-icon" />
                         </label>
                         <div class="parse-result-index" @click="playParsedStream(s)">{{ i + 1 }}</div>
+                        <div v-if="s.cover" class="parse-result-cover" @click="playParsedStream(s)">
+                            <img :src="s.cover" referrerpolicy="no-referrer" alt="" loading="lazy" @error="onParseCoverError" />
+                        </div>
                         <div class="parse-result-info" @click="playParsedStream(s)">
                             <div class="parse-result-name">
                                 {{ s.title || parsePageTitle || `视频流 ${i + 1}` }}
                                 <span class="parse-type-tag">{{ s.type }}</span>
+                                <span v-if="s.watermarkFree" class="parse-nwm-tag" title="已通过官方接口解析，视频流本身无水印">无水印</span>
                                 <span v-if="s.audioUrl" class="parse-dash-tag" title="DASH 音视频分离，下载时自动合并">DASH·合并</span>
                             </div>
                             <div class="parse-result-url" :title="s.url">{{ s.url }}</div>
@@ -1930,6 +2152,44 @@ const typeLabel = (s) => {
                     <p v-if="biliQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码登录</p>
                     <p v-else-if="biliQrStatus === 'scanned'">等待确认中...</p>
                     <p class="bili-qr-benefit">登录后解析B站视频可解锁更高画质（1080P/4K）</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    </transition>
+
+    <!-- B站 TV 端登录弹窗（云视听小电视 access_key，解锁 TV 接口高画质） -->
+    <transition name="modal">
+    <div v-if="showBiliTvQr" class="form-overlay" @click.self="closeBiliTvQr">
+        <div class="bili-qr-modal">
+            <div class="form-header">
+                <h3>TV 端扫码登录</h3>
+                <X :size="18" class="clickable" @click="closeBiliTvQr" />
+            </div>
+            <div class="bili-qr-body">
+                <div v-if="biliTvQrStatus === 'error'" class="bili-qr-error">
+                    <p>{{ biliTvQrError }}</p>
+                    <button class="form-btn save" @click="refreshBiliTvQr">
+                        <RefreshCw :size="14" /> 重新获取
+                    </button>
+                </div>
+                <div v-else-if="biliTvQrStatus === 'expired'" class="bili-qr-expired">
+                    <p>二维码已过期</p>
+                    <button class="form-btn save" @click="refreshBiliTvQr">
+                        <RefreshCw :size="14" /> 刷新二维码
+                    </button>
+                </div>
+                <div v-else class="bili-qr-img-wrap">
+                    <img v-if="biliTvQrImgUrl" :src="biliTvQrImgUrl" alt="TV端登录二维码" class="bili-qr-img" />
+                    <div v-if="biliTvQrStatus === 'scanned'" class="bili-qr-scanned">
+                        <Check :size="40" />
+                        <p>已扫码，请在手机上确认</p>
+                    </div>
+                </div>
+                <div class="bili-qr-tips">
+                    <p v-if="biliTvQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码完成 TV 端登录</p>
+                    <p v-else-if="biliTvQrStatus === 'scanned'">等待确认中...</p>
+                    <p class="bili-qr-benefit">TV 接口与网页登录相互独立，TV 端登录后解锁 1080P+/大会员档</p>
                 </div>
             </div>
         </div>
@@ -2564,6 +2824,63 @@ const typeLabel = (s) => {
     max-width: 900px;
 }
 
+/* 平台图标滚动条（解析框上方） */
+.platform-scroll {
+    overflow: hidden;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.35);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    padding: 6px 0;
+    margin-bottom: 10px;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+}
+.platform-scroll-track {
+    display: flex;
+    width: max-content;
+    animation: platform-marquee 30s linear infinite;
+}
+.platform-scroll:hover .platform-scroll-track {
+    animation-play-state: paused;
+}
+.platform-scroll-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-right: 10px;
+}
+.platform-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.8);
+    border: 1px solid rgba(0, 0, 0, 0.05);
+    font-size: 12px;
+    color: #4a4a4a;
+    white-space: nowrap;
+    cursor: default;
+    transition: all 0.15s;
+}
+.platform-chip:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.platform-chip-icon {
+    width: 20px;
+    height: 20px;
+    object-fit: contain;
+    border-radius: 5px;
+}
+.platform-chip-name {
+    font-weight: 500;
+}
+@keyframes platform-marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+}
+
 /* B站 / YouTube 登录胶囊（右上角） */
 .login-capsules {
     display: flex;
@@ -2601,6 +2918,18 @@ const typeLabel = (s) => {
 }
 .login-capsule.yt:hover {
     background: rgba(255, 0, 0, 0.14);
+}
+
+.login-capsule.bili-tv {
+    background: rgba(0, 150, 255, 0.1);
+    color: #0a7ee0;
+    border-color: rgba(0, 150, 255, 0.32);
+}
+.login-capsule.bili-tv:hover {
+    background: rgba(0, 150, 255, 0.16);
+}
+.login-capsule.bili-tv.logged {
+    color: #0a7ee0;
 }
 
 .login-capsule.logged {
@@ -2855,6 +3184,69 @@ const typeLabel = (s) => {
 .parse-btn:hover:not(:disabled) { opacity: 0.9; }
 .parse-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
+/* 解析设置按钮与下拉面板 */
+.parse-settings {
+    position: relative;
+    flex-shrink: 0;
+}
+.parse-settings-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #999;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.parse-settings-btn:hover { background: #f5f5f7; color: var(--primary-color, #c20c0c); }
+.parse-settings-btn.active { background: rgba(194, 12, 12, 0.08); color: var(--primary-color, #c20c0c); }
+.parse-settings-panel {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    width: 320px;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.14);
+    border: 1px solid #eee;
+    padding: 12px 14px;
+    z-index: 300;
+}
+.parse-settings-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 10px;
+}
+.parse-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 4px 0 10px;
+    border-bottom: 1px solid #f2f2f4;
+    margin-bottom: 10px;
+}
+.parse-setting-info { min-width: 0; }
+.parse-setting-label { font-size: 13px; color: #333; font-weight: 500; }
+.parse-setting-desc { font-size: 11px; color: #999; margin-top: 2px; }
+.parse-settings-tip {
+    font-size: 11px;
+    color: #aaa;
+    line-height: 1.8;
+}
+/* 下拉面板淡入/缩放动画 */
+.pop-enter-active, .pop-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.pop-enter-from, .pop-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
+.pop-enter-to, .pop-leave-from { opacity: 1; transform: translateY(0) scale(1); }
+
 .parse-tips {
     margin-top: 14px;
     padding: 12px 16px;
@@ -2946,6 +3338,33 @@ const typeLabel = (s) => {
     margin-bottom: 10px;
     cursor: pointer;
     transition: all 0.2s;
+}
+
+.parse-result-cover {
+    width: 64px;
+    height: 80px;
+    border-radius: 6px;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: #f2f2f2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.parse-result-cover img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.parse-nwm-tag {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #f6ffed;
+    color: #52c41a;
+    border: 1px solid #b7eb8f;
+    flex-shrink: 0;
 }
 
 .parse-dash-tag {

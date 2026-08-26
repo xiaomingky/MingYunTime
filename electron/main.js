@@ -35,6 +35,20 @@ import './anime-meta.js'
 import './movie.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
 import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload, getYtDlpPath } from './download-manager.js'
+// 抖音 a_bogus 签名：逐字加载 video-parser 原始 a_bogus.js（sloppy mode，vm 执行），
+// 与 Python 版（py-mini-racer 执行同一文件）签名逐位一致；?raw 打包时把源码内联进 bundle。
+import vm from 'node:vm'
+import abogusSource from './a_bogus.origin.js?raw'
+import { generateABogus as generateABogusPort } from './douyin-abogus.js'
+// 2026-07 新版 a_bogus（移植自 douyin_parse/DLWangSan abogus.py）：旧版(video-parser)算法已被抖音风控拦截
+import { generateABogusV2 } from './douyin-abogus-v2.js'
+let generateABogus = null
+try {
+    const _abogusCtx = vm.createContext({ console })
+    vm.runInContext(abogusSource, _abogusCtx)
+    if (typeof _abogusCtx.generate_a_bogus === 'function') generateABogus = _abogusCtx.generate_a_bogus
+} catch (e) { generateABogus = null }
+if (!generateABogus) generateABogus = generateABogusPort  // 兜底：本地移植版（算法一致）
 // 多平台歌词搜索（QQ + 酷狗）—— 必须用静态 import，否则 vite 打包后 dist-electron 下找不到模块
 import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ, getKugouLyric } from './lyric-providers.js'
 // QQ 音乐 API 子进程(@sansenjian/qq-music-api,监听 3200 端口)
@@ -279,10 +293,18 @@ function createWindow() {
                 'https://*.douyucdn.com/*', 'http://*.douyucdn.com/*',
                 'https://*.douyuscdn.com/*', 'http://*.douyuscdn.com/*',
                 'https://*.douyucdn2.com/*', 'http://*.douyucdn2.com/*',
-                // 抖音 CDN 域名
+                // 抖音 CDN 域名（点播：douyinvod/bytecdn 等最终 CDN + www.douyin.com 播放跳转接口，
+                // 必须带 douyin Referer + 浏览器 UA 才能播放/下载，否则 CDN 返回 403）
                 'https://*.douyincdn.com/*', 'http://*.douyincdn.com/*',
                 'https://*.amemv.com/*', 'http://*.amemv.com/*',
                 'https://live.douyin.com/*', 'http://live.douyin.com/*',
+                'https://*.douyinvod.com/*', 'http://*.douyinvod.com/*',
+                'https://*.bytecdn.cn/*', 'http://*.bytecdn.cn/*',
+                'https://*.byteimg.com/*', 'http://*.byteimg.com/*',
+                'https://*.ixigua.com/*', 'http://*.ixigua.com/*',
+                'https://*.snssdk.com/*', 'http://*.snssdk.com/*',
+                'https://*.iesdouyin.com/*', 'http://*.iesdouyin.com/*',
+                'https://www.douyin.com/*', 'http://www.douyin.com/*',
                 // YouTube CDN（googlevideo 直链 + youtubei）
                 'https://*.googlevideo.com/*', 'http://*.googlevideo.com/*',
                 'https://*.youtube.com/*', 'http://*.youtube.com/*',
@@ -291,6 +313,15 @@ function createWindow() {
         },
         (details, callback) => {
             const u = details.url
+            // TV 接口流（platform=android_tv_yst 签名的 upos/mcdn URL）：必须用 BilibiliTV UA 且不能带 Referer，
+            // 2026-08-26 实测：带浏览器 UA 或 bili Referer 一律 403，仅 BilibiliTV UA + 无 Referer 返回 200
+            if (/platform=android_tv_yst/i.test(u)) {
+                details.requestHeaders['User-Agent'] = BILI_TV_UA
+                delete details.requestHeaders['Referer']
+                delete details.requestHeaders['Origin']
+                callback({ requestHeaders: details.requestHeaders })
+                return
+            }
             if (/bilivideo\.(com|cn)|hdslb\.com|mcdn|mountaintoys\.cn/i.test(u)) {
                 details.requestHeaders['Referer'] = 'https://www.bilibili.com/'
                 // mcdn/edge.mountaintoys.cn 与 bilivideo 一样需要浏览器 UA，否则 403
@@ -317,9 +348,10 @@ function createWindow() {
                 // 斗鱼 CDN：注入 Referer
                 details.requestHeaders['Referer'] = 'https://www.douyu.com/'
                 details.requestHeaders['User-Agent'] = PARSE_UA
-            } else if (/douyincdn\.com|amemv\.com|douyin\.com/i.test(u)) {
-                // 抖音 CDN：注入 Referer
-                details.requestHeaders['Referer'] = DOUYIN_LIVE_URL
+            } else if (/douyincdn\.com|amemv\.com|douyin\.com|douyinvod\.com|bytecdn\.cn|byteimg\.com|ixigua\.com|snssdk\.com|iesdouyin\.com/i.test(u)) {
+                // 抖音点播 CDN：注入 www.douyin.com Referer + 浏览器 UA（否则 douyinvod 等最终 CDN 返回 403）
+                // 2026-08-25 实测：不带 Referer/UA 请求最终 CDN 返回 403 text/html，带上后返回 200 video/mp4
+                details.requestHeaders['Referer'] = 'https://www.douyin.com/'
                 details.requestHeaders['User-Agent'] = PARSE_UA
             } else if (/googlevideo\.com|youtube\.com/i.test(u)) {
                 // YouTube CDN：注入来源 + 浏览器 UA，避免直链/分片 403
@@ -511,10 +543,12 @@ async function scanAudioFiles(filePath) {
     }
 
     if (AUDIO_EXTENSIONS.includes(path.extname(filePath).toLowerCase())) {
+        // 本地识别格式：文件标签缺失时按设置从文件名解析出 歌名/作者（"歌名 - 作者" 或 "作者 - 歌名"）
+        const parsedNameInfo = parseLocalFileName(path.basename(filePath, path.extname(filePath)), (readMusicNaming() || {}).local)
         try {
             const metadata = await (await getMM()).parseFile(filePath)
-            const name = metadata.common.title || path.basename(filePath, path.extname(filePath))
-            const artist = metadata.common.artist || '未知歌手'
+            const name = metadata.common.title || parsedNameInfo?.name || path.basename(filePath, path.extname(filePath))
+            const artist = metadata.common.artist || parsedNameInfo?.artist || '未知歌手'
 
             const album = metadata.common.album || '本地磁盘'
             const duration = (metadata.format.duration || 0) * 1000
@@ -535,8 +569,8 @@ async function scanAudioFiles(filePath) {
             const encodedPath = encodeURI(formattedPath)
             return [{
                 id: 'local-' + Date.now() + Math.random(),
-                name: path.basename(filePath, path.extname(filePath)),
-                artist: '本地音乐', ar: [{ name: '本地音乐' }],
+                name: parsedNameInfo?.name || path.basename(filePath, path.extname(filePath)),
+                artist: parsedNameInfo?.artist || '本地音乐', ar: [{ name: parsedNameInfo?.artist || '本地音乐' }],
                 path: filePath,
                 url: `local-file:///${encodedPath}`,
                 size: stats.size, dt: 0, duration: 0,
@@ -986,191 +1020,746 @@ async function parseBilibiliLive(target, addStream) {
 // 视频数据需由前端 JS 动态拉取。所以同时尝试：
 //   1) HTML SSR 提取（兼容老版本页面）
 //   2) 隐藏 BrowserWindow 渲染后从 DOM/网络请求抓取视频地址（兼容新版页面）
+// ===== 快手视频解析（无水印）=====
+// 原理（移植自 F:/xiangmu/video-parser）：
+//   快手网页 SSR 注入 window.__APOLLO_STATE__，其中：
+//     - VisionVideoSetRepresentation:N.url  为无水印视频直链
+//     - VisionVideoDetailPhoto:N.caption / coverUrl  为标题与封面
+//     - VisionVideoDetailPhoto:N.photoManifest.adaptationSet[].representation[] 为全画质清单（含宽高/质量名）
+//   提取所有可用画质（直链 mp4），优先复用可靠的 Vision 直链，photoManifest 仅补充直链 mp4 档位。
+// 把快手的 Representation 条目解析成画质标签（宽高优先，质量名兜底）
+function kuaishouRatioFromRep(rep) {
+    if (!rep || typeof rep !== 'object') return ''
+    const w = Number(rep.width) || 0
+    const h = Number(rep.height) || 0
+    if (w > 0 || h > 0) {
+        const r = ratioFromHeight(Math.max(w, h))
+        if (r) return r
+    }
+    const label = String(rep.qualityLabel || '')
+    if (!label) return ''
+    const lm = label.match(/4k|2k|\d{3,4}\s?p/i)
+    if (lm) return lm[0].toLowerCase().replace(/\s+/g, '')
+    if (/fhd|超清/i.test(label)) return '1080p'
+    if (/hd|高清/i.test(label)) return '720p'
+    if (/sd|标清/i.test(label)) return '480p'
+    if (/流畅|fluent/i.test(label)) return '360p'
+    return ''
+}
+function extractKuaishouFromApollo(root) {
+    if (!root || typeof root !== 'object') return {}
+    const dc = (root.defaultClient && typeof root.defaultClient === 'object') ? root.defaultClient : root
+    let videoUrl = '', caption = '', coverUrl = ''
+    const qualities = []
+    const seen = new Set()
+    const ratioByUrl = {}
+    // 1) 全部 VisionVideoSetRepresentation:N 直链（已知可靠）
+    const reprKeys = Object.keys(dc).filter(k => /VisionVideoSetRepresentation/i.test(k))
+        .sort((a, b) => {
+            const na = parseInt((a.match(/:(\d+)/) || [])[1] || '0', 10)
+            const nb = parseInt((b.match(/:(\d+)/) || [])[1] || '0', 10)
+            return na - nb
+        })
+    for (const k of reprKeys) {
+        const o = dc[k]
+        if (o && typeof o.url === 'string') {
+            const u = o.url.replace(/\\u002F/g, '/')
+            if (u && !seen.has(u)) {
+                seen.add(u)
+                qualities.push({ url: u, ratio: '' })
+            }
+        }
+    }
+    // 2) 标题 / 封面 + photoManifest 全画质清单（仅补充直链 mp4，避免 m3u8 播放异常）
+    const photoKeys = Object.keys(dc).filter(k => /VisionVideoDetailPhoto/i.test(k))
+    if (photoKeys[0] && dc[photoKeys[0]]) {
+        const o = dc[photoKeys[0]]
+        if (typeof o.caption === 'string') caption = o.caption
+        if (typeof o.coverUrl === 'string') coverUrl = o.coverUrl
+        const manifest = o.photoManifest
+        if (manifest && typeof manifest === 'object' && Array.isArray(manifest.adaptationSet)) {
+            const tmpReps = []
+            for (const as of manifest.adaptationSet) {
+                if (!as || typeof as !== 'object' || !Array.isArray(as.representation)) continue
+                for (const rep of as.representation) {
+                    if (!rep || typeof rep !== 'object') continue
+                    const lst = rep.urlLst || rep.urls || rep.playUrlList || []
+                    const first = Array.isArray(lst) && lst.length ? String(lst[0]) : ''
+                    const u = String(first || rep.url || '').replace(/\\u002F/g, '/')
+                    if (!u) continue
+                    const ratio = kuaishouRatioFromRep(rep)
+                    if (ratio) ratioByUrl[u] = ratio
+                    tmpReps.push({ url: u, ratio, ext: String(rep.ext || '').toLowerCase(), withAudio: rep.withAudio !== false })
+                }
+            }
+            // 直链 mp4 才补充为独立档位；已被 Vision 收录的同 URL 只回填画质标签
+            for (const r of tmpReps) {
+                if (!/\.mp4(\?|$)/i.test(r.url) && r.ext !== 'mp4') continue
+                const u = r.url
+                if (seen.has(u)) {
+                    if (r.ratio) {
+                        const f = qualities.find(q => q.url === u)
+                        if (f && !f.ratio) f.ratio = r.ratio
+                    }
+                    continue
+                }
+                seen.add(u)
+                qualities.push({ url: u, ratio: r.ratio })
+            }
+        }
+    }
+    // 3) 排序：分辨率高的优先，无分辨率信息排最后
+    const ratioOrder = { '4K': 8, '2K': 7, '1440p': 6, '1080p': 5, '720p': 4, '540p': 3, '480p': 2, '360p': 1 }
+    qualities.sort((a, b) => {
+        const ra = ratioOrder[a.ratio] || 0
+        const rb = ratioOrder[b.ratio] || 0
+        if (ra !== rb) return rb - ra
+        if (a.ratio !== b.ratio) return a.ratio ? -1 : 1
+        return 0
+    })
+    if (qualities.length) videoUrl = qualities[0].url
+    return { videoUrl, caption, coverUrl, qualities }
+}
+
+// 打开隐藏窗口跑真实会话，等页面 JS 执行完成，返回窗口实例与可复用的 Cookie 头。
+// 抖音/快手现已对无 Cookie 直连做风控，用真实会话（含 ttwid / 客户端注入的 __APOLLO_STATE__）才能拿到无水印直链。
+function openSessionBrowser(url, { waitExtra = 3000, timeout = 30000 } = {}) {
+    return new Promise((resolve) => {
+        let bw = null
+        let settled = false
+        const finish = (r) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve({ win: bw, ...r })
+        }
+        const timer = setTimeout(() => finish({ cookieHeader: '', timeout: true }), timeout)
+        try {
+            bw = new BrowserWindow({
+                width: 1280, height: 800, show: false, frame: false,
+                webPreferences: {
+                    nodeIntegration: false, contextIsolation: true, sandbox: false,
+                    webSecurity: false, images: false,
+                    autoplayPolicy: 'no-user-gesture-required',
+                    partition: 'temp-parser'
+                }
+            })
+            bw.webContents.on('did-finish-load', async () => {
+                // 等页面异步加载（SPA 拉取视频数据 / 设置 cookie）
+                await new Promise(r => setTimeout(r, waitExtra))
+                try {
+                    const cookies = await bw.webContents.session.cookies.get({ url })
+                    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+                    finish({ cookieHeader })
+                } catch (e) { finish({ cookieHeader: '' }) }
+            })
+            bw.webContents.on('did-fail-load', (_, code) => {
+                if (code !== -3 && code !== 0) finish({ cookieHeader: '' })
+            })
+            bw.webContents.loadURL(url, { userAgent: PARSE_UA }).catch(() => finish({ cookieHeader: '' }))
+        } catch (e) { finish({ cookieHeader: '' }) }
+    })
+}
+
+// 快手：主路径 = 跟随跳转到 short-video 落地页，带「硬编码真实 Cookie」直抓 SSR 里的 window.__APOLLO_STATE__。
+// 2026-08-25 实测：分享链(kuaishou.com/f/xxx)自身 SSR 不含 Vision* 键；跳转后的 short-video 页 SSR 才含，
+// 且必须带 Cookie（无 Cookie 时 SSR 同样不含视频数据）。带 Cookie 直抓已在 Node 端到端实测成功。
+// 失败再依次回退 CDP 拦截 / 隐藏窗口渲染。
 async function parseKuaishou(target, addStream) {
-    let title = ''
-    let added = 0
+    let title = '', cover = '', added = 0
+
+    // 1. 跟随跳转拿落地页（short-video/...）与标题
+    let finalUrl = target
     try {
         const res = await axios.get(target, {
+            headers: { 'User-Agent': PARSE_UA, 'Referer': 'https://www.kuaishou.com/', 'Accept-Language': 'zh-CN,zh;q=0.9' },
+            responseType: 'text', timeout: 15000, validateStatus: () => true, maxRedirects: 5
+        })
+        finalUrl = (res.request && res.request.res && res.request.res.responseUrl) || res.config.url || target
+        const tm = (res.data || '').match(/<title>([^<]*)<\/title>/i)
+        if (tm) title = tm[1].replace(/ - 快手.*$/, '').trim()
+    } catch (e) {}
+
+    // 2. 主路径：带硬编码 Cookie 直抓落地页 SSR 的 __APOLLO_STATE__（与 video-parser 一致）
+    try {
+        const res = await axios.get(finalUrl, {
             headers: {
-                'User-Agent': PARSE_UA,
-                'Referer': 'https://www.kuaishou.com/',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9'
+                'content-type': 'application/json; charset=UTF-8',
+                'User-Agent': DOUYIN_UA,
+                'referer': 'https://www.kuaishou.com/',
+                'cookie': KUAISHOU_COOKIE
             },
             responseType: 'text',
             timeout: 15000,
-            validateStatus: () => true,
-            maxRedirects: 5
+            validateStatus: () => true
         })
-        const html = res.data || ''
-        if (html) {
-            const tm = html.match(/<title>([^<]*)<\/title>/i)
-            if (tm) title = tm[1].replace(/ - 快手.*$/, '').trim()
-            // 提取 __APOLLO_STATE__：兼容 `;(function(){...}());</script>` 结尾
-            let apollo = null
-            const m1 = html.match(/window\.__APOLLO_STATE__\s*=\s*(\{[\s\S]*?\})\s*;/)
-            if (m1) {
-                try { apollo = JSON.parse(m1[1]) } catch (e) {}
-            }
-            // 兜底：用括号平衡匹配
-            if (!apollo) {
-                const idx = html.indexOf('__APOLLO_STATE__')
-                if (idx >= 0) {
-                    const start = html.indexOf('{', idx)
-                    if (start > 0) {
-                        let depth = 0, inStr = false, esc = false, quote = '', end = -1
-                        for (let i = start; i < html.length; i++) {
-                            const c = html[i]
-                            if (esc) { esc = false; continue }
-                            if (inStr) {
-                                if (c === '\\') esc = true
-                                else if (c === quote) inStr = false
-                            } else {
-                                if (c === '"' || c === "'" || c === '`') { inStr = true; quote = c }
-                                else if (c === '{') depth++
-                                else if (c === '}') { depth--; if (depth === 0) { end = i; break } }
-                            }
-                        }
-                        if (end > 0) {
-                            try { apollo = JSON.parse(html.slice(start, end + 1)) } catch (e) {}
-                        }
-                    }
-                }
-            }
-            // 提取 __INITIAL_STATE__
-            let initState = null
-            const m2 = html.match(/window\.__INITIAL_STATE__\s*=\s*(\{[\s\S]*?\})\s*;/)
-            if (m2) {
-                try { initState = JSON.parse(m2[1]) } catch (e) {}
-            }
-            const tryAdd = (obj, depth) => {
-                if (!obj || typeof obj !== 'object' || depth > 8) return
-                if (typeof obj.url === 'string' && /^https?:\/\/.+/.test(obj.url) && /\.(mp4|m3u8|flv)(\?|$|#)/i.test(obj.url)) {
-                    const u = obj.url.replace(/\\\//g, '/')
-                    // 排除快手 UI 资源图片
-                    if (!/\.png|\.jpg|\.svg|\.webp/i.test(u)) {
-                        const type = /\.m3u8/i.test(u) ? 'm3u8' : (/\.flv/i.test(u) ? 'flv' : 'mp4')
-                        addStream(u, type, title)
-                        added++
-                    }
-                }
-                if (typeof obj.mainMvUrls === 'object' && Array.isArray(obj.mainMvUrls)) {
-                    for (const item of obj.mainMvUrls) {
-                        if (item?.url) tryAdd(item, depth + 1)
-                    }
-                }
-                if (typeof obj.playUrl === 'string' && /^https?:\/\//.test(obj.playUrl)) tryAdd({ url: obj.playUrl }, depth + 1)
-                if (typeof obj.photoUrl === 'string' && /^https?:\/\//.test(obj.photoUrl)) tryAdd({ url: obj.photoUrl }, depth + 1)
-                for (const k of Object.keys(obj)) {
-                    if (['url', 'mainMvUrls', 'playUrl', 'photoUrl'].includes(k)) continue
-                    const v = obj[k]
-                    if (v && typeof v === 'object') tryAdd(v, depth + 1)
-                }
-            }
-            if (apollo) tryAdd(apollo, 0)
-            if (initState) tryAdd(initState, 0)
-            // 兜底：正则提取 mp4/m3u8 直链（排除 UI 资源）
-            if (added === 0) {
-                const vm = html.match(/"(https?:\/\/[^"]*(?:kwai|kwaixia|gifshow|ksv|kscube|kslive)[^"]*\.(?:mp4|m3u8|flv)[^"]*)"/i)
-                if (vm) { addStream(vm[1].replace(/\\\//g, '/'), /\.m3u8/i.test(vm[1]) ? 'm3u8' : 'mp4', title); added++ }
+        const apollo = extractApolloState(res.data || '')
+        const ks = extractKuaishouFromApollo(apollo)
+        if (ks.videoUrl) {
+            if (ks.caption) title = ks.caption
+            if (ks.coverUrl) cover = ks.coverUrl
+            // 多画质输出：每个档位打上 [分辨率] 标签，无标签的保留原标题
+            const list = (ks.qualities && ks.qualities.length) ? ks.qualities : [{ url: ks.videoUrl, ratio: '' }]
+            for (const q of list) {
+                addStream(q.url, /\.m3u8(\?|$)/i.test(q.url) ? 'm3u8' : 'mp4',
+                    q.ratio ? `${title} [${q.ratio}]` : title,
+                    { cover: ks.coverUrl, watermarkFree: true, quality: q.ratio || '' })
+                added++
             }
         }
     } catch (e) {}
 
-    // SSR 没抓到 → 用隐藏 BrowserWindow 渲染后抓取
+    // 3. 次路径：CDP 拦截 + 持续读取客户端注入的 __APOLLO_STATE__
+    if (added === 0) {
+        try {
+            const cdp = await parseViaCDP(finalUrl, 'kuaishou')
+            if (cdp && Array.isArray(cdp.streams) && cdp.streams.length) {
+                for (const s of cdp.streams) {
+                    addStream(s.url, s.type, s.title || title, { cover: s.cover, watermarkFree: true })
+                    added++
+                }
+                if (cdp.title) title = cdp.title
+                if (cdp.cover) cover = cdp.cover
+            }
+        } catch (e) {}
+    }
+
+    // 4. 兜底：隐藏窗口 DOM / 网络抓取（已修正 CDN 域名白名单，覆盖 yximgs.com 等真实视频主机）
     if (added === 0) {
         const renderResult = await parseByHiddenWindow(target, 'kuaishou')
         if (renderResult?.title && !title) title = renderResult.title
         for (const s of (renderResult?.streams || [])) {
-            addStream(s.url, s.type, title || renderResult.title)
+            addStream(s.url, s.type, title || renderResult.title, { cover: cover || undefined, watermarkFree: true })
             added++
         }
     }
-    return added > 0 ? { title } : null
+    return added > 0 ? { title, cover } : null
 }
 
-// ===== 抖音视频解析 =====
-// 抖音页面已全面 JS 渲染，HTML 中无 _ROUTER_DATA/RENDER_DATA 等任何 SSR 视频数据。
-// 官方 detail API 需要 X-Bogus/a_bogus 签名（算法复杂且经常变动），纯 Node 难以稳定实现。
-// 因此 SSR 提取失败后，直接走隐藏 BrowserWindow 渲染方案（让 Chromium 完整执行 JS 后抓取 video src）。
+// 从 HTML 中提取并解析 window.__APOLLO_STATE__（括号平衡法，兼容任意层嵌套与尾部分号/undefined）
+function extractApolloState(html) {
+    if (!html || typeof html !== 'string') return null
+    const idx = html.indexOf('__APOLLO_STATE__')
+    if (idx < 0) return null
+    const start = html.indexOf('{', idx)
+    if (start < 0) return null
+    let depth = 0, inStr = false, esc = false, quote = '', end = -1
+    for (let i = start; i < html.length; i++) {
+        const c = html[i]
+        if (esc) { esc = false; continue }
+        if (inStr) {
+            if (c === '\\') esc = true
+            else if (c === quote) inStr = false
+        } else {
+            if (c === '"' || c === "'" || c === '`') { inStr = true; quote = c }
+            else if (c === '{') depth++
+            else if (c === '}') { depth--; if (depth === 0) { end = i; break } }
+        }
+    }
+    if (end < 0) return null
+    let raw = html.slice(start, end + 1).replace(/;?\s*$/, '')
+    raw = raw.replace(/\bundefined\b/g, 'null')
+    try { return JSON.parse(raw) } catch (e) { return null }
+}
+
+// ===== 抖音视频解析（无水印）=====
+// 原理（2026-08 重写，移植自 https://github.com/DLWangSan/douyin_parse abogus.py）：
+//   1. 从 URL 提取 aweme_id（支持 /video/ /note/ 与 v.douyin.com 短链）
+//   2. 实时向 ttwid.bytedance.com 注册「新鲜 ttwid」（旧方案硬编码 2024 Cookie 已被风控）
+//   3. 调用官方 detail 接口，query 经新版 a_bogus v2 签名（generateABogusV2），
+//      a_bogus 需 encodeURIComponent 后拼接，Cookie 带 ttwid + 随机 msToken
+//   4. 取 video.bit_rate[0].play_addr.url_list（play_addr 即无水印直链，
+//      download_addr 才带水印；再 playwm->play 双保险）
+//   失败则回退到 SSR 正则 + 隐藏 BrowserWindow 渲染（仍尽量拿到直链）
+function genMsToken(len = 107) {
+    const base = 'ABCDEFGHIGKLMNOPQRSTUVWXYZabcdefghigklmnopqrstuvwxyz0123456789='
+    let s = ''
+    for (let i = 0; i < len; i++) s += base[Math.floor(Math.random() * base.length)]
+    return s
+}
+// 把响应 Set-Cookie 数组拼成请求 Cookie 头（尽量带上完整会话，提升 detail 接口通过率）
+function cookiesFromSetCookie(setCookie) {
+    if (!Array.isArray(setCookie)) return ''
+    const parts = []
+    for (const c of setCookie) {
+        const m = c.match(/^([^=;]+)=([^;]*)/)
+        if (m) parts.push(`${m[1]}=${m[2]}`)
+    }
+    return parts.join('; ')
+}
+function extractDouyinId(url) {
+    if (!url) return ''
+    let m = String(url).match(/\/video\/(\d{10,20})/)
+    if (m) return m[1]
+    m = String(url).match(/\/note\/([A-Za-z0-9_-]+)/)
+    if (m) return m[1]
+    m = String(url).match(/douyin\.com\/(?:share\/)?(\d{10,20})/)
+    if (m) return m[1]
+    return ''
+}
+function coverFromDouyin(video) {
+    if (!video) return ''
+    const c1 = video.cover_original_scale && video.cover_original_scale.url_list
+    if (Array.isArray(c1) && c1.length) return c1[0]
+    const c2 = video.cover && video.cover.url_list
+    if (Array.isArray(c2) && c2.length) return c2[0]
+    return ''
+}
+
+// ===== 抖音/快手 无水印解析：忠实移植 video-parser（硬编码真实浏览器 Cookie + 原始 a_bogus）=====
+// 2026-08-25 实测结论：抖音/快手已对「无 Cookie 直连」全面风控（detail 接口返回空包 / 分享页 SSR 不含视频数据），
+// video-parser 之所以能用，是因为内置了真实浏览器 Cookie（抖音 ttwid+UIFID+csrf 全家桶；快手 did+kpn+webday7_st）。
+// 以下 Cookie 与 F:/xiangmu/video-parser 内 Python 代码逐字一致；如官方风控升级导致失效，需从该仓库同步新 Cookie。
+const DOUYIN_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+const DOUYIN_TTWID = '1%7CvDWCB8tYdKPbdOlqwNTkDPhizBaV9i91KjYLKJbqurg%7C1723536402%7C314e63000decb79f46b8ff255560b29f4d8c57352dad465b41977db4830b4c7e'
+const DOUYIN_WEBID = '7307457174287205926'
+function buildDouyinCookie(refererUrl) {
+    return `ttwid=${DOUYIN_TTWID}; UIFID_TEMP=973a3fd64dcc46a3490fd9b60d4a8e663b34df4ccc4bbcf97643172fb712d8b085a6744acabbffda742bf60a364e4bd6ba5522889cc6f6598b4ea0b83bec2c70bac5163dec36cdb8fb58ea1ae00a413d; s_v_web_id=verify_lzhq5z5k_lbhbXlzb_o9V2_4SQt_8VKz_WZhdN8ARwLk5; home_can_add_dy_2_desktop=%220%22; dy_swidth=1536; dy_sheight=864; stream_recommend_feed_params=%22%7B%5C%22cookie_enabled%5C%22%3Atrue%2C%5C%22screen_width%5C%22%3A1536%2C%5C%22screen_height%5C%22%3A864%2C%5C%22browser_online%5C%22%3Atrue%2C%5C%22cpu_core_num%5C%22%3A8%2C%5C%22device_memory%5C%22%3A8%2C%5C%22downlink%5C%22%3A10%2C%5C%22effective_type%5C%22%3A%5C%224g%5C%22%2C%5C%22round_trip_time%5C%22%3A50%7D%22; csrf_session_id=c25ac0fd3e72f260d4d666d4e5b59401; strategyABtestKey=%221722906710.493%22; passport_csrf_token=e8e0d86abdd80d40b0a35f4417140777; passport_csrf_token_default=e8e0d86abdd80d40b0a35f4417140777; bd_ticket_guard_client_web_domain=2; FORCE_LOGIN=%7B%22videoConsumedRemainSeconds%22%3A180%7D; fpk1=U2FsdGVkX1/MzFW4T42Rh27SkY1k9enxmP1563AOYXnpFPaQOzdqmDBHwkaQrfKGx2e0KwNeDci6fNn3aTjflw==; fpk2=362d7fe3d8b2581bffa359f0eeda7106; UIFID=973a3fd64dcc46a3490fd9b60d4a8e663b34df4ccc4bbcf97643172fb712d8b0001661437e34e9c40cd654256ca161ee16bfeed98d4c55748714f5d5e8b3961f299814cae48bfbbd1b49196b4ee347af48639652b3235c20ab5ceedde56f53b486cfba7e3400cb7f7d39bc7dbade81d368864fde51e4c52065bf7329ca6a7be919aa4b6add8afe59f8857a5fccb62199c9e66654824ef007ff13d9780400ad16; volume_info=%7B%22isUserMute%22%3Afalse%2C%22isMute%22%3Atrue%2C%22volume%22%3A0.5%7D; biz_trace_id=d2dfa5cf; bd_ticket_guard_client_data=eyJiZC10aWNrZXQtZ3VhcmQtdmVyc2lvbiI6MiwiYmQtdGlja2V0LWd1YXJkLWl0ZXJhdGlvbi12ZXJzaW9uIjoxLCJiZC10aWNrZXQtZ3VhcmQtcmVlLXB1YmxpYy1rZXkiOiJCR1ZlY2RTY2piNWVBcHc0aVNTaTFrTThYSXdDOHNaK0NoSk16WWpyc2ZyWEYvT3VmMTB3MGpZMWpLZXdQWTFLQ0xLeERzajE5V3Y4RXlKc1U2MzlKejQ9IiwiYmQtdGlja2V0LWd1YXJkLXdlYi12ZXJzaW9uIjoxfQ%3D%3D; download_guide=%221%2F20240806%2F0%22; IsDouyinActive=false; __ac_nonce=066b1804600a583d1df8e; __ac_signature=_02B4Z6wo00f01b-.zKAAAIDA3JBBKKMofAG.n8gAAAlf52; __ac_referer=${refererUrl}`
+}
+const KUAISHOU_COOKIE = 'kpf=PC_WEB; clientid=3; did=web_66ce2b981cc6326ce81c6593ec91501c; userId=3978546192; kuaishou.server.webday7_st=ChprdWFpc2hvdS5zZXJ2ZXIud2ViZGF5Ny5zdBKwATXJWZrns_X3k5b6EXLF6ooCljC0gVVIPCzBhwCxWnpSihvqoREftPzm-sr8F2VyYbgWgLQ4DDNqhPAHDJ9XP5L9mqQvDejh8LnSf5_hTUDBhfmZQL9UsmohvK5xnc2CeQ_x2mXeJEm9Fg6xWe3qzvmzFgaxNDler6igGyd5uipoa-eTAr3vogs4UNuWjfwTcjYrlLjhd69ao0_PsRssIpN1JDqdmn5RW_NcaCp6ZOyPGhKFbZIQPBqwmm2qxNndD6tYkp4iIH54RTp6GjDbOO9cGXuiLNw2QAOgYTzEFhzlU9yMy_1zKAUwAQ; kuaishou.server.webday7_ph=b0edd97f04f01bde6a8f5e1a27d025a937ce; kpn=KUAISHOU_VISION'
+
+// 2026-08-25 实测：抖音 detail 接口需要「实时注册的新鲜 ttwid」才能通过 a_bogus v2 校验。
+// 每次解析都重新注册（不复用直播缓存），失败时回退到直播用的缓存 ttwid。
+async function douyinRegisterTtwid() {
+    try {
+        const r = await axios.post('https://ttwid.bytedance.com/ttwid/union/register/',
+            JSON.stringify({ region: 'cn', aid: 6383, needFid: false, service: 'https://www.douyin.com', union: true, fid: '' }),
+            { headers: { 'Content-Type': 'application/json' }, timeout: 8000, validateStatus: () => true })
+        const setCookie = r.headers?.['set-cookie']
+        if (Array.isArray(setCookie)) {
+            for (const c of setCookie) {
+                const m = c.match(/ttwid=([^;]+)/)
+                if (m) return m[1]
+            }
+        }
+    } catch (e) { /* fallback */ }
+    // 注册失败时回退到直播缓存的 ttwid（不强求最新）
+    try { return await douyinGetTtwid() } catch (e) {}
+    return DOUYIN_TTWID
+}
+
+// 根据高度（宽高中较大者）生成标准画质标签
+function ratioFromHeight(h) {
+    if (!h || h <= 0) return ''
+    if (h >= 3840) return '4K'
+    if (h >= 2560) return '2K'
+    if (h >= 1920) return '1080p'
+    if (h >= 1440) return '1440p'
+    if (h >= 1280) return '720p'
+    if (h >= 960) return '540p'
+    if (h >= 854) return '480p'
+    return '360p'
+}
+// 当分辨率信息缺失时按码率估算大致画质（如 2795Kbps ≈ 1080p），让标签更易分辨
+function estimateRatioFromKbps(kbps) {
+    if (!kbps || kbps <= 0) return ''
+    if (kbps >= 8000) return '4K'
+    if (kbps >= 5000) return '2K'
+    if (kbps >= 2800) return '1080p'
+    if (kbps >= 1400) return '720p'
+    if (kbps >= 900) return '540p'
+    if (kbps >= 500) return '480p'
+    return '360p'
+}
+// 从 bit_rate 档位解析画质标签：优先 play_addr 的 ratio/宽高，其次 quality_type.name/gear_name 文案，
+// 再尝试 URL 里的 ratio 参数，最后返回 ''（由调用方按码率估算）
+function douyinRatioFrom(br, url) {
+    const pa = br && br.play_addr
+    if (pa && typeof pa === 'object') {
+        if (typeof pa.ratio === 'string') {
+            const rm = String(pa.ratio).match(/(\d+\s*p)/i)
+            if (rm) return rm[1].replace(/\s+/g, '').toLowerCase()
+        }
+        const w = Number(pa.width) || 0
+        const h = Number(pa.height) || 0
+        if (w > 0 || h > 0) {
+            const r = ratioFromHeight(Math.max(w, h))
+            if (r) return r
+        }
+    }
+    const qt = br && br.quality_type
+    const text = String((qt && typeof qt === 'object' && qt.name) ? qt.name : '') + '\n' + String((br && br.gear_name) || '')
+    if (text.trim()) {
+        // 1920x1080 / 1280x720 这类宽高
+        const whm = text.match(/(\d{3,4})\s*[xX×]\s*(\d{3,4})/)
+        if (whm) {
+            const r = ratioFromHeight(Math.max(Number(whm[1]), Number(whm[2])))
+            if (r) return r
+        }
+        const pm = text.match(/4k/i)
+        if (pm) return '4K'
+        const k2m = text.match(/\b2k\b/i)
+        if (k2m) return '2K'
+        const dm = text.match(/(\d{3,4})\s*p/i)
+        if (dm) return String(dm[1]).toLowerCase() + 'p'
+        if (/超清/i.test(text)) return '1080p'
+        if (/高清|蓝光/i.test(text)) return '720p'
+        if (/标清/i.test(text)) return '480p'
+        if (/流畅/i.test(text)) return '360p'
+    }
+    const um = String(url || '').match(/ratio=(\d+p)/i)
+    if (um) return um[1].toLowerCase()
+    return ''
+}
+
 async function parseDouyin(target, addStream) {
     let title = ''
     let added = 0
+    let cover = ''
+
+    // —— 主路径：官方 detail 接口（硬编码真实浏览器 Cookie + 原始 a_bogus，忠实移植 video-parser）——
+    // 实测：带「Cookie 全家桶」才能过风控拿到无水印 play_addr；弱会话(仅 ttwid/msToken)会返回空包。
     try {
-        // 先跟随短链接跳转，拿到真实 URL（提取 aweme_id 并获取页面标题）
-        const res = await axios.get(target, {
-            headers: {
-                'User-Agent': PARSE_UA,
-                'Referer': 'https://www.douyin.com/',
-                'Cookie': 'msToken=abcdef0123456789; ttwid=1',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9'
-            },
-            responseType: 'text',
-            timeout: 15000,
-            validateStatus: () => true,
-            maxRedirects: 10
-        })
-        const html = res.data || ''
-        if (html) {
-            const tm = html.match(/<title>([^<]*)<\/title>/i)
+        let awemeId = extractDouyinId(target)
+        if (!awemeId) {
+            // 短链/分享文案：跟随跳转拿最终 URL 再提取 aweme_id 与标题
+            const pageRes = await axios.get(target, {
+                headers: {
+                    'User-Agent': PARSE_UA,
+                    'Referer': 'https://www.douyin.com/',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'zh-CN,zh;q=0.9'
+                },
+                responseType: 'text',
+                timeout: 15000,
+                validateStatus: () => true,
+                maxRedirects: 10
+            })
+            const finalUrl = (pageRes.request && pageRes.request.res && pageRes.request.res.responseUrl) || pageRes.config.url || target
+            awemeId = extractDouyinId(finalUrl)
+            const tm = (pageRes.data || '').match(/<title>([^<]*)<\/title>/i)
             if (tm) title = tm[1].replace(/ - 抖音.*$/, '').replace(/【.*?】/g, '').trim()
-            // 兼容旧版页面：尝试 _ROUTER_DATA / RENDER_DATA
-            let routerData = null
-            const m1 = html.match(/<script[^>]*id="_ROUTER_DATA"[^>]*>([\s\S]*?)<\/script>/i)
-            if (m1) {
-                try { routerData = JSON.parse(m1[1].trim()) } catch (e) {}
+        }
+        if (awemeId) {
+            // ===== 2026-08 实测：新版 a_bogus v2 + 新鲜注册 ttwid（移植 douyin_parse/DLWangSan abogus.py）=====
+            // 旧方案（硬编码 2024 Cookie + video-parser 旧 a_bogus）已被抖音风控整体拦截（detail 返回空包），
+            // 新版只需 ttwid（实时注册）+ 随机 msToken，配合 a_bogus v2 签名即可拿到完整 aweme_detail。
+            const msToken = genMsToken(107)
+            const referer = `https://www.douyin.com/video/${awemeId}`
+            const ttwid = await douyinRegisterTtwid()
+            // 与 Python 版一致：a_bogus v2 需要 URL 编码后拼接到 URL，且必须带真实 ttwid cookie
+            const baseParams = {
+                device_platform: 'webapp',
+                aid: '6383',
+                channel: 'channel_pc_web',
+                pc_client_type: '1',
+                version_code: '190500',
+                version_name: '19.5.0',
+                cookie_enabled: 'true',
+                browser_language: 'zh-CN',
+                browser_platform: 'Win32',
+                browser_name: 'Edge',
+                browser_online: 'true',
+                engine_name: 'Blink',
+                os_name: 'Windows',
+                os_version: '10',
+                platform: 'PC',
+                screen_width: '1920',
+                screen_height: '1080',
+                aweme_id: awemeId
             }
-            if (!routerData) {
-                const m2 = html.match(/<script[^>]*id="RENDER_DATA"[^>]*>([\s\S]*?)<\/script>/i)
-                if (m2) {
-                    try { routerData = JSON.parse(decodeURIComponent(m2[1].trim())) } catch (e) {}
-                }
+            // 保持 Python urlencode 的参数顺序（参数值均为 URL 安全字符，直接拼接）
+            const paramStr = Object.entries(baseParams).map(([k, v]) => `${k}=${v}`).join('&')
+            const aBogusV2 = generateABogusV2(paramStr, 'GET')
+            const apiUrl = `https://www.douyin.com/aweme/v1/web/aweme/detail/?${paramStr}&a_bogus=${encodeURIComponent(aBogusV2)}`
+            const apiRes = await axios.get(apiUrl, {
+                headers: {
+                    'User-Agent': DOUYIN_UA,
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                    'Referer': referer,
+                    'Origin': 'https://www.douyin.com',
+                    'Sec-Fetch-Site': 'same-origin',
+                    'Sec-Fetch-Mode': 'cors',
+                    'Sec-Fetch-Dest': 'empty',
+                    'Cookie': `ttwid=${ttwid}; msToken=${msToken}`
+                },
+                responseType: 'text',
+                timeout: 15000,
+                validateStatus: () => true
+            })
+            let data = null
+            if (apiRes.data) {
+                try { data = typeof apiRes.data === 'string' ? JSON.parse(apiRes.data) : apiRes.data } catch (e) {}
             }
-            const tryAdd = (obj, depth) => {
-                if (!obj || typeof obj !== 'object' || depth > 8) return
-                if (typeof obj.url === 'string' && /^https?:\/\/.+/.test(obj.url) && /\.(mp4|m3u8|flv)(\?|$|#)/i.test(obj.url)) {
-                    const u = obj.url.replace(/\\\//g, '/')
-                    const type = /\.m3u8/i.test(u) ? 'm3u8' : (/\.flv/i.test(u) ? 'flv' : 'mp4')
-                    addStream(u, type, title)
-                    added++
-                }
-                if (Array.isArray(obj.url_list)) {
-                    for (const u of obj.url_list) {
-                        if (typeof u === 'string' && /^https?:\/\//.test(u)) tryAdd({ url: u }, depth + 1)
+            const detail = data && data.aweme_detail
+            if (detail) {
+                if (detail.desc) title = detail.desc
+                const video = detail.video || {}
+                // 多画质提取：遍历 bit_rate，每个档位输出一个独立流（参考 douyin_parse extract_video_qualities）
+                // 优先 play_addr（无水印直链），down load_addr 才带水印；再 playwm->play 双保险
+                const qualities = []
+                const bitRate = video.bit_rate
+                if (Array.isArray(bitRate) && bitRate.length) {
+                    for (const br of bitRate) {
+                        const ul = (br.play_addr && br.play_addr.url_list) || []
+                        if (!ul.length) continue
+                        let u = ul.length > 2 ? ul[2] : ul[0]
+                        u = String(u || '').replace(/playwm/i, 'play')
+                        if (!u || qualities.find(q => q.url === u)) continue
+                        // 画质标签：尽力提取分辨率，实在拿不到再按码率估算；全失败才留空（输出时标注 Kbps）
+                        let ratio = douyinRatioFrom(br, u)
+                        const kbps = Math.floor((br.bit_rate || 0) / 1000)
+                        if (!ratio && kbps > 0) ratio = estimateRatioFromKbps(kbps)
+                        qualities.push({ url: u, ratio, kbps })
                     }
                 }
-                if (typeof obj.play_addr === 'object') tryAdd(obj.play_addr, depth + 1)
-                if (typeof obj.playApi === 'string' && /^https?:\/\//.test(obj.playApi)) tryAdd({ url: obj.playApi }, depth + 1)
-                for (const k of Object.keys(obj)) {
-                    if (['url', 'url_list', 'play_addr', 'playApi'].includes(k)) continue
-                    const v = obj[k]
-                    if (v && typeof v === 'object') tryAdd(v, depth + 1)
+                // 兜底：bit_rate 为空时取 video.play_addr
+                if (!qualities.length) {
+                    const ul = (video.play_addr && video.play_addr.url_list) || []
+                    if (ul.length) {
+                        let u = ul.length > 2 ? ul[2] : ul[0]
+                        u = String(u || '').replace(/playwm/i, 'play')
+                        if (u) qualities.push({ url: u, ratio: '', kbps: 0 })
+                    }
                 }
-            }
-            if (routerData) tryAdd(routerData, 0)
-            // 兜底：正则提取直链
-            if (added === 0) {
-                const vm = html.match(/"(https?:\/\/[^"]*(?:douyinvod|douyin\.com|bytecdn|bytedance|ixigua)[^"]*\.(?:mp4|m3u8)[^"]*)"/i)
-                if (vm) { addStream(vm[1].replace(/\\\//g, '/'), 'mp4', title); added++ }
-                if (added === 0) {
-                    const vm2 = html.match(/"(https?:\/\/[^"]+\.mp4[^"]*)"/i)
-                    if (vm2) { addStream(vm2[1].replace(/\\\//g, '/'), 'mp4', title); added++ }
+                // 兜底2：仍无直链时用 play_addr.uri 按常见画质构造 snssdk 播放地址（参考 douyin_parse Method 3）
+                if (!qualities.length && video.play_addr && video.play_addr.uri) {
+                    for (const ratio of ['1080p', '720p', '540p', '480p', '360p']) {
+                        qualities.push({ url: `https://aweme.snssdk.com/aweme/v1/play/?video_id=${video.play_addr.uri}&ratio=${ratio}&line=0`, ratio, kbps: 0 })
+                    }
                 }
+                // 排序：4K > 2K > 1440p > 1080p > ...，同档位码率高的优先
+                const ratioOrder = { '4K': 8, '2K': 7, '1440p': 6, '1080p': 5, '720p': 4, '540p': 3, '480p': 2, '360p': 1 }
+                qualities.sort((a, b) => {
+                    const ra = ratioOrder[a.ratio] || 0
+                    const rb = ratioOrder[b.ratio] || 0
+                    if (ra !== rb) return rb - ra
+                    return (b.kbps || 0) - (a.kbps || 0)
+                })
+                // 去重后输出；画质标签放进标题括号（如 ' [1080p]'），前端按括号识别并折叠分组
+                const coverUrl = coverFromDouyin(video)
+                const seen = new Set()
+                for (const q of qualities) {
+                    if (seen.has(q.url)) continue
+                    seen.add(q.url)
+                    // 画质括号：首选分辨率标签，否则用码率（如 4000Kbps）
+                    const qualityTag = q.ratio || (q.kbps ? `${q.kbps}Kbps` : '')
+                    addStream(q.url, 'mp4', qualityTag ? `${title} [${qualityTag}]` : title,
+                        { cover: coverUrl, watermarkFree: true, quality: qualityTag })
+                    added++
+                }
+                if (added && coverUrl) cover = coverUrl
             }
         }
     } catch (e) {}
 
-    // SSR 没抓到 → 用隐藏 BrowserWindow 渲染后抓取（这是抖音唯一可靠的解析路径）
+    // —— 次路径：CDP 拦截浏览器自己发出的 detail 请求（浏览器自己签名 + 带 Cookie）——
+    if (added === 0) {
+        try {
+            const cdp = await parseViaCDP(target, 'douyin')
+            if (cdp && Array.isArray(cdp.streams) && cdp.streams.length) {
+                for (const s of cdp.streams) {
+                    addStream(s.url, s.type, s.title || title, { cover: s.cover, watermarkFree: true })
+                    added++
+                }
+                if (cdp.title) title = cdp.title
+                if (cdp.cover) cover = cdp.cover
+            }
+        } catch (e) {}
+    }
+
+    // —— 回退：SSR 正则（旧版页面兜底）——
+    if (added === 0) {
+        try {
+            const res = await axios.get(target, {
+                headers: {
+                    'User-Agent': PARSE_UA,
+                    'Referer': 'https://www.douyin.com/',
+                    'Cookie': 'msToken=abcdef0123456789; ttwid=1',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'zh-CN,zh;q=0.9'
+                },
+                responseType: 'text',
+                timeout: 15000,
+                validateStatus: () => true,
+                maxRedirects: 10
+            })
+            const html = res.data || ''
+            if (html) {
+                if (!title) {
+                    const tm = html.match(/<title>([^<]*)<\/title>/i)
+                    if (tm) title = tm[1].replace(/ - 抖音.*$/, '').replace(/【.*?】/g, '').trim()
+                }
+                // 兼容旧版页面：尝试 _ROUTER_DATA / RENDER_DATA
+                let routerData = null
+                const m1 = html.match(/<script[^>]*id="_ROUTER_DATA"[^>]*>([\s\S]*?)<\/script>/i)
+                if (m1) { try { routerData = JSON.parse(m1[1].trim()) } catch (e) {} }
+                if (!routerData) {
+                    const m2 = html.match(/<script[^>]*id="RENDER_DATA"[^>]*>([\s\S]*?)<\/script>/i)
+                    if (m2) { try { routerData = JSON.parse(decodeURIComponent(m2[1].trim())) } catch (e) {} }
+                }
+                const tryAdd = (obj, depth) => {
+                    if (!obj || typeof obj !== 'object' || depth > 8) return
+                    if (typeof obj.url === 'string' && /^https?:\/\/.+/.test(obj.url) && /\.(mp4|m3u8|flv)(\?|$|#)/i.test(obj.url)) {
+                        const u = obj.url.replace(/\\\//g, '/')
+                        const type = /\.m3u8/i.test(u) ? 'm3u8' : (/\.flv/i.test(u) ? 'flv' : 'mp4')
+                        addStream(u, type, title, { watermarkFree: false })
+                        added++
+                    }
+                    if (Array.isArray(obj.url_list)) {
+                        for (const u of obj.url_list) {
+                            if (typeof u === 'string' && /^https?:\/\//.test(u)) tryAdd({ url: u }, depth + 1)
+                        }
+                    }
+                    if (typeof obj.play_addr === 'object') tryAdd(obj.play_addr, depth + 1)
+                    if (typeof obj.playApi === 'string' && /^https?:\/\//.test(obj.playApi)) tryAdd({ url: obj.playApi }, depth + 1)
+                    for (const k of Object.keys(obj)) {
+                        if (['url', 'url_list', 'play_addr', 'playApi'].includes(k)) continue
+                        const v = obj[k]
+                        if (v && typeof v === 'object') tryAdd(v, depth + 1)
+                    }
+                }
+                if (routerData) tryAdd(routerData, 0)
+                // 兜底：正则提取直链
+                if (added === 0) {
+                    const vm = html.match(/"(https?:\/\/[^"]*(?:douyinvod|douyin\.com|bytecdn|bytedance|ixigua)[^"]*\.(?:mp4|m3u8)[^"]*)"/i)
+                    if (vm) { addStream(vm[1].replace(/\\\//g, '/'), 'mp4', title, { watermarkFree: false }); added++ }
+                    if (added === 0) {
+                        const vm2 = html.match(/"(https?:\/\/[^"]+\.mp4[^"]*)"/i)
+                        if (vm2) { addStream(vm2[1].replace(/\\\//g, '/'), 'mp4', title, { watermarkFree: false }); added++ }
+                    }
+                }
+            }
+        } catch (e) {}
+    }
+
+    // —— 终极回退：隐藏 BrowserWindow 渲染（让 Chromium 完整执行 JS 抓取直链）——
     if (added === 0) {
         const renderResult = await parseByHiddenWindow(target, 'douyin')
         if (renderResult?.title && !title) title = renderResult.title
         for (const s of (renderResult?.streams || [])) {
-            addStream(s.url, s.type, title || renderResult.title)
+            addStream(s.url, s.type, title || renderResult.title, { watermarkFree: false })
             added++
         }
     }
-    return added > 0 ? { title } : null
+    return added > 0 ? { title, cover } : null
+}
+
+// ===== 基于 CDP 请求拦截的解析（最稳：浏览器自己签名 + 带 Cookie）=====
+// 用隐藏窗口加载页面，挂上 DevTools 调试器拦截页面自己发出的接口请求响应体：
+//   - 抖音：拦截 .../aweme/detail 的响应，取 aweme_detail.video.bit_rate[0].play_addr（无水印直链）
+//   - 快手：等客户端把视频注入 window.__APOLLO_STATE__ 后读取（VisionVideoSetRepresentation 即无水印直链）
+// 不需要自己实现 a_bogus，也不用手动处理 Cookie 时效 —— 浏览器全程代劳，绝不会把推荐/广告流误判成目标视频。
+async function parseViaCDP(target, source) {
+    return new Promise((resolve) => {
+        const result = { streams: [], title: '', cover: '', timeout: false }
+        let bw = null, dbg = null, settled = false, timer = null, pollTimer = null
+        const reqUrl = {}
+        let triggerReqId = null
+        const finish = (r) => {
+            if (settled) return
+            settled = true
+            if (timer) clearTimeout(timer)
+            if (pollTimer) clearInterval(pollTimer)
+            try { if (dbg && dbg.isAttached()) dbg.detach() } catch (e) {}
+            try { if (bw && !bw.isDestroyed()) bw.destroy() } catch (e) {}
+            resolve(r || result)
+        }
+        timer = setTimeout(() => { if (!result.streams.length) result.timeout = true; finish(result) }, 20000)
+
+        const readApollo = async () => {
+            if (!bw || bw.isDestroyed() || settled) return
+            try {
+                const raw = await bw.webContents.executeJavaScript('(function(){try{return JSON.stringify(window.__APOLLO_STATE__||null)}catch(e){return null}})()')
+                if (!raw) return
+                const apollo = JSON.parse(raw)
+                const dc = (apollo.defaultClient && typeof apollo.defaultClient === 'object') ? apollo.defaultClient : apollo
+                const ks = extractKuaishouFromApollo(dc)
+                if (ks.videoUrl) {
+                    if (ks.caption) result.title = ks.caption
+                    if (ks.coverUrl) result.cover = ks.coverUrl
+                    const list = (ks.qualities && ks.qualities.length) ? ks.qualities : [{ url: ks.videoUrl, ratio: '' }]
+                    for (const q of list) {
+                        result.streams.push({
+                            url: q.url,
+                            type: /\.m3u8(\?|$)/i.test(q.url) ? 'm3u8' : 'mp4',
+                            title: q.ratio ? `${result.title} [${q.ratio}]` : result.title,
+                            cover: ks.coverUrl, watermarkFree: true
+                        })
+                    }
+                    finish(result)
+                }
+            } catch (e) {}
+        }
+
+        try {
+            bw = new BrowserWindow({
+                width: 1280, height: 800, show: false, frame: false,
+                webPreferences: {
+                    nodeIntegration: false, contextIsolation: true, sandbox: false,
+                    webSecurity: false, images: false,
+                    autoplayPolicy: 'no-user-gesture-required',
+                    partition: 'temp-parser-cdp'
+                }
+            })
+            dbg = bw.webContents.debugger
+            dbg.attach('1.3')
+            dbg.on('message', (event) => {
+                const { method, params } = event
+                if (method === 'Network.responseReceived') {
+                    const url = (params.response && params.response.url) || ''
+                    reqUrl[params.requestId] = url
+                    if (source === 'douyin' && /aweme\/detail|\/iteminfo\//.test(url)) {
+                        triggerReqId = params.requestId
+                    }
+                } else if (method === 'Network.loadingFinished') {
+                    const url = reqUrl[params.requestId] || ''
+                    if (source === 'douyin' && params.requestId === triggerReqId) {
+                        ;(async () => {
+                            try {
+                                const { body, base64Encoded } = await dbg.sendCommand('Network.getResponseBody', { requestId: params.requestId })
+                                const text = base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body
+                                const json = JSON.parse(text)
+                                const d = json && json.aweme_detail
+                                if (!d) return
+                                if (d.desc) result.title = d.desc
+                                const video = d.video || {}
+                                const coverUrl = coverFromDouyin(video)
+                                if (coverUrl) result.cover = coverUrl
+                                let playUrl = ''
+                                const br = video.bit_rate
+                                if (Array.isArray(br) && br.length) {
+                                    const ul = (br[0].play_addr && br[0].play_addr.url_list) || []
+                                    playUrl = ul.length > 2 ? ul[2] : (ul[0] || '')
+                                }
+                                if (!playUrl) {
+                                    const ul = (video.play_addr && video.play_addr.url_list) || []
+                                    playUrl = ul.length > 2 ? ul[2] : (ul[0] || '')
+                                }
+                                if (playUrl) {
+                                    playUrl = playUrl.replace(/playwm/i, 'play')  // 双保险去水印
+                                    // 画质标签：优先分辨率，其次按码率估算，放进标题括号供前端分组
+                                    let ratio = ''
+                                    const br = video.bit_rate
+                                    if (Array.isArray(br) && br.length) {
+                                        ratio = douyinRatioFrom(br[0], playUrl)
+                                        const kbps = Math.floor((br[0].bit_rate || 0) / 1000)
+                                        if (!ratio && kbps > 0) ratio = estimateRatioFromKbps(kbps)
+                                    }
+                                    const titleTag = ratio ? `${result.title} [${ratio}]` : result.title
+                                    result.streams.push({ url: playUrl, type: 'mp4', title: titleTag, cover: coverUrl, watermarkFree: true })
+                                    finish(result)
+                                }
+                            } catch (e) {}
+                        })()
+                    } else if (source === 'kuaishou' && /kuaishou\.com\/graphql/.test(url)) {
+                        readApollo()
+                    }
+                }
+            })
+            dbg.sendCommand('Network.enable')
+            // 抖音：页面加载后再等 12s 仍无 detail 响应就提前结束，让次级兜底（a_bogus/SSR/DOM）接管
+            bw.webContents.on('did-finish-load', () => {
+                if (source === 'douyin') {
+                    setTimeout(() => { if (!settled && !result.streams.length) finish(result) }, 12000)
+                }
+            })
+            // 快手兜底轮询：graphql 没命中时持续读 Apollo，直到出现 Vision 键
+            if (source === 'kuaishou') pollTimer = setInterval(readApollo, 600)
+            bw.webContents.loadURL(target, { userAgent: PARSE_UA }).catch(() => finish(result))
+        } catch (e) { finish(result) }
+    })
 }
 
 // ===== 基于 BrowserWindow 的渲染解析（通用）=====
@@ -1193,7 +1782,7 @@ async function parseByHiddenWindow(target, source) {
         // 已知视频 CDN 域名正则（只收集这些域名的请求，排除广告）
         const cdnPattern = source === 'douyin'
             ? /douyinvod\.com|bytecdn\.cn|bytedance\.com|ixigua\.com|byteimg\.com|douyinstatic/i
-            : /kwaixia\.com|kwai\.com|gifshow\.com|kwimgs\.com|kwaicdn\.com|kscube\.com|ksapisrc\.com/i
+            : /kwaixia\.com|kwai\.com|gifshow\.com|kwimgs\.com|kwaicdn\.com|kscube\.com|ksapisrc\.com|yximgs\.com|kuaishou\.com|cloudshort\.live\.kuaishou\.com/i
 
         const finish = (result) => {
             if (settled) return
@@ -1453,24 +2042,28 @@ async function extractBvid(target) {
 }
 
 // 调用 B站 API 解析视频流
-async function parseBilibili(target, addStream) {
+// mode: 'web'（默认，网页接口+登录Cookie）| 'tv'（云视听小电视接口，无水印源，无需登录）
+async function parseBilibili(target, addStream, mode = 'web') {
     const bvidInfo = await extractBvid(target)
     if (!bvidInfo) return null
 
     // 带上已登录的 Cookie（提升画质，大会员可解锁 4K/1080P+）
     const biliCookies = loadBiliCookie()
     const isLoggedIn = !!(biliCookies && biliCookies.SESSDATA)
+    const useTv = mode === 'tv'
     const biliHeaders = { 'User-Agent': PARSE_UA, 'Referer': 'https://www.bilibili.com/' }
-    if (isLoggedIn) {
+    if (isLoggedIn && !useTv) {
         biliHeaders['Cookie'] = biliCookieString(biliCookies)
     }
     let bvid = null
+    let aid = null
 
     // av 号转 BV 号
     if (typeof bvidInfo === 'object' && bvidInfo.aid) {
+        const rawAid = bvidInfo.aid
         try {
-            const r = await axios.get(`https://api.bilibili.com/x/web-interface/view?id=${bvidInfo.aid}`, { headers: biliHeaders, timeout: 10000 })
-            if (r.data?.code === 0) bvid = r.data.data.bvid
+            const r = await axios.get(`https://api.bilibili.com/x/web-interface/view?id=${rawAid}`, { headers: biliHeaders, timeout: 10000 })
+            if (r.data?.code === 0) { bvid = r.data.data.bvid; aid = r.data.data.aid }
         } catch (e) { return null }
     } else {
         bvid = bvidInfo
@@ -1483,6 +2076,7 @@ async function parseBilibili(target, addStream) {
         const r = await axios.get(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, { headers: biliHeaders, timeout: 10000 })
         if (r.data?.code !== 0) return null
         viewData = r.data.data
+        if (!aid) aid = viewData.aid
     } catch (e) { return null }
 
     // 过滤 B站标题开头的【...】前缀（不少 UP 主会把整个标题或分类套进【】里，可能连续多层）
@@ -1514,6 +2108,15 @@ async function parseBilibili(target, addStream) {
             ? `[P${pi + 1}] ${cleanBiliTitle(p.part || `第${pi + 1}P`)}`
             : title
         let pageAdded = false
+
+        // === 0. TV 接口模式（无需登录，无水印源）===
+        if (useTv) {
+            try {
+                pageAdded = await biliTvParsePage({ aid, cid: partialCid, pTitle, addStream, qualityMap })
+            } catch (e) { pageAdded = false }
+            if (pageAdded) { addedAny = true; continue }
+            // TV 接口失败时自动回退到 web 接口逻辑
+        }
 
         // === 1. 登录后优先尝试 DASH 格式（fnval=16），可获取 4K/1080P+ 高画质（音视频分离）===
         // B站对 durl(fnval=1) 限制了高画质，登录用户的高画质必须走 DASH（音视频分离）
@@ -1672,14 +2275,16 @@ async function extractBangumiId(target) {
 }
 
 // 调用 B站番剧 API 解析视频流
-async function parseBilibiliBangumi(target, addStream) {
+// mode: 'web'（默认）| 'tv'（云视听小电视接口，无水印源）
+async function parseBilibiliBangumi(target, addStream, mode = 'web') {
     const idInfo = await extractBangumiId(target)
     if (!idInfo) return null
 
     const biliCookies = loadBiliCookie()
     const isLoggedIn = !!(biliCookies && biliCookies.SESSDATA)
+    const useTv = mode === 'tv'
     const biliHeaders = { 'User-Agent': PARSE_UA, 'Referer': 'https://www.bilibili.com/' }
-    if (isLoggedIn) biliHeaders['Cookie'] = biliCookieString(biliCookies)
+    if (isLoggedIn && !useTv) biliHeaders['Cookie'] = biliCookieString(biliCookies)
 
     // 1. 获取 season 信息和剧集列表
     let seasonData
@@ -1707,6 +2312,15 @@ async function parseBilibiliBangumi(target, addStream) {
     const loggedInfo = isLoggedIn ? '（已登录）' : '（未登录·仅低画质）'
     const epTitle = `${title} 第${targetEp.title}话${targetEp.long_title ? ' ' + targetEp.long_title : ''}`.trim()
     let addedAny = false
+
+    // === 0. TV 接口模式（无需登录，无水印源）===
+    if (useTv) {
+        try {
+            addedAny = await biliTvParsePage({ aid: targetEp.aid, cid: targetEp.cid, pTitle: epTitle, addStream, bangumi: true, epId: targetEp.id, qualityMap })
+        } catch (e) { addedAny = false }
+        if (addedAny) return { title: epTitle }
+        // TV 接口失败时自动回退到 web 接口逻辑
+    }
 
     // === 1. 登录后优先尝试 DASH 格式（fnval=16），获取高画质（音视频分离）===
     if (isLoggedIn) {
@@ -3553,6 +4167,257 @@ ipcMain.handle('bilibili:space-info', async () => {
 
 
 
+// ===== B站 TV 接口（云视听小电视） =====
+// TV 端取流走 api.snm0516.aisee.tv（TvFetcher），固定 appkey/appsec 签名（无需 WBI / 网页 Cookie），
+// 无水印片源：面向粉丝量大的 UP 主，投稿源多为无水印原档（BBDown 的 -tv 模式同款）。
+// 未登录（无 access_key）时也能取流到 1080P 以下档位；要 1080P+/大会员档需 TV 端 access_key。
+const BILI_TV_APPKEY = '4409e2ce8ffd12b8'
+const BILI_TV_APPSEC = '59b43e04ad6965f34319062b478f83dd'
+// TV 流必须用此 UA 且不带 Referer 才能通过防盗链（实测验证）
+const BILI_TV_UA = 'BilibiliTV/106500 (Android TV; TV; 4.4.4)'
+
+// APP 接口签名：参数按 key 字典序排列后 urlencode，尾部拼 appsec 做 MD5（32位小写）
+function appSignParams(appkey, appsec, params) {
+    const merged = { ...params, appkey }
+    const keys = Object.keys(merged).sort()
+    let q = ''
+    for (const k of keys) q += `${k}=${encodeURIComponent(String(merged[k]))}&`
+    q = q.slice(0, -1)
+    const sign = crypto.createHash('md5').update(q + appsec).digest('hex')
+    return { ...merged, sign }
+}
+
+// 读取/保存 B站解析接口模式（web | tv），持久化到 userData/bili-api.json
+function getBiliApiJsonFile() {
+    try { return path.join(app.getPath('userData'), 'bili-api.json') } catch (e) { return path.join(process.cwd(), 'bili-api.json') }
+}
+let biliApiModeCache = null  // 空 = 未读取
+function readBiliApiMode() {
+    if (biliApiModeCache) return biliApiModeCache
+    try {
+        const f = getBiliApiJsonFile()
+        if (fs.existsSync(f)) {
+            const d = JSON.parse(fs.readFileSync(f, 'utf8'))
+            if (d && (d.mode === 'web' || d.mode === 'tv')) { biliApiModeCache = d.mode; return d.mode }
+        }
+    } catch (e) {}
+    return 'web'
+}
+function saveBiliApiMode(mode) {
+    try {
+        const f = getBiliApiJsonFile()
+        fs.mkdirSync(path.dirname(f), { recursive: true })
+        fs.writeFileSync(f, JSON.stringify({ mode }), 'utf8')
+        biliApiModeCache = mode
+    } catch (e) {
+        console.error('[BiliApi] 保存解析接口模式失败:', e.message)
+    }
+}
+ipcMain.handle('bili-api:get-mode', () => readBiliApiMode())
+ipcMain.handle('bili-api:set-mode', (_, mode) => {
+    const m = mode === 'tv' ? 'tv' : 'web'
+    saveBiliApiMode(m)
+    return { success: true, mode: m }
+})
+
+// ===== B站 TV 端登录（云视听小电视 passport） =====
+// TV 接口不吃网页 Cookie，必须用 TV 端独立的 access_key 才能解锁 1080P+/大会员档。
+// 登录链路：生成二维码 → 手机 B站 App 扫码 → 轮询拿到 access_key → 持久化并注入取流请求。
+const BILI_TV_TOKEN_FILE = () => path.join(app.getPath('userData'), 'bilibili-tv-token.json')
+function loadBiliTvToken() {
+    try {
+        const raw = fs.readFileSync(BILI_TV_TOKEN_FILE(), 'utf8')
+        const data = JSON.parse(raw)
+        if (!data || !data.accessKey) return null
+        // access_key 有效期内长期有效（按 30 天保守判断，超期强制重新扫码）
+        if (data.savedAt && Date.now() - data.savedAt > 30 * 24 * 60 * 60 * 1000) return null
+        return data
+    } catch (e) { return null }
+}
+function saveBiliTvToken(token) {
+    try { fs.writeFileSync(BILI_TV_TOKEN_FILE(), JSON.stringify({ ...token, savedAt: Date.now() }), 'utf8') } catch (e) {}
+}
+function randStr(len) {
+    const chars = '0123456789abcdefghijklmnopqrstuvwxyz'
+    let s = ''
+    for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)]
+    return s
+}
+
+// 生成 TV 登录二维码
+ipcMain.handle('bilibili:tv-login-qr', async () => {
+    const localId = randStr(20)
+    const params = { local_id: localId, buvid: randStr(37), ts: Math.round(Date.now() / 1000) }
+    const signed = appSignParams(BILI_TV_APPKEY, BILI_TV_APPSEC, params)
+    try {
+        const r = await axios.post('https://passport.snm0516.aisee.tv/x/passport-tv-login/qrcode/auth_code',
+            new URLSearchParams(signed), {
+            headers: { 'User-Agent': BILI_TV_UA, 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 10000
+        })
+        const d = r.data
+        if (d?.code === 0 && d.data?.auth_code) {
+            return { success: true, qrcodeUrl: d.data.url, authCode: d.data.auth_code, localId }
+        }
+        return { success: false, message: d?.message || 'TV登录二维码生成失败' }
+    } catch (e) {
+        return { success: false, message: e.message }
+    }
+})
+
+// 轮询扫码状态；code=0 时拿到 access_key 并持久化
+ipcMain.handle('bilibili:tv-login-check', async (_, { authCode, localId }) => {
+    const params = { auth_code: authCode, local_id: localId, ts: Math.round(Date.now() / 1000) }
+    const signed = appSignParams(BILI_TV_APPKEY, BILI_TV_APPSEC, params)
+    try {
+        const r = await axios.post('https://passport.snm0516.aisee.tv/x/passport-tv-login/qrcode/poll',
+            new URLSearchParams(signed), {
+            headers: { 'User-Agent': BILI_TV_UA, 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 10000
+        })
+        const d = r.data
+        // code=0 且 data 中存在 token_info.access_token（H5 TV 登录）或 access_key（旧版 TV 登录）
+        const tokenObj = d?.data?.token_info || d?.data || {}
+        const accessKey = d?.code === 0 ? (tokenObj.access_token || tokenObj.access_key || '') : ''
+        if (d?.code === 0 && accessKey) {
+            const token = { accessKey, expiresIn: tokenObj.expires_in || 0, mid: tokenObj.mid || '' }
+            saveBiliTvToken(token)
+            return { success: true, loggedIn: true }
+        }
+        const statusMap = { 86101: 'waiting', 86039: 'waiting', 86090: 'scanned', 86038: 'expired' }
+        return { success: true, loggedIn: false, status: statusMap[d?.code] || 'unknown' }
+    } catch (e) {
+        return { success: false, message: e.message }
+    }
+})
+
+// TV 登录状态（返回本地持久化的 token 信息 + 通过 mid 拉取头像昵称）
+ipcMain.handle('bilibili:tv-login-status', async () => {
+    const token = loadBiliTvToken()
+    if (!token) return { success: true, loggedIn: false }
+    const base = { success: true, loggedIn: true, mid: token.mid || '', expiresIn: token.expiresIn || 0 }
+    if (!token.mid) return base
+    // 通过公开空间卡片接口拉取头像昵称（无需登录，慢速限频）
+    try {
+        const r = await axios.get('https://api.bilibili.com/x/web-interface/card', {
+            params: { mid: token.mid },
+            headers: { 'User-Agent': PARSE_UA, 'Referer': `https://space.bilibili.com/${token.mid}` },
+            timeout: 8000,
+            validateStatus: () => true
+        })
+        if (r.data?.code === 0 && r.data.data?.card) {
+            base.userInfo = {
+                uname: r.data.data.card.name || '',
+                face: r.data.data.card.face || ''
+            }
+        }
+    } catch (e) {}
+    return base
+})
+
+// 退出 TV 登录
+ipcMain.handle('bilibili:tv-logout', () => {
+    try { fs.unlinkSync(BILI_TV_TOKEN_FILE()) } catch (e) {}
+    return { success: true }
+})
+
+// TV 取流：返回 { dash, durl, quality } 或 null；qn 失败时由调用方降级重试
+async function biliTvFetchPlayurl({ aid, cid, qn = 80, fourk = 1, bangumi = false, epId = '' }) {
+    const tvToken = loadBiliTvToken()
+    const params = {
+        appkey: BILI_TV_APPKEY,
+        build: '106500',
+        cid,
+        device: 'android',
+        fnval: '4048',
+        fnver: '0',
+        fourk: fourk ? 1 : 0,
+        mid: 0,
+        mobi_app: 'android_tv_yst',
+        object_id: aid || 0,
+        platform: 'android',
+        playurl_type: 1,
+        qn,
+        ts: Math.round(Date.now() / 1000)
+    }
+    // 已登录（TV 端 access_key）：解锁 1080P+/大会员档
+    if (tvToken?.accessKey) {
+        params.access_key = tvToken.accessKey
+        if (tvToken.mid) params.mid = tvToken.mid
+    }
+    if (bangumi && epId) params.ep_id = epId
+    if (!bangumi) params.bvid = ''
+    const signed = appSignParams(BILI_TV_APPKEY, BILI_TV_APPSEC, params)
+    const host = bangumi ? 'https://api.snm0516.aisee.tv/pgc/player/api/playurltv' : 'https://api.snm0516.aisee.tv/x/tv/playurl'
+    try {
+        const r = await axios.get(host, {
+            params: signed,
+            headers: {
+                'User-Agent': BILI_TV_UA,
+                'Referer': 'https://www.bilibili.com/',
+                'Origin': 'https://www.bilibili.com'
+            },
+            timeout: 10000,
+            validateStatus: () => true
+        })
+        if (r.data?.code !== 0 || !r.data.data) return null
+        const d = r.data.data
+        return {
+            dash: d.dash || null,
+            durl: (d.durl && d.durl.length) ? d.durl : null,
+            quality: d.quality || 0
+        }
+    } catch (e) {
+        return null
+    }
+}
+
+// 用 TV 接口解析单 P：优先 durl（整段有声），DASH 视频流带 audioUrl 供合并
+// 返回该 P 是否成功添加流
+async function biliTvParsePage({ aid, cid, pTitle, addStream, bangumi = false, epId = '', qualityMap }) {
+    const tryQns = [127, 116, 112, 80, 64, 32, 16]
+    let lastErr = null
+    // TV 接口 base_url 是 mcdn IP 直链（HTTP，稳定性差），优先 backup_url（upos-sz-mirror 域名，可被防盗链拦截匹配）
+    const tvUrl = (v) => (v && (v.backup_url?.[0] || v.base_url || v.baseUrl)) || ''
+    for (const qn of tryQns) {
+        const res = await biliTvFetchPlayurl({ aid, cid, qn, fourk: 1, bangumi, epId })
+        if (!res) { lastErr = 'tv-empty'; continue }
+        // DASH：多画质输出（视频 + 对应音频）
+        if (res.dash && (res.dash.video || []).length) {
+            const audios = (res.dash.audio || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+            const bestAudio = audios[0]
+            const audioUrl = tvUrl(bestAudio)
+            const videos = (res.dash.video || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+            const seenQ = new Set()
+            for (const v of videos) {
+                if (seenQ.has(v.id)) continue
+                seenQ.add(v.id)
+                const u = tvUrl(v)
+                if (!u) continue
+                const qLabel = qualityMap[v.id] || `${v.id}P`
+                addStream(u, 'mp4', `${pTitle} [${qLabel} TV无水印·下载自动合并音频]`, { audioUrl, bili: true, tv: true })
+            }
+            return true
+        }
+        // durl：整段有声（可能分段）
+        if (res.durl) {
+            const qLabel = qualityMap[res.quality] || `${res.quality}P`
+            res.durl.forEach((d, i) => {
+                const u = tvUrl(d)
+                if (!u) return
+                const partTitle = res.durl.length > 1
+                    ? `${pTitle} [${qLabel} TV无水印·有声] - 第${i + 1}段`
+                    : `${pTitle} [${qLabel} TV无水印·有声]`
+                addStream(u, 'mp4', partTitle, { bili: true, tv: true })
+            })
+            return true
+        }
+        // 该 qn 拿到返回但无流 → 直接换更低档
+        lastErr = 'tv-no-stream'
+    }
+    return false
+}
+
 // ===== B站 WBI 签名（部分 space/polymer 接口需要） =====
 const MIXIN_KEY_ENC_TAB = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52]
 let wbiMixinKey = ''
@@ -3643,6 +4508,9 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             return { success: false, message: '请输入以 http:// 或 https:// 开头的网址' }
         }
 
+        // B站解析接口模式（web | tv）：全局持久化，可在解析界面切换
+        const biliApiMode = readBiliApiMode()
+
         const found = new Map()  // url -> {url, type, title, audioUrl?}
         const addStream = (u, type, title, extra = {}) => {
             let clean = String(u).replace(/\\\//g, '/').replace(/&amp;/g, '&').trim()
@@ -3659,6 +4527,11 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             if (extra.ytSrc) item.ytSrc = extra.ytSrc
             if (extra.ytHeight) item.ytHeight = extra.ytHeight
             if (extra.isLive) item.isLive = true
+            // 抖音/快手无水印解析：封面与"无水印"标记
+            if (extra.cover) item.cover = extra.cover
+            if (extra.watermarkFree) item.watermarkFree = true
+            // 画质标签（抖音多画质）：用于列表展示，如 '1080p 超清'
+            if (extra.quality) item.quality = extra.quality
             found.set(clean, item)
         }
 
@@ -3735,7 +4608,7 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             }
             // 番剧/电影：bangumi/play/epXXX 或 ssXXX
             if (/\/bangumi\/play\//i.test(target) || /b23\.tv/i.test(target)) {
-                const bgmResult = await parseBilibiliBangumi(target, addStream)
+                const bgmResult = await parseBilibiliBangumi(target, addStream, biliApiMode)
                 if (bgmResult) {
                     const streams = Array.from(found.values())
                     return { success: true, streams, pageTitle: bgmResult.title || '', pageUrl: target }
@@ -3748,7 +4621,7 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
                 }
             }
             // 普通视频
-            const biliResult = await parseBilibili(target, addStream)
+            const biliResult = await parseBilibili(target, addStream, biliApiMode)
             if (biliResult) {
                 const streams = Array.from(found.values())
                 return { success: true, streams, pageTitle: biliResult.title || '', pageUrl: target }
@@ -4263,9 +5136,66 @@ ipcMain.on('window-quit', () => {
     app.quit()
 })
 
+// ===== 音乐命名格式配置（下载命名 + 本地识别，设置页可切换，主进程持久化）=====
+// download: 'song-artist'（歌名 - 作者）/ 'artist-song'（作者 - 歌名）
+// local: 同上，用于把本地文件名解析出 歌名/作者
+function getMusicNamingFile() {
+    try {
+        return path.join(app.getPath('userData'), 'music-naming.json')
+    } catch (e) {
+        return path.join(process.cwd(), 'music-naming.json')
+    }
+}
+function readMusicNaming() {
+    try {
+        const f = getMusicNamingFile()
+        if (fs.existsSync(f)) {
+            const d = JSON.parse(fs.readFileSync(f, 'utf8'))
+            if (d && (d.download === 'song-artist' || d.download === 'artist-song')) return d
+        }
+    } catch (e) {}
+    return { download: 'song-artist', local: 'song-artist' }
+}
+function saveMusicNaming(d) {
+    try {
+        const f = getMusicNamingFile()
+        fs.mkdirSync(path.dirname(f), { recursive: true })
+        fs.writeFileSync(f, JSON.stringify(d || {}), 'utf8')
+    } catch (e) {
+        console.error('[MusicNaming] 保存音乐命名格式失败:', e.message)
+    }
+}
+ipcMain.handle('music-naming:get', () => readMusicNaming())
+ipcMain.handle('music-naming:save', (_, d) => {
+    const cur = readMusicNaming()
+    if (d && typeof d === 'object') {
+        if (d.download === 'song-artist' || d.download === 'artist-song') cur.download = d.download
+        if (d.local === 'song-artist' || d.local === 'artist-song') cur.local = d.local
+    }
+    saveMusicNaming(cur)
+    return { success: true, ...cur }
+})
+// 把本地文件名（无扩展名）按指定格式解析出 { name, artist }，不匹配返回 null
+// 支持 "歌名 - 作者"（song-artist）与 "作者 - 歌名"（artist-song）
+function parseLocalFileName(fileBase, format) {
+    const base = String(fileBase || '').trim()
+    if (!base) return null
+    const parts = base.split(' - ')
+    if (parts.length < 2) return null
+    const a = parts[0].trim()
+    const b = parts.slice(1).join(' - ').trim()
+    if (!a || !b) return null
+    return format === 'artist-song' ? { name: b, artist: a } : { name: a, artist: b }
+}
+
 ipcMain.handle('download-song', async (_, { url, name, artist, picUrl }) => {
     // 委托给统一下载管理器，category='music'，封面单独后台下载
-    const fullName = artist ? `${name} - ${artist}` : name
+    // 文件名格式随设置：'歌名 - 作者'（默认）或 '作者 - 歌名'
+    const naming = readMusicNaming()
+    let fullName = name
+    if (artist) {
+        fullName = naming.download === 'artist-song' ? `${artist} - ${name}` : `${name} - ${artist}`
+    }
     const result = await delegateStartDownload({ url, name: fullName, category: 'music' })
     // 后台下载封面到同目录（不纳入下载管理器，避免污染列表）
     if (result?.success && picUrl && result.path) {

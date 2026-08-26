@@ -36,9 +36,30 @@ import {
     AlertCircle,
     X,
     Download,
-    FolderOpen
+    FolderOpen,
+    Globe
 } from 'lucide-vue-next'
-import { downloadDefaultDir, downloadCheckDir, downloadPickDir } from '../api'
+import { downloadCheckDir, downloadPickDir, downloadGetDir, downloadSaveDir, getMusicNaming, saveMusicNaming } from '../api'
+// 支持平台图标（解析功能展示）
+import platformDouyin from '../assets/icons/douyin.png'
+import platformBilibili from '../assets/icons/bilibili.svg'
+import platformKuaishou from '../assets/icons/kuaishou.svg'
+import platformHuya from '../assets/icons/huya.png'
+import platformDouyu from '../assets/icons/douyu.png'
+import platformYoutube from '../assets/icons/youtube.svg'
+import platformKick from '../assets/icons/kick.svg'
+import platformTwitch from '../assets/icons/twitch.svg'
+// 各平台用处说明
+const supportedPlatforms = [
+    { name: '抖音', icon: platformDouyin, use: '解析短视频与直播，官方接口无水印，可播放并批量下载' },
+    { name: 'B站', icon: platformBilibili, use: '解析视频/番剧/电影/直播；TV 接口无水印片源，TV 端登录可解锁 1080P+' },
+    { name: '快手', icon: platformKuaishou, use: '解析短视频与直播，官方接口无水印，可播放并批量下载' },
+    { name: '虎牙', icon: platformHuya, use: '解析直播流（FLV/HLS），可播放与下载' },
+    { name: '斗鱼', icon: platformDouyu, use: '解析直播流（FLV/HLS），可播放与下载' },
+    { name: 'YouTube', icon: platformYoutube, use: '解析视频与直播，右上角 YT 登录后可解锁高画质/受限内容' },
+    { name: 'Kick', icon: platformKick, use: '解析直播流（HLS），可播放与下载' },
+    { name: 'Twitch', icon: platformTwitch, use: '解析直播流，HLS 低延迟实时跟播' }
+]
 
 const playerStore = usePlayerStore()
 const platformStore = usePlatformStore()
@@ -314,16 +335,27 @@ const claimYouthDayVip = () => {
 const claimYouthVipHours = () => runYouthVipAction(kugouYouthVip, 'hours')
 const upgradeYouthVip = () => runYouthVipAction(kugouYouthDayVipUpgrade, 'upgrade')
 
-// ---------- 下载专区：视频默认下载目录 ----------
-// 存 localStorage('video_download_dir')，批量/单条下载时直接使用，不再弹窗
-const videoDownloadDir = ref(localStorage.getItem('video_download_dir') || '')
+// ---------- 下载专区：统一下载目录（音乐/视频/自定义下载等所有下载共用） ----------
+// 目录由主进程持久化（userData/download-dir.json），本地不再用 localStorage
+const videoDownloadDir = ref('')
 const systemDownloadDir = ref('')
 const dirChecking = ref(false)
 
 async function loadDefaultDownloadDir() {
     try {
-        const res = await downloadDefaultDir()
-        if (res?.success) systemDownloadDir.value = res.dir
+        // 迁移旧版 localStorage 配置到主进程统一下载目录
+        const legacy = localStorage.getItem('video_download_dir')
+        if (legacy) {
+            const legacyDir = legacy.replace(/[\\/]+$/, '')
+            await downloadSaveDir(legacyDir).catch(() => {})
+            localStorage.removeItem('video_download_dir')
+        }
+        const res = await downloadGetDir()
+        if (res?.success) {
+            // configured 表示用户已自定义；未配置时展示系统下载区
+            videoDownloadDir.value = res.configured ? (res.dir || '') : ''
+            systemDownloadDir.value = res.dir || ''
+        }
     } catch (e) {}
 }
 async function pickVideoDownloadDir() {
@@ -338,9 +370,14 @@ async function pickVideoDownloadDir() {
         dirChecking.value = true
         const ok = await downloadCheckDir(dir)
         if (ok?.success) {
-            videoDownloadDir.value = dir
-            localStorage.setItem('video_download_dir', dir)
-            messageStore.success('视频下载目录已更新', 2500)
+            const saved = await downloadSaveDir(dir)
+            if (saved?.success) {
+                videoDownloadDir.value = dir
+                systemDownloadDir.value = dir
+                messageStore.success('统一下载目录已更新，所有下载将保存到此位置', 3000)
+            } else {
+                messageStore.error('保存目录失败：' + (saved?.error || '未知错误'), 4000)
+            }
         } else {
             messageStore.error('目录不可用：' + (ok?.error || '无法创建'), 4000)
         }
@@ -352,10 +389,46 @@ async function pickVideoDownloadDir() {
 }
 function resetVideoDownloadDir() {
     videoDownloadDir.value = ''
-    localStorage.removeItem('video_download_dir')
+    downloadSaveDir('').then((res) => {
+        if (res?.success) systemDownloadDir.value = res.dir || ''
+    }).catch(() => {})
     messageStore.success('已恢复为系统默认下载目录', 2500)
 }
 loadDefaultDownloadDir()
+
+// ---------- 音乐命名格式：下载音乐命名 + 本地音乐识别（主进程持久化 music-naming.json） ----------
+const MUSIC_NAMING_OPTIONS = [
+    { value: 'song-artist', label: '歌名 - 作者' },
+    { value: 'artist-song', label: '作者 - 歌名' }
+]
+const downloadNaming = ref('song-artist')
+const localNaming = ref('song-artist')
+async function loadMusicNaming() {
+    try {
+        const res = await getMusicNaming()
+        if (res) {
+            if (res.download) downloadNaming.value = res.download
+            if (res.local) localNaming.value = res.local
+        }
+    } catch (e) {}
+}
+async function handleDownloadNamingChange(val) {
+    if (!val || val === downloadNaming.value) return
+    downloadNaming.value = val
+    try {
+        const res = await saveMusicNaming({ download: val })
+        if (res?.success) messageStore.success('下载音乐命名格式已更新', 2000)
+    } catch (e) {}
+}
+async function handleLocalNamingChange(val) {
+    if (!val || val === localNaming.value) return
+    localNaming.value = val
+    try {
+        const res = await saveMusicNaming({ local: val })
+        if (res?.success) messageStore.success('本地音乐识别格式已更新，重新扫描本地音乐后生效', 2500)
+    } catch (e) {}
+}
+loadMusicNaming()
 
 onMounted(() => {
     window.addEventListener('keydown', onShortcutKeydown)
@@ -568,9 +641,9 @@ onUnmounted(() => {
             <span>下载专区</span>
           </div>
         </div>
-        <p class="card-tip">设置视频下载的默认保存位置后，下载时不再弹窗选择。每个视频会单独存放到「下载目录 / 视频标题 /」文件夹中，互不混淆。</p>
+        <p class="card-tip">统一下载目录：音乐下载、视频解析下载、MV/动漫/电影下载、自定义下载等所有下载操作都会保存到这里。未设置时使用系统默认下载区。</p>
         <div class="download-dir-row">
-          <span class="download-dir-label">视频下载目录</span>
+          <span class="download-dir-label">下载目录</span>
           <div class="download-dir-value" :title="videoDownloadDir || systemDownloadDir">
             {{ videoDownloadDir || systemDownloadDir || '系统下载区' }}
           </div>
@@ -580,6 +653,61 @@ onUnmounted(() => {
           <button class="download-dir-btn clickable" :disabled="!videoDownloadDir" @click="resetVideoDownloadDir">
             <RotateCcw :size="13" /> 恢复默认
           </button>
+        </div>
+      </section>
+
+      <!-- 支持解析平台 -->
+      <section class="settings-card">
+        <div class="card-head">
+          <div class="card-title">
+            <Globe :size="16" />
+            <span>支持解析平台</span>
+          </div>
+        </div>
+        <p class="card-tip">「本地视频 → 网址解析」支持以下平台：粘贴对应链接即可自动解析视频/直播流，支持播放与下载。各平台用处如下：</p>
+        <div class="platform-grid">
+          <div v-for="p in supportedPlatforms" :key="p.name" class="platform-item">
+            <img :src="p.icon" :alt="p.name" class="platform-item-icon" />
+            <div class="platform-item-info">
+              <div class="platform-item-name">{{ p.name }}</div>
+              <div class="platform-item-use">{{ p.use }}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 音乐命名格式 -->
+      <section class="settings-card">
+        <div class="card-head">
+          <div class="card-title">
+            <SlidersHorizontal :size="16" />
+            <span>音乐命名格式</span>
+          </div>
+        </div>
+        <p class="card-tip">下载的音乐文件名格式，以及本地音乐扫描时从文件名识别「歌名/作者」的格式。</p>
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">下载音乐命名格式</div>
+            <div class="setting-desc">下载歌曲时使用的文件名格式</div>
+          </div>
+          <CustomSelect
+            :model-value="downloadNaming"
+            :options="MUSIC_NAMING_OPTIONS"
+            :width="160"
+            @change="handleDownloadNamingChange"
+          />
+        </div>
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">本地音乐识别格式</div>
+            <div class="setting-desc">按文件名解析 歌名/作者（标签缺失时生效）</div>
+          </div>
+          <CustomSelect
+            :model-value="localNaming"
+            :options="MUSIC_NAMING_OPTIONS"
+            :width="160"
+            @change="handleLocalNamingChange"
+          />
         </div>
       </section>
 
@@ -1116,4 +1244,46 @@ onUnmounted(() => {
 }
 .download-dir-btn:hover:not(:disabled) { border-color: #c20c0c; color: #c20c0c; }
 .download-dir-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ===== 支持解析平台 ===== */
+.platform-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+.platform-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid rgba(0, 0, 0, .08);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, .5);
+    transition: all .15s;
+}
+.platform-item:hover {
+    border-color: rgba(194, 12, 12, .35);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .06);
+}
+.platform-item-icon {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+    border-radius: 7px;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+.platform-item-info { min-width: 0; }
+.platform-item-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+}
+.platform-item-use {
+    margin-top: 3px;
+    font-size: 12px;
+    color: #888;
+    line-height: 1.5;
+}
 </style>

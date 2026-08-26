@@ -297,11 +297,19 @@ export const movieParsePlayUrl = (source, episodeUrl) => animeBridge().invoke('m
 export const downloadVideo = (params) => animeBridge().downloadVideo(params)
 export const cancelVideoDownload = (downloadId) => animeBridge().cancelVideoDownload(downloadId)
 export const parseVideoUrl = (url) => animeBridge().parseVideoUrl(url)
+// B站解析接口模式（web | tv，TV 为无水印接口）
+export const getBiliApiMode = () => animeBridge().getBiliApiMode()
+export const setBiliApiMode = (mode) => animeBridge().setBiliApiMode(mode)
 // B站登录（二维码扫码，获取 Cookie 提升画质）
 export const biliLoginQr = () => animeBridge().biliLoginQr()
 export const biliLoginCheck = (qrcodeKey) => animeBridge().biliLoginCheck(qrcodeKey)
 export const biliLoginStatus = () => animeBridge().biliLoginStatus()
 export const biliLogout = () => animeBridge().biliLogout()
+// B站 TV 端登录（云视听小电视 access_key，解锁 TV 接口高画质）
+export const biliTvLoginQr = () => animeBridge().biliTvLoginQr()
+export const biliTvLoginCheck = (params) => animeBridge().biliTvLoginCheck(params)
+export const biliTvLoginStatus = () => animeBridge().biliTvLoginStatus()
+export const biliTvLogout = () => animeBridge().biliTvLogout()
 // YouTube 登录（官方网页登录，捕获 Cookie 供 yt-dlp 使用）
 export const youtubeLoginOpen = () => animeBridge().youtubeLoginOpen()
 export const youtubeLoginClose = () => animeBridge().youtubeLoginClose()
@@ -319,10 +327,15 @@ export const biliFavContent = (params) => animeBridge().biliFavContent(params)
 export const biliFavSeason = (params) => animeBridge().biliFavSeason(params)
 export const biliSpaceInfo = () => animeBridge().biliSpaceInfo()
 export const biliArchives = (params) => animeBridge().biliArchives(params)
-// 下载目录设置
+// 下载目录设置（统一下载目录，所有下载共用：音乐/视频/MV/自定义下载等）
 export const downloadDefaultDir = () => animeBridge().downloadDefaultDir()
 export const downloadCheckDir = (dir) => animeBridge().downloadCheckDir(dir)
 export const downloadPickDir = () => animeBridge().downloadPickDir()
+export const downloadGetDir = () => animeBridge().downloadGetDir()
+export const downloadSaveDir = (dir) => animeBridge().downloadSaveDir(dir)
+// 音乐命名格式（下载音乐命名 + 本地音乐识别）
+export const getMusicNaming = () => animeBridge().getMusicNaming()
+export const saveMusicNaming = (d) => animeBridge().saveMusicNaming(d)
 export const onVideoDownloadProgress = (cb) => animeBridge().onVideoDownloadProgress(cb)
 export const onVideoDownloadStarted = (cb) => animeBridge().onVideoDownloadStarted(cb)
 export const onVideoDownloadDone = (cb) => animeBridge().onVideoDownloadDone(cb)

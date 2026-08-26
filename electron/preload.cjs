@@ -42,11 +42,19 @@ const bridgeAPI = {
     cancelVideoDownload: (downloadId) => ipcRenderer.invoke('video-download-cancel', { downloadId }),
     // 网址视频流解析
     parseVideoUrl: (url) => ipcRenderer.invoke('video:parse-url', { url }),
+    // B站解析接口模式（web | tv，TV 为无水印接口）
+    getBiliApiMode: () => ipcRenderer.invoke('bili-api:get-mode'),
+    setBiliApiMode: (mode) => ipcRenderer.invoke('bili-api:set-mode', mode),
     // B站登录（二维码扫码，获取 Cookie 提升画质）
     biliLoginQr: () => ipcRenderer.invoke('bilibili:login-qr'),
     biliLoginCheck: (qrcodeKey) => ipcRenderer.invoke('bilibili:login-check', { qrcodeKey }),
     biliLoginStatus: () => ipcRenderer.invoke('bilibili:login-status'),
     biliLogout: () => ipcRenderer.invoke('bilibili:logout'),
+    // B站 TV 端登录（云视听小电视 access_key，解锁 TV 接口高画质）
+    biliTvLoginQr: () => ipcRenderer.invoke('bilibili:tv-login-qr'),
+    biliTvLoginCheck: (params) => ipcRenderer.invoke('bilibili:tv-login-check', params),
+    biliTvLoginStatus: () => ipcRenderer.invoke('bilibili:tv-login-status'),
+    biliTvLogout: () => ipcRenderer.invoke('bilibili:tv-logout'),
 // YouTube 登录（官方网页登录，捕获 Cookie 供 yt-dlp 使用）
     youtubeLoginOpen: () => ipcRenderer.invoke('youtube:login-open'),
     youtubeLoginClose: () => ipcRenderer.invoke('youtube:login-close'),
@@ -69,10 +77,15 @@ const bridgeAPI = {
     biliFavSeason: (params) => ipcRenderer.invoke('bilibili:fav-season', params),
     biliSpaceInfo: () => ipcRenderer.invoke('bilibili:space-info'),
     biliArchives: (params) => ipcRenderer.invoke('bilibili:archives', params),
-    // 下载目录设置
+    // 下载目录设置（统一下载目录，所有下载共用）
     downloadDefaultDir: () => ipcRenderer.invoke('download:default-dir'),
     downloadCheckDir: (dir) => ipcRenderer.invoke('download:check-dir', { dir }),
     downloadPickDir: () => ipcRenderer.invoke('download:pick-dir'),
+    downloadGetDir: () => ipcRenderer.invoke('download:get-dir'),
+    downloadSaveDir: (dir) => ipcRenderer.invoke('download:save-dir', { dir }),
+    // 音乐命名格式（下载命名 + 本地识别）
+    getMusicNaming: () => ipcRenderer.invoke('music-naming:get'),
+    saveMusicNaming: (d) => ipcRenderer.invoke('music-naming:save', d),
     onVideoDownloadProgress: (cb) => {
         const sub = (_, data) => cb(data)
         ipcRenderer.on('video-download-progress', sub)

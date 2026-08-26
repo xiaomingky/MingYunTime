@@ -112,6 +112,43 @@ function loadHistory() {
   }
 }
 
+// ===== 统一下载目录（设置页"下载专区"配置，所有下载共用） =====
+function getDirSettingFile() {
+  try {
+    return path.join(app.getPath('userData'), 'download-dir.json')
+  } catch (e) {
+    return path.join(process.cwd(), 'download-dir.json')
+  }
+}
+
+// 读取用户设置的下载目录（未设置返回 ''）
+function readSavedDownloadDir() {
+  try {
+    const f = getDirSettingFile()
+    if (fs.existsSync(f)) {
+      const d = JSON.parse(fs.readFileSync(f, 'utf8'))
+      if (d && typeof d.dir === 'string' && d.dir.trim()) return d.dir.trim()
+    }
+  } catch (e) {}
+  return ''
+}
+
+// 保存下载目录设置（dir 传空表示恢复系统默认）
+function saveDownloadDir(dir) {
+  try {
+    const f = getDirSettingFile()
+    fs.mkdirSync(path.dirname(f), { recursive: true })
+    fs.writeFileSync(f, JSON.stringify({ dir: dir || '' }), 'utf8')
+  } catch (e) {
+    console.error('[DownloadManager] 保存下载目录失败:', e.message)
+  }
+}
+
+// 统一下载目录：优先用户设置，未设置时回退系统下载区
+function resolveDownloadDir() {
+  return readSavedDownloadDir() || app.getPath('downloads')
+}
+
 function saveHistory() {
   try {
     const f = getHistoryFile()
@@ -129,7 +166,7 @@ function saveHistory() {
 async function pickSavePath(defaultName, ext, category) {
   const safeExt = ext || ''
   const safeName = (String(defaultName || 'download').replace(/[\\/:*?"<>|]/g, '_').trim()) + safeExt
-  const defaultDir = app.getPath('documents')
+  const defaultDir = resolveDownloadDir() // 弹窗默认定位到设置页"下载专区"配置的统一下载目录
   const title = category === 'music' ? '选择音乐保存位置' : '选择视频保存位置'
   const filters = category === 'music'
     ? [{ name: 'Audio Files', extensions: ['mp3', 'flac', 'wav', 'm4a'] }, { name: 'All Files', extensions: ['*'] }]
@@ -177,14 +214,23 @@ async function startDownload(params) {
   const { url, name, type, category, savePath, askPath, audioUrl, ytSrc, ytHeight, ytAuthed } = params
   if (!url) return { success: false, error: '缺少下载地址' }
 
-  // 自动为 B站 CDN 注入 Referer（B站视频流需要 Referer 才能访问）
-  // bilivideo 与 mcdn(mountaintoys) 都是 B站视频 CDN，都需 Referer/UA，否则 403
+  // 自动为各平台 CDN 注入 Referer（视频流需要对应 Referer 才能访问，否则 403）
   let headers = params.headers
-  if (/bilivideo\.(com|cn)|edge\.mountaintoys\.cn|mcdn/i.test(url)) {
-    headers = Object.assign({
-      'Referer': 'https://www.bilibili.com/',
-      'User-Agent': DEFAULT_UA
-    }, headers || {})
+  const injectReferer = (hostRe, referer) => {
+    if (hostRe.test(url)) {
+      headers = Object.assign({ 'Referer': referer, 'User-Agent': DEFAULT_UA }, headers || {})
+    }
+  }
+  // TV 接口流（platform=android_tv_yst 签名）：必须用 BilibiliTV UA 且不能带 Referer（实测带 Referer/浏览器 UA → 403）
+  if (/platform=android_tv_yst/i.test(url)) {
+    headers = Object.assign({ 'User-Agent': 'BilibiliTV/106500 (Android TV; TV; 4.4.4)' }, headers || {})
+  } else {
+    injectReferer(/bilivideo\.(com|cn)|edge\.mountaintoys\.cn|mcdn/i, 'https://www.bilibili.com/')
+    // 抖音 CDN（play_addr 直链形如 www.douyin.com/aweme/v1/play/... 会 302 到 douyinvod/bytecdn 等最终 CDN，
+    // 2026-08-25 实测：不带 douyin Referer + 浏览器 UA 时最终 CDN 返回 403，后续 302 会沿用注入的 Referer）
+    injectReferer(/douyinvod\.com|bytecdn\.cn|ixigua\.com|byteimg\.com|douyinstatic|(?:www\.)?douyin\.com\/aweme|snssdk\.com|iesdouyin\.com/i, 'https://www.douyin.com/')
+    // 快手 CDN
+    injectReferer(/kwaicdn\.com|kwai\.com|gifshow\.com|ksapisrc\.com|kwaixia\.com|kscube\.com/i, 'https://www.kuaishou.com/')
   }
 
   // 统一 headers 为字符串格式（"Key: Value\r\nKey2: Value2"），下游下载函数统一用 split 解析
@@ -197,15 +243,16 @@ async function startDownload(params) {
   const safeName = String(name || 'download').replace(/[\\/:*?"<>|]/g, '_').trim()
   const ext = deriveExt(url, cat)
 
-  // 选择保存路径
+  // 选择保存路径：仅当调用方显式 askPath === true 时才弹窗选择；
+  // 其余一律按"统一下载目录"直接下载（设置页"下载专区"配置，未配置用系统下载区）
   let outputPath = savePath
-  if (!outputPath && askPath !== false) {
+  if (!outputPath && askPath === true) {
     outputPath = await pickSavePath(safeName, ext, cat)
     if (!outputPath) return { success: false, canceled: true }
   }
   if (!outputPath) {
-    // 兜底：直接用 documents 目录
-    outputPath = path.join(app.getPath('documents'), safeName + ext)
+    // 兜底：未指定保存路径时统一存到"下载专区"配置的目录（未配置则系统下载区）
+    outputPath = path.join(resolveDownloadDir(), safeName + ext)
   }
   // 规范化路径（前端可能传混用分隔符的 Windows 路径）
   try { outputPath = path.normalize(outputPath) } catch (e) {}
@@ -1224,6 +1271,29 @@ ipcMain.handle('download:start', async (_, params) => {
     return await startDownload(params)
   } catch (e) {
     console.error('[DownloadManager] 启动失败:', e.message)
+    return { success: false, error: e.message }
+  }
+})
+
+// 获取统一下载目录（用户设置或系统默认，供前端"下载专区"显示与本地视频下载使用）
+ipcMain.handle('download:get-dir', async () => {
+  try {
+    return { success: true, dir: resolveDownloadDir(), configured: !!readSavedDownloadDir() }
+  } catch (e) {
+    return { success: false, dir: '', error: e.message }
+  }
+})
+
+// 保存统一下载目录（dir 为空表示恢复系统默认），所有下载操作共用
+ipcMain.handle('download:save-dir', async (_, { dir }) => {
+  try {
+    const target = (dir || '').replace(/[\\/]+$/, '')
+    if (target) {
+      fs.mkdirSync(target, { recursive: true })
+    }
+    saveDownloadDir(target)
+    return { success: true, dir: target || app.getPath('downloads') }
+  } catch (e) {
     return { success: false, error: e.message }
   }
 })
