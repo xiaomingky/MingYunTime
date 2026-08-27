@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { animeDetail, animeParsePlayUrl, animeMetaSearch, animeMetaRelated, downloadVideo } from '../api'
+import { animeDetail, animeParsePlayUrl, animeMetaSearch, animeMetaRelated, downloadVideo, biliAnimePlayurl, biliAnimeDanmaku, biliTvLoginStatus } from '../api'
 import { useAnimeStore } from '../store/anime'
 import { useMessageStore } from '../store/message'
 import PlayDisclaimer from '../components/PlayDisclaimer.vue'
@@ -33,12 +33,33 @@ const episodes = computed(() => currentRoute.value?.episodes || [])
 const watchedSet = ref(new Set())
 
 // ===== 播放器状态 =====
-const playUrl = ref('')          // 播放地址（m3u8 直链或 iframe src）
-const playType = ref('iframe')   // iframe | m3u8
+const playUrl = ref('')          // 播放地址（m3u8 直链 / DASH 视频流 / iframe src）
+const playType = ref('iframe')   // iframe | m3u8 | direct
+const dashAudioUrl = ref('')     // B站 DASH 音视频分离时的音频流
 const playerError = ref('')
 const showDisclaimer = ref(true) // 播放前免责声明（默认显示，点击开始播放后消失）
 const pendingEpisode = ref(null) // 待播放的集数（用户点击开始后再解析）
 const playScheme = ref(1)        // 播放方案：1=iframe快速解析（默认），2=m3u8直链ArtVideoPlayer
+
+const isBiliSource = computed(() => source.value === 'bilibili')
+// B站TV 登录状态（用于未登录时提示封顶画质）
+const biliTvLoggedIn = ref(false)
+// B站TV 画质列表 + 当前档位（跨集记忆用户选择的画质）
+const biliQualities = ref([])
+const biliCurrentQn = ref(0)
+let biliPreferredQn = 0
+// B站TV 弹幕（异步拉取，播放不阻塞；播放器热加载）
+const biliDanmaku = ref([])
+// 拉取整集弹幕：seg.so 分段协议，滚动/顶部/底部全量
+function loadBiliDanmaku(cid) {
+    biliDanmaku.value = []
+    if (!cid) return
+    biliAnimeDanmaku({ cid }).then(res => {
+        if (res?.success && Array.isArray(res.data)) {
+            biliDanmaku.value = res.data
+        }
+    }).catch(() => {})
+}
 
 const isFavorited = computed(() => {
     if (!detail.value) return false
@@ -57,9 +78,13 @@ async function loadDetail() {
     meta.value = null
     related.value = []
     playUrl.value = ''
+    dashAudioUrl.value = ''
     currentEpisode.value = null
     showDisclaimer.value = true   // 每次加载详情都重置免责声明
     pendingEpisode.value = null
+    biliQualities.value = []      // 重置 B站TV 画质列表
+    biliCurrentQn.value = 0
+    biliDanmaku.value = []        // 重置 B站TV 弹幕
     try {
         const res = await animeDetail(source.value, id.value)
         if (res?.success && res.data) {
@@ -70,6 +95,13 @@ async function loadDetail() {
             // 默认不自动播放，先显示免责声明，用户点击"开始播放"后再解析第一集
             if (episodes.value.length > 0) {
                 pendingEpisode.value = episodes.value[0]
+            }
+            // B站源：拉取 TV 登录状态（用于播放前提示）
+            if (isBiliSource.value) {
+                try {
+                    const lr = await biliTvLoginStatus()
+                    biliTvLoggedIn.value = !!(lr?.success && lr.loggedIn)
+                } catch (e) { biliTvLoggedIn.value = false }
             }
             // 并发拉取 Bangumi 元信息
             fetchMetaAndRelated(res.data.title)
@@ -150,7 +182,64 @@ async function playEpisode(ep) {
     currentEpisode.value = ep
     playerError.value = ''
     playUrl.value = ''
+    dashAudioUrl.value = ''
     playerLoading.value = true  // 解析期间显示加载遮罩
+
+    // ===== B站TV 源：TV 接口按 BV 号取流（DASH 音视频分离 / durl 直链）=====
+    if (isBiliSource.value) {
+        // 先清旧弹幕（避免重建播放器时带上集弹幕），取流成功后异步拉本集弹幕
+        biliDanmaku.value = []
+        try {
+            const res = await biliAnimePlayurl({ epId: ep.id, aid: ep.aid, cid: ep.cid, bvid: ep.bvid })
+            if (res?.success && (res.videoUrl || res.url)) {
+                // 画质列表：优先沿用用户上次选择的档位，无记忆或不可用时取最高
+                const qualities = res.qualities || []
+                biliQualities.value = qualities
+                let chosen = null
+                if (biliPreferredQn) {
+                    chosen = qualities.find(q => q.qn === biliPreferredQn) || null
+                }
+                if (!chosen) chosen = qualities[0] || null
+                if (chosen) biliCurrentQn.value = chosen.qn
+                if (res.type === 'dash') {
+                    playUrl.value = (chosen && chosen.videoUrl) || res.videoUrl
+                    playType.value = 'direct'
+                    dashAudioUrl.value = ((chosen && chosen.audioUrl) || res.audioUrl) || ''
+                } else {
+                    playUrl.value = (chosen && chosen.videoUrl) || res.url
+                    playType.value = 'direct'
+                    dashAudioUrl.value = ''
+                }
+                // 添加到历史
+                animeStore.addHistory({
+                    source: source.value,
+                    id: id.value,
+                    title: displayTitle.value,
+                    cover: displayCover.value
+                }, ep)
+                watchedSet.value.add(ep.title)
+                animeStore.saveProgress(source.value, id.value, ep.title, 0, 0)
+                playerLoading.value = false
+                // 异步拉取本集弹幕（不阻塞播放，播放器热加载）
+                loadBiliDanmaku(ep.cid)
+                // 未登录提示（不阻断播放，TV 接口未登录封顶 720P）
+                if (!biliTvLoggedIn.value) {
+                    messageStore.info(`当前画质 ${chosen?.label || res.qualityLabel || ''}（未 TV 登录封顶），登录解锁 1080P+`, 3000)
+                }
+            } else {
+                biliQualities.value = []
+                biliCurrentQn.value = 0
+                playerError.value = res?.message || '取流失败，请检查网络或 TV 登录状态'
+                playerLoading.value = false
+            }
+        } catch (e) {
+            biliQualities.value = []
+            biliCurrentQn.value = 0
+            playerError.value = '播放失败: ' + e.message
+            playerLoading.value = false
+        }
+        return
+    }
 
     try {
         const res = await animeParsePlayUrl(ep.source || source.value, ep.url, playScheme.value)
@@ -183,6 +272,13 @@ async function playEpisode(ep) {
 
 function onPlayerError(msg) {
     playerError.value = msg
+}
+
+// B站TV 播放器内切换画质：记录偏好档位（换集时沿用），父层只同步状态，
+// 实际切流由 ArtVideoPlayer 内部 art.switchUrl 完成（保持播放进度）
+function onBiliQualityChange(qn) {
+    biliPreferredQn = qn
+    biliCurrentQn.value = qn
 }
 
 function replayCurrent() {
@@ -258,6 +354,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
     playUrl.value = ''
+    dashAudioUrl.value = ''
 })
 
 // ===== 下载当前剧集 =====
@@ -273,8 +370,29 @@ const handleDownloadEpisode = async () => {
     }
     downloadingEp.value = true
     try {
-        const epTitle = currentEpisode.value.title || '第1集'
+        const epTitle = currentEpisode.value.longTitle || currentEpisode.value.title || '第1集'
         const name = `${displayTitle.value || '动漫'} - ${epTitle}`
+        // ===== B站TV 源：TV 接口按 BV 号取流后直链下载（DASH 音视频由 ffmpeg 自动合并）=====
+        if (isBiliSource.value) {
+            const res = await biliAnimePlayurl({ epId: currentEpisode.value.id, aid: currentEpisode.value.aid, cid: currentEpisode.value.cid, bvid: currentEpisode.value.bvid })
+            if (!res?.success || !(res.videoUrl || res.url)) {
+                messageStore.error('无法获取直链，下载失败：' + (res?.message || '取流失败'))
+                return
+            }
+            const result = await downloadVideo({
+                url: res.videoUrl || res.url,
+                name,
+                type: 'mp4',
+                category: 'anime',
+                audioUrl: res.audioUrl || ''
+            })
+            if (result?.success) {
+                messageStore.success(`已开始下载：${name}（进度见右下角）`, 3000)
+            } else if (!result?.canceled) {
+                messageStore.error('下载失败：' + (result?.error || '未知错误'))
+            }
+            return
+        }
         // 当前无直链（iframe 方案一）：自动用方案二重新解析拿 m3u8 直链
         let downUrl = playUrl.value
         let downType = playType.value === 'm3u8' ? 'm3u8' : ''
@@ -351,12 +469,16 @@ const handleDownloadEpisode = async () => {
                         @close="closeDisclaimer"
                     />
 
-                    <!-- m3u8/mp4 直链用 ArtVideoPlayer（ArtPlayer 引擎 + 选集 + 音量增强） -->
+                    <!-- m3u8 直链 / B站 DASH 直链 用 ArtVideoPlayer（ArtPlayer 引擎 + 选集 + 音量增强 + 画质切换） -->
                     <ArtVideoPlayer
-                        v-if="playUrl && playType === 'm3u8' && !playerError"
+                        v-if="playUrl && (playType === 'm3u8' || playType === 'direct') && !playerError"
                         :src="playUrl"
-                        play-type="m3u8"
-                        :badge="currentEpisode ? `正在播放：${currentEpisode.title}` : ''"
+                        :play-type="playType"
+                        :audio-url="dashAudioUrl"
+                        :qualities="biliQualities"
+                        :current-qn="biliCurrentQn"
+                        :danmaku="biliDanmaku"
+                        :badge="currentEpisode ? `正在播放：${currentEpisode.longTitle || currentEpisode.title}` : ''"
                         :episodes="episodes"
                         :current-episode="currentEpisode"
                         :has-prev="hasPrevEpisode"
@@ -366,6 +488,7 @@ const handleDownloadEpisode = async () => {
                         @prev="playPrevEpisode"
                         @next="playNextEpisode"
                         @selectEpisode="playEpisode"
+                        @qualityChange="onBiliQualityChange"
                     />
 
                     <!-- iframe 嵌入式播放器（m3u8 提取失败时兜底，直接加载整页） -->
@@ -395,8 +518,8 @@ const handleDownloadEpisode = async () => {
                     </div>
                 </div>
 
-                <!-- 播放方案切换条 -->
-                <div class="scheme-bar">
+                <!-- 播放方案切换条（B站源用 TV 接口直链，无 iframe 解析方案，隐藏） -->
+                <div v-if="!isBiliSource" class="scheme-bar">
                     <span class="scheme-label">播放方案</span>
                     <button
                         class="scheme-btn"
@@ -440,7 +563,7 @@ const handleDownloadEpisode = async () => {
                     <div v-if="episodes.length === 0" class="ep-empty">暂无集数</div>
                     <div v-else class="episodes-grid">
                         <button
-                            v-for="ep in episodes"
+                            v-for="(ep, idx) in episodes"
                             :key="ep.title"
                             class="ep-btn"
                             :class="{
@@ -449,7 +572,7 @@ const handleDownloadEpisode = async () => {
                             }"
                             @click="playEpisode(ep)"
                         >
-                            {{ ep.title }}
+                            {{ isBiliSource && ep.longTitle ? `${idx + 1} · ${ep.longTitle}` : ep.title }}
                             <span v-if="watchedSet.has(ep.title)" class="watched-dot"></span>
                         </button>
                     </div>

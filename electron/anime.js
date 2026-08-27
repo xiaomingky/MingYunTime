@@ -54,6 +54,163 @@ const PARSE_MAP = {
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
+// ============================================================
+// B站 PGC（番剧/电影）目录 —— 数据源用 Web 公共 API（无需登录）
+// 登录/取流走 TV 接口（main.js bilibili:tv-* 区，IPC: bilibili:anime-playurl）
+// 首页/搜索/详情均按 source==='bilibili' 在 IPC 层分流，不进 maccms 逻辑
+// 注意：本块引用上方 UA 常量，必须位于 const UA 之后（否则顶层立即求值触发 TDZ）
+// 2026-08-27 实测结论（长期有效）：
+//   - 首页 index/result 参数是 season_type(非 st) + type=1；返回 data.list
+//   - 详情 view/web/season 返回壳是 result(非 data)！
+//   - pgc/season/search/web 被 WAF 拦截(返回 HTML)，搜索必须走 x/web-interface/search/type
+//     + buvid3 Cookie；番剧用 search_type=media_bangumi，影视用 media_ft 且过滤 season_type===2
+// ============================================================
+const BILI_API = 'https://api.bilibili.com'
+const BILI_HEADERS = {
+  'User-Agent': UA,
+  'Referer': 'https://www.bilibili.com/',
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'zh-CN,zh;q=0.9'
+}
+// 番剧/电影：season_type=1 番剧、season_type=2 电影（order=3 追番热度 / order=2 播放热度，0 综合兜底）
+const BILI_CATS = {
+  anime: { st: 1, label: '番剧', orders: [3, 0] },
+  movie: { st: 2, label: '电影', orders: [2, 0] }
+}
+
+// buvid3 匿名 Cookie（搜索接口无 Cookie 会被 WAF 拦，带 buvid 放行）
+let biliBuvid = ''
+function getBiliBuvid() {
+  if (!biliBuvid) {
+    const hex = '0123456789abcdef'
+    let s = ''
+    for (let i = 0; i < 32; i++) s += hex[Math.floor(Math.random() * 16)]
+    biliBuvid = s + 'infoc'
+  }
+  return biliBuvid
+}
+
+// 统一 GET：兼容 data / result 两种返回壳；opts.buvid 时附带匿名 Cookie
+async function biliGet(url, params, opts = {}) {
+  const headers = { ...BILI_HEADERS }
+  if (opts.buvid) headers['Cookie'] = `buvid3=${getBiliBuvid()}`
+  const r = await axios.get(url, { params, headers, timeout: 15000, validateStatus: () => true })
+  const body = r.data
+  if (!body || typeof body !== 'object' || body.code !== 0) return null
+  if (body.data !== undefined && body.data !== null) return body.data
+  return body.result || null
+}
+
+// 卡片归一化（清理搜索高亮标签、http 封面转 https）
+function biliCard(it) {
+  const title = (it.title || it.season_title || '').replace(/<[^>]*>/g, '').trim()
+  const cover = (it.cover || it.pic || '').replace(/^http:\/\//, 'https://')
+  const desc = (it.subtitle || it.desc || (it.ep_size ? `共${it.ep_size}集` : '') || '').replace(/<[^>]*>/g, ' ').trim()
+  return {
+    id: String(it.season_id || it.seasonId || ''),
+    title,
+    cover,
+    desc: desc.slice(0, 80),
+    source: 'bilibili'
+  }
+}
+
+// 首页单分类：pgc/season/index/result（多 order 分组），失效静默降级 rank 接口
+async function biliHome(catKey) {
+  const cat = BILI_CATS[catKey] || BILI_CATS.anime
+  const latest = []
+  const seen = new Set()
+  for (const order of cat.orders) {
+    try {
+      const d = await biliGet(BILI_API + '/pgc/season/index/result', { season_type: cat.st, order, pagesize: 30, page: 1, type: 1 })
+      const items = (d && (Array.isArray(d) ? d : d.list)) || []
+      for (const it of items) {
+        const c = biliCard(it)
+        if (!c.id || seen.has(c.id)) continue
+        seen.add(c.id)
+        latest.push(c)
+      }
+    } catch (e) { /* 静默 */ }
+    if (latest.length > 0) break
+  }
+  // 兜底：官方排行接口
+  if (latest.length === 0) {
+    try {
+      const d = await biliGet(BILI_API + '/pgc/season/rank/web/list', { season_type: cat.st, day: 3 })
+      const items = (d && (Array.isArray(d) ? d : d.list)) || []
+      for (const it of items) {
+        const c = biliCard(it)
+        if (!c.id || seen.has(c.id)) continue
+        seen.add(c.id)
+        latest.push(c)
+      }
+    } catch (e) {}
+  }
+  return {
+    latest: latest.slice(0, 30),
+    hot: latest.slice(10, 28),
+    ranking: latest.slice(0, 10)
+  }
+}
+
+// 首页：番剧 + 电影 同时加载（前端无需来回切换），扁平结构兼容现有模板
+async function biliHomeAll() {
+  const [a, m] = await Promise.allSettled([biliHome('anime'), biliHome('movie')])
+  const anime = a.status === 'fulfilled' ? a.value : { latest: [], hot: [], ranking: [] }
+  const movie = m.status === 'fulfilled' ? m.value : { latest: [], hot: [], ranking: [] }
+  return {
+    latest: anime.latest,
+    hot: anime.hot,
+    ranking: anime.ranking,
+    movieLatest: movie.latest,
+    movieHot: movie.hot,
+    movieRanking: movie.ranking
+  }
+}
+
+// 搜索：x/web-interface/search/type（pgc/season/search/web 被 WAF 拦，必须走这个 + buvid Cookie）
+// 番剧 tab 用 media_bangumi（结果天然是番剧/国创）；电影 tab 用 media_ft 并过滤 season_type===2
+async function biliSearch(catKey, keyword) {
+  const cat = BILI_CATS[catKey] || BILI_CATS.anime
+  const searchType = cat.st === 2 ? 'media_ft' : 'media_bangumi'
+  const results = []
+  const seen = new Set()
+  const d = await biliGet(BILI_API + '/x/web-interface/search/type', { search_type: searchType, keyword }, { buvid: true })
+  if (!d) return null // 接口被拦/异常 → 让前端提示重试
+  const items = (Array.isArray(d) ? d : d.list || d.result) || []
+  for (const it of items) {
+    if (cat.st === 2 && it.season_type && Number(it.season_type) !== 2) continue
+    const c = biliCard(it)
+    if (!c.id || seen.has(c.id)) continue
+    seen.add(c.id)
+    results.push(c)
+  }
+  return results
+}
+
+// 详情：pgc/view/web/season → episodes（番剧/电影同构，长标题用于选集展示与下载命名）
+async function biliDetail(seasonId) {
+  const d = await biliGet(BILI_API + '/pgc/view/web/season', { season_id: seasonId })
+  if (!d) return null
+  const episodes = (d.episodes || []).map((ep, i) => ({
+    title: `${i + 1}`,
+    longTitle: ep.long_title || ep.title || '',
+    id: ep.id,
+    aid: ep.aid,
+    bvid: ep.bvid || '',
+    cid: ep.cid,
+    source: 'bilibili'
+  }))
+  return {
+    id: String(d.season_id || seasonId),
+    title: d.title || '',
+    cover: d.cover || '',
+    desc: d.evaluate || '',
+    source: 'bilibili',
+    routes: [{ name: '正片', episodes }]
+  }
+}
+
 async function fetchHtml(url, referer, timeout = 60000) {
   const res = await axios.get(url, {
     headers: {
@@ -481,7 +638,16 @@ ipcMain.handle('anime:sources', async () => {
   return { success: true, data: SOURCES }
 })
 
-ipcMain.handle('anime:home', async (_, { source }) => {
+ipcMain.handle('anime:home', async (_, { source, cat }) => {
+  // B站 PGC（番剧/电影）目录分流；cat='all' 时同时加载番剧+电影（首页无需切换）
+  if (source === 'bilibili') {
+    try {
+      const data = cat === 'all' ? await biliHomeAll() : await biliHome(cat)
+      return { success: true, data }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
   try {
     // 尊重用户选择的线路：先按指定线路加载，失败才故障转移
     if (source && SOURCES[source]) {
@@ -501,7 +667,17 @@ ipcMain.handle('anime:home', async (_, { source }) => {
   }
 })
 
-ipcMain.handle('anime:search', async (_, { source, keyword }) => {
+ipcMain.handle('anime:search', async (_, { source, keyword, cat }) => {
+  // B站 PGC 搜索分流（按当前番剧/电影类型过滤）
+  if (source === 'bilibili') {
+    try {
+      const data = await biliSearch(cat, keyword)
+      if (!data) return { success: false, message: 'B站搜索被拦截，请稍后重试' }
+      return { success: true, data }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
   try {
     // 尊重用户选择的线路：先按指定线路搜索，失败才故障转移
     if (source && SOURCES[source]) {
@@ -522,6 +698,16 @@ ipcMain.handle('anime:search', async (_, { source, keyword }) => {
 })
 
 ipcMain.handle('anime:detail', async (_, { source, id }) => {
+  // B站 PGC 详情分流（番剧/电影同构）
+  if (source === 'bilibili') {
+    try {
+      const data = await biliDetail(id)
+      if (!data) return { success: false, message: '加载详情失败，请重试' }
+      return { success: true, data }
+    } catch (e) {
+      return { success: false, message: e.message }
+    }
+  }
   try {
     const data = await getDetail(source, id)
     if (!data) return { success: false, message: '加载详情失败，请尝试切换线路' }

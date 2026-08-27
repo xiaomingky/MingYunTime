@@ -272,15 +272,11 @@ export const syncDesktopAccount = (userId, cookie) => cloudRequest.post('/api/au
 export const checkLockStatus = () => cloudRequest.get('/api/lock/status')
 export const verifyLockPassword = (password) => cloudRequest.post('/api/lock/verify', { password })
 
-// ---------- 自建后端：云音乐（仅列表/播放，上传请去后端网站） ----------
-export const getCloudSongs = () => cloudRequest.get('/api/cloud/list')
-export const reorderCloudSongs = (moves) => cloudRequest.post('/web/cloud/reorder', { moves })
-
 // ---------- 动漫模块（通过 Electron IPC 调用主进程） ----------
 const animeBridge = () => (window.bridge || window.__ELECTRON_BRIDGE__)
 export const animeSources = () => animeBridge().invoke('anime:sources')
-export const animeHome = (source) => animeBridge().invoke('anime:home', { source })
-export const animeSearch = (source, keyword) => animeBridge().invoke('anime:search', { source, keyword })
+export const animeHome = (source, opts = {}) => animeBridge().invoke('anime:home', { source, ...opts })
+export const animeSearch = (source, keyword, opts = {}) => animeBridge().invoke('anime:search', { source, keyword, ...opts })
 export const animeDetail = (source, id) => animeBridge().invoke('anime:detail', { source, id })
 export const animeParsePlayUrl = (source, episodeUrl, scheme = 1) => animeBridge().invoke('anime:parse-playurl', { source, episodeUrl, scheme })
 export const animeMetaSearch = (title) => animeBridge().invoke('anime:meta:search', { title })
@@ -310,6 +306,10 @@ export const biliTvLoginQr = () => animeBridge().biliTvLoginQr()
 export const biliTvLoginCheck = (params) => animeBridge().biliTvLoginCheck(params)
 export const biliTvLoginStatus = () => animeBridge().biliTvLoginStatus()
 export const biliTvLogout = () => animeBridge().biliTvLogout()
+// 动漫专区 B站番剧/电影取流（TV 接口 DASH 音视频分离）
+export const biliAnimePlayurl = (params) => animeBridge().biliAnimePlayurl(params)
+// 动漫专区 B站弹幕（滚动/顶部/底部）
+export const biliAnimeDanmaku = (params) => animeBridge().biliAnimeDanmaku(params)
 // YouTube 登录（官方网页登录，捕获 Cookie 供 yt-dlp 使用）
 export const youtubeLoginOpen = () => animeBridge().youtubeLoginOpen()
 export const youtubeLoginClose = () => animeBridge().youtubeLoginClose()
@@ -356,5 +356,11 @@ export const onDownloadError = (cb) => animeBridge().onDownloadError(cb)
 
 // 网易云 MV 搜索（按歌名匹配，返回 [{id, name, artistName, duration, cover, playCount}]）
 export const ncmMvSearch = (keyword) => animeBridge().ncmMvSearch(keyword)
+
+// 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）
+export const unlockScanDir = (dir) => animeBridge().unlockScanDir(dir)
+export const unlockConvertFile = (filePath) => animeBridge().unlockConvertFile(filePath)
+export const unlockOpenFiles = () => animeBridge().unlockOpenFiles()
+export const unlockParseInfo = (paths) => animeBridge().unlockParseInfo(paths)
 
 export default request

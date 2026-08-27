@@ -4,7 +4,7 @@ import { useMessageStore } from '../store/message'
 import ArtVideoPlayer from './ArtVideoPlayer.vue'
 import { X, Maximize, Minimize, Download } from 'lucide-vue-next'
 import { ref, watch, computed } from 'vue'
-import { downloadVideo } from '../api'
+import { downloadVideo, biliAnimeDanmaku } from '../api'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
@@ -15,6 +15,26 @@ const showSizeMenu = ref(false)
 const isDownloading = ref(false)
 // 当前视频是否已真正开始播放（用于流未开播时报错时自动关弹窗，避免沾满全屏退不出去）
 const didPlay = ref(false)
+// 本地视频是否已尝试过转码兜底（避免转码失败后反复触发）
+const transcodeAttempted = ref(false)
+const transcoding = ref(false)
+const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
+
+// ===== B站弹幕（网址解析的B站流带 cid 时拉取，滚动/顶部/底部）=====
+// 弹幕异步拉取不阻塞播放；数据后到由 ArtVideoPlayer 内部 watch 热加载（dk.load）
+const biliDanmaku = ref([])
+function loadBiliDanmaku(cid) {
+    biliDanmaku.value = []
+    if (!cid) return
+    biliAnimeDanmaku({ cid }).then(res => {
+        if (res?.success && Array.isArray(res.data)) {
+            biliDanmaku.value = res.data
+        }
+    }).catch(() => {})
+}
+watch(() => playerStore.currentMvDanmakuCid, (cid) => {
+    loadBiliDanmaku(cid)
+}, { immediate: true })
 
 // 显示标题：优先 MV 标题，回退歌曲名
 const displayTitle = computed(() => {
@@ -45,6 +65,8 @@ const close = () => {
     playerStore.currentMvTitle = ''
     playerStore.currentMvAudioUrl = ''
     playerStore.currentMvPlayType = ''
+    playerStore.currentMvDanmakuCid = null
+    biliDanmaku.value = []
 }
 
 // 切换播放地址时重置“是否已开播”标记
@@ -205,6 +227,7 @@ watch(() => playerStore.showMvPlayer, (val) => {
           :src="playerStore.currentMvUrl"
           :playType="biliPlayType"
           :audioUrl="playerStore.currentMvAudioUrl"
+          :danmaku="biliDanmaku"
           :autoplay="true"
           @playing="onArtPlaying"
           @error="onArtError"

@@ -1,15 +1,19 @@
 <script setup>
 import { usePlayerStore } from '../store/player'
-import { FolderOpen, Play, Search, Download, Trash2, FolderPlus, CheckSquare, Square, Image, ImagePlay, Edit3, X, Camera, GripVertical } from 'lucide-vue-next'
-import { ref, computed } from 'vue'
+import { FolderOpen, Play, Search, Download, Trash2, FolderPlus, Image, ImagePlay, Edit3, X, Camera, GripVertical, Wand2, Music, FileText, ChevronDown } from 'lucide-vue-next'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { cloudSearch, getNewLyric } from '../api'
 import { useMessageStore } from '../store/message'
+import FormatConvert from './FormatConvert.vue'
+import LyricFetch from './LyricFetch.vue'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
 const loading = ref(false)
 const selectedPaths = ref([])
 const showGifCover = ref(localStorage.getItem('local_show_gif_cover') === 'true')
+// Tabs：本地音乐 / 格式转换（与本地视频页的分 Tab 结构一致）
+const activeTab = ref('local')
 
 const getBridge = () => window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer || window.electron
 
@@ -49,6 +53,21 @@ const importFolder = async () => {
         loading.value = false
     }
 }
+
+// 添加按钮下拉菜单（添加文件 / 添加文件夹）
+const addMenuOpen = ref(false)
+const addDropdownRef = ref(null)
+function pickAdd(type) {
+    addMenuOpen.value = false
+    if (type === 'file') importSongs()
+    else if (type === 'folder' && !loading.value) importFolder()
+}
+function onDocDown(e) {
+    const el = addDropdownRef.value
+    if (el && !el.contains(e.target)) addMenuOpen.value = false
+}
+onMounted(() => document.addEventListener('mousedown', onDocDown))
+onBeforeUnmount(() => document.removeEventListener('mousedown', onDocDown))
 
 const findLyrics = (song) => {
     // 触发 LyricSelector 弹窗（QQ + 酷狗 + 网易云兜底）
@@ -292,24 +311,45 @@ const saveMetadata = async () => {
     <div class="view-header">
       <div class="header-left">
         <h1 class="title">本地音乐</h1>
-        <span class="count">共 {{ playerStore.localSongs.length }} 首</span>
-        <div class="auto-lyric-toggle" @click="playerStore.toggleAutoFetchLyric()" :title="playerStore.autoFetchLyric ? '自动获取歌词已开启' : '自动获取歌词已关闭'">
+        <div class="tabs">
+          <button class="tab-btn" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">
+            <Music :size="14" /> 本地音乐 <span class="tab-count">{{ playerStore.localSongs.length }}</span>
+          </button>
+          <button class="tab-btn" :class="{ active: activeTab === 'convert' }" @click="activeTab = 'convert'">
+            <Wand2 :size="14" /> 格式转换
+          </button>
+          <button class="tab-btn" :class="{ active: activeTab === 'lyric' }" @click="activeTab = 'lyric'">
+            <FileText :size="14" /> 歌词获取
+          </button>
+        </div>
+        <div v-if="activeTab === 'local'" class="auto-lyric-toggle" @click="playerStore.toggleAutoFetchLyric()" :title="playerStore.autoFetchLyric ? '自动获取歌词已开启' : '自动获取歌词已关闭'">
           <span class="toggle-label">自动获取</span>
           <div class="toggle-switch" :class="{ active: playerStore.autoFetchLyric }">
             <div class="toggle-knob"></div>
           </div>
         </div>
       </div>
-      <div class="actions">
+      <div class="actions" v-if="activeTab === 'local'">
         <button class="play-all-btn" @click="playerStore.playSong(playerStore.localSongs[0], playerStore.localSongs)">
           <Play :size="16" fill="white" /> 播放全部
         </button>
-        <button class="import-btn" @click="importSongs">
-          <FolderOpen :size="16" /> 添加文件
-        </button>
-        <button class="import-btn" @click="importFolder" :disabled="loading">
-          <FolderPlus :size="16" /> {{ loading ? '扫描中...' : '添加文件夹' }}
-        </button>
+        <div class="add-dropdown" ref="addDropdownRef">
+          <button class="import-btn add-trigger" @click="addMenuOpen = !addMenuOpen" :title="'添加音乐（文件或文件夹）'">
+            <FolderPlus :size="16" /> 添加
+            <ChevronDown :size="13" class="add-chevron" :class="{ open: addMenuOpen }" />
+          </button>
+          <Transition name="dd">
+            <div v-if="addMenuOpen" class="add-menu">
+              <button class="add-menu-item" @click="pickAdd('file')">
+                <FolderOpen :size="14" /> 添加文件
+              </button>
+              <div class="dd-sep"></div>
+              <button class="add-menu-item" @click="pickAdd('folder')" :disabled="loading">
+                {{ loading ? '扫描中...' : '添加文件夹' }}
+              </button>
+            </div>
+          </Transition>
+        </div>
         <button 
           class="import-btn gif-toggle-btn" 
           :class="{ active: showGifCover }"
@@ -330,12 +370,30 @@ const saveMetadata = async () => {
       </div>
     </div>
 
+    <!-- 格式转换 Tab -->
+    <template v-if="activeTab === 'convert'">
+      <div class="convert-section">
+        <FormatConvert :embedded="true" />
+      </div>
+    </template>
+
+    <!-- 歌词获取 Tab -->
+    <template v-else-if="activeTab === 'lyric'">
+      <div class="lyric-section">
+        <LyricFetch />
+      </div>
+    </template>
+
+    <!-- 本地音乐 Tab -->
+    <template v-else>
     <div class="track-list">
       <div class="list-header">
         <div class="col-drag"></div>
         <div class="col-check" @click="toggleSelectAll">
-            <CheckSquare v-if="isAllSelected" :size="16" class="check-icon active" />
-            <Square v-else :size="16" class="check-icon" />
+            <svg class="check-svg" :class="{ on: isAllSelected }" viewBox="0 0 16 16" fill="none">
+                <circle class="check-box" cx="8" cy="8" r="7" />
+                <path class="check-path" d="M4.5 8.1l2.3 2.4 4.6-5" />
+            </svg>
         </div>
         <div class="col-index">#</div>
         <div class="col-title">标题</div>
@@ -358,8 +416,10 @@ const saveMetadata = async () => {
             <GripVertical :size="16" />
         </div>
         <div class="col-check" @click.stop="toggleSelect(song)">
-            <CheckSquare v-if="selectedPaths.includes(song.path)" :size="16" class="check-icon active" />
-            <Square v-else :size="16" class="check-icon" />
+            <svg class="check-svg" :class="{ on: selectedPaths.includes(song.path) }" viewBox="0 0 16 16" fill="none">
+                <circle class="check-box" cx="8" cy="8" r="7" />
+                <path class="check-path" d="M4.5 8.1l2.3 2.4 4.6-5" />
+            </svg>
         </div>
         <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
         <div class="col-title">
@@ -451,6 +511,7 @@ const saveMetadata = async () => {
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -468,26 +529,80 @@ const saveMetadata = async () => {
     margin-bottom: 30px;
 }
 
+/* ===== Tabs（与本地视频页一致） ===== */
+.tabs {
+    display: flex;
+    gap: 2px;
+    background: #f0f0f0;
+    padding: 2px;
+    border-radius: 8px;
+}
+
+.tab-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.tab-btn.active {
+    background: #fff;
+    color: var(--primary-color, #c20c0c);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.tab-count {
+    font-size: 10px;
+    background: rgba(0,0,0,0.08);
+    padding: 1px 6px;
+    border-radius: 8px;
+    color: #888;
+}
+
+.tab-btn.active .tab-count {
+    background: rgba(194, 12, 12, 0.12);
+    color: var(--primary-color, #c20c0c);
+}
+
+.convert-section {
+    display: flex;
+    flex-direction: column;
+}
+
+/* 歌词获取面板 Tab：与格式转换一致，随页面自然撑开 */
+.convert-section, .lyric-section {
+    display: flex;
+    flex-direction: column;
+}
+
 .header-left {
     display: flex;
-    align-items: baseline;
-    gap: 15px;
+    align-items: center;
+    gap: 14px;
 }
 
 .title {
   font-size: 24px;
   font-weight: bold;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.count {
-    color: #999;
-    font-size: 14px;
-}
 .auto-lyric-toggle {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-left: 20px;
+    margin-left: 12px;
     cursor: pointer;
     user-select: none;
 }
@@ -556,6 +671,79 @@ const saveMetadata = async () => {
 .import-btn:hover:not(:disabled) {
     background-color: #f5f5f5;
     border-color: #ccc;
+}
+
+/* ===== 添加下拉（添加文件 / 添加文件夹） ===== */
+.add-dropdown {
+    position: relative;
+}
+
+.add-trigger { white-space: nowrap; }
+
+.add-chevron {
+    transition: transform 0.2s;
+    color: #999;
+}
+
+.add-chevron.open {
+    transform: rotate(180deg);
+    color: var(--primary-color, #c20c0c);
+}
+
+.add-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    min-width: 150px;
+    background: #fff;
+    border: 1px solid #e5e5e5;
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+    padding: 5px;
+    z-index: 100;
+}
+
+.add-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    background: transparent;
+    border-radius: 7px;
+    font-size: 13px;
+    color: #333;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s;
+}
+
+.add-menu-item:hover:not(:disabled) {
+    background: rgba(194, 12, 12, 0.08);
+    color: var(--primary-color, #c20c0c);
+}
+
+.add-menu-item:disabled {
+    color: #bbb;
+    cursor: not-allowed;
+}
+
+.dd-sep {
+    height: 1px;
+    background: #f0f0f0;
+    margin: 5px 6px;
+}
+
+.dd-enter-active,
+.dd-leave-active {
+    transition: opacity 0.16s, transform 0.16s;
+}
+
+.dd-enter-from,
+.dd-leave-to {
+    opacity: 0;
+    transform: translateY(-4px);
 }
 
 .batch-delete-btn {
@@ -647,14 +835,33 @@ const saveMetadata = async () => {
     cursor: pointer;
 }
 
-.check-icon {
-    color: #ccc;
-    transition: color 0.2s;
+.check-svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    display: block;
 }
-
-.check-icon.active {
-    color: var(--primary-color);
+.check-box {
+    fill: none;
+    stroke: #ccc;
+    stroke-width: 1.5;
+    transition: stroke 0.2s, fill 0.2s;
 }
+.check-svg.on .check-box {
+    stroke: var(--primary-color, #c20c0c);
+    fill: var(--primary-color, #c20c0c);
+}
+.check-path {
+    fill: none;
+    stroke: #fff;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 12;
+    stroke-dashoffset: 12;
+    transition: stroke-dashoffset 0.25s ease 0.05s;
+}
+.check-svg.on .check-path { stroke-dashoffset: 0; }
 
 .col-index { width: 40px; color: #bbb; text-align: center; font-size: 12px; }
 .col-title { flex: 3; display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 10px; }

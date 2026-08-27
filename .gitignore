@@ -19,6 +19,8 @@ token
 # 系统文件
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
 
 # 编辑器
 .vscode/

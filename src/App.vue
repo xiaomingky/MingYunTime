@@ -31,7 +31,7 @@ import {
   Download,
   HardDrive,
   Clock,
-  Cloud,
+  Clapperboard,
   Database,
   Lock,
   Play,
@@ -433,30 +433,34 @@ const onPlatformChange = (key) => {
 const neteaseNavItems = [
     { id: '/', label: '发现音乐', icon: Music },
     { id: '/video', label: 'MV', icon: Tv },
-    { id: '/anime', label: '动漫', icon: MonitorPlay },
-    { id: '/movie', label: '影视', icon: Film },
 ]
 const qqNavItems = [
     { id: '/qq', label: '发现音乐', icon: Music },
     { id: '/qq/singers', label: '歌手', icon: Mic },
     { id: '/qq/categories', label: '歌单分类', icon: ListMusic },
-    { id: '/anime', label: '动漫', icon: MonitorPlay },
-    { id: '/movie', label: '影视', icon: Film },
 ]
 // 酷狗概念版导航项（与 QQ 模式一致）
 const kugouNavItems = [
     { id: '/kugou', label: '发现音乐', icon: Music },
     { id: '/kugou/singers', label: '歌手', icon: Mic },
     { id: '/kugou/categories', label: '歌单分类', icon: ListMusic },
-    { id: '/anime', label: '动漫', icon: MonitorPlay },
-    { id: '/movie', label: '影视', icon: Film },
 ]
+// 视频分组（动漫区/影视区）：三平台共用，侧边栏可下拉展开，默认折叠
+const videoChildren = [
+    { id: '/anime', label: '动漫区', icon: MonitorPlay },
+    { id: '/movie', label: '影视区', icon: Film },
+]
+const videoGroupOpen = ref(false)
+const isVideoRoute = computed(() => route.path.startsWith('/anime') || route.path.startsWith('/movie'))
+// 进入视频子区时自动展开（刷新/直达路由也能看到当前项）
+watch(() => route.path, () => {
+    if (isVideoRoute.value) videoGroupOpen.value = true
+}, { immediate: true })
 // 本地资源导航（两平台共用，保留我们的自有功能）
 const libraryNavItems = [
     { id: '/local', label: '本地音乐', icon: HardDrive },
     { id: '/local-video', label: '本地视频', icon: Film },
     { id: '/recent', label: '最近播放', icon: Clock },
-    { id: '/cloud', label: '我的云音乐', icon: Cloud },
     { id: '/netease-cloud', label: '官方云盘', icon: Database },
     { id: '/downloads', label: '下载', icon: Download },
     { id: '/settings', label: '设置', icon: Settings },
@@ -1302,6 +1306,31 @@ const openGithub = () => {
                 <component :is="item.icon" :size="18" />
                 <span class="menu-label">{{ item.label }}</span>
               </div>
+
+              <!-- 视频：下拉分组（动漫区/影视区），默认折叠 -->
+              <div
+                class="menu-item video-group-item"
+                :class="{ active: isVideoRoute }"
+                @click="videoGroupOpen = !videoGroupOpen"
+              >
+                <Clapperboard :size="18" />
+                <span class="menu-label">视频</span>
+                <ChevronDown :size="14" class="video-group-chevron" :class="{ open: videoGroupOpen }" />
+              </div>
+              <Transition name="video-sub">
+                <div v-if="videoGroupOpen" class="video-sub-group">
+                  <div
+                    v-for="child in videoChildren"
+                    :key="child.id"
+                    class="menu-item video-sub-item"
+                    :class="{ active: route.path.startsWith(child.id) }"
+                    @click="navigateTo(child.id)"
+                  >
+                    <component :is="child.icon" :size="16" />
+                    <span class="menu-label">{{ child.label }}</span>
+                  </div>
+                </div>
+              </Transition>
             </div>
 
             <!-- Library：本地资源(官方云盘仅网易云平台显示) -->
@@ -2267,6 +2296,34 @@ const openGithub = () => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* 视频分组（动漫区/影视区下拉）：箭头旋转 + 折叠展开动画 */
+.video-group-item .video-group-chevron {
+    flex-shrink: 0;
+    color: #999;
+    transition: transform 0.25s ease;
+}
+.video-group-item .video-group-chevron.open {
+    transform: rotate(180deg);
+}
+.video-sub-group {
+    overflow: hidden;
+}
+.video-sub-item {
+    padding-left: 38px;
+    font-size: 13px;
+}
+/* 下拉展开/收起：高度 + 透明度过渡 */
+.video-sub-enter-active,
+.video-sub-leave-active {
+    transition: max-height 0.25s ease, opacity 0.2s ease;
+    max-height: 96px;
+}
+.video-sub-enter-from,
+.video-sub-leave-to {
+    max-height: 0;
+    opacity: 0;
 }
 
 .lock-icon {

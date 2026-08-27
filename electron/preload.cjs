@@ -14,7 +14,12 @@ const bridgeAPI = {
     openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
     openDirectoryDialog: () => ipcRenderer.invoke('open-directory-dialog'),
     saveLyric: (data) => ipcRenderer.invoke('save-lyric', data),
+    saveLyricAs: (data) => ipcRenderer.invoke('lyric-save-as', data),
     loadLocalLyric: (songPath) => ipcRenderer.invoke('load-local-lyric', songPath),
+    // 歌词保存目录（歌词获取面板）
+    lyricGetDir: () => ipcRenderer.invoke('lyric-dir:get'),
+    lyricSaveDir: (dir) => ipcRenderer.invoke('lyric-dir:save', { dir }),
+    lyricPickDir: () => ipcRenderer.invoke('lyric-dir:pick'),
     // 多平台歌词搜索（QQ + 酷狗）
     searchMultiLyric: ({ songName, artist }) => ipcRenderer.invoke('search-multi-lyric', { songName, artist }),
     fetchLyricByCandidate: (candidate) => ipcRenderer.invoke('fetch-lyric-by-candidate', candidate),
@@ -55,6 +60,10 @@ const bridgeAPI = {
     biliTvLoginCheck: (params) => ipcRenderer.invoke('bilibili:tv-login-check', params),
     biliTvLoginStatus: () => ipcRenderer.invoke('bilibili:tv-login-status'),
     biliTvLogout: () => ipcRenderer.invoke('bilibili:tv-logout'),
+    // 动漫专区 B站番剧/电影取流（TV 接口 DASH 音视频分离）
+    biliAnimePlayurl: (params) => ipcRenderer.invoke('bilibili:anime-playurl', params),
+    // 动漫专区 B站弹幕（seg.so protobuf，滚动/顶部/底部）
+    biliAnimeDanmaku: (params) => ipcRenderer.invoke('bilibili:anime-danmaku', params),
 // YouTube 登录（官方网页登录，捕获 Cookie 供 yt-dlp 使用）
     youtubeLoginOpen: () => ipcRenderer.invoke('youtube:login-open'),
     youtubeLoginClose: () => ipcRenderer.invoke('youtube:login-close'),
@@ -136,7 +145,12 @@ const bridgeAPI = {
     // 网易云 MV 搜索（按歌名匹配）
     ncmMvSearch: (keyword) => ipcRenderer.invoke('ncm-mv-search', { keyword }),
     // 打开本地文件/文件夹路径
-    openPath: (p) => ipcRenderer.invoke('open-path', { path: p })
+    openPath: (p) => ipcRenderer.invoke('open-path', { path: p }),
+    // 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）
+    unlockScanDir: (dir) => ipcRenderer.invoke('unlock:scan-dir', dir),
+    unlockConvertFile: (filePath) => ipcRenderer.invoke('unlock:convert-file', { path: filePath }),
+    unlockOpenFiles: () => ipcRenderer.invoke('unlock:open-files-dialog'),
+    unlockParseInfo: (paths) => ipcRenderer.invoke('unlock:parse-info', { paths })
 }
 
 // 导出到全局

@@ -109,6 +109,7 @@ export const usePlayerStore = defineStore('player', {
         currentMvTitle: '', // MV 实际标题（解决播放时显示歌曲名的问题）
         currentMvAudioUrl: '', // DASH 音视频分离时的音频地址（下载时合并用）
         currentMvPlayType: '', // 播放类型提示：m3u8/flv/live/direct，优先于 URL 后缀判断
+        currentMvDanmakuCid: null, // B站流的 cid（网址解析播放时按 cid 拉取弹幕；其他来源为 null）
         mvSearchCandidates: [], // 网易云 MV 搜索结果（供 UI 选择）
         showMvSearchPicker: false, // 是否显示 MV 选择弹层
         // 启动时默认不自动开启桌面歌词（即使上次开启过），需用户手动点击开关
@@ -1831,6 +1832,7 @@ export const usePlayerStore = defineStore('player', {
                     this.currentMvUrl = url
                     this.currentMvId = id
                     this.currentMvTitle = title || ''
+                    this.currentMvDanmakuCid = null
                     this.showMvPlayer = true
                 } else {
                     useMessageStore().warning('未获取到视频地址，由于版权或区域限制，该内容暂无法播放。')
@@ -1852,6 +1854,7 @@ export const usePlayerStore = defineStore('player', {
             this.currentMvId = null
             this.currentMvTitle = video.name || '本地视频'
             this.currentMvPlayType = 'direct'
+            this.currentMvDanmakuCid = null
             this.showMvPlayer = true
         },
         // 仅播放本地 MV（mode='local'）；找不到时返回 false，不自动回退到线上
@@ -1875,6 +1878,7 @@ export const usePlayerStore = defineStore('player', {
                     if (res && res.success) {
                         this.currentMvUrl = res.url
                         this.currentMvId = null
+                        this.currentMvDanmakuCid = null
                         // 本地 MV 标题优先用文件名（去掉扩展名），否则用歌曲名
                         const fileName = res.name || res.path?.split(/[\\/]/).pop() || ''
                         this.currentMvTitle = fileName ? fileName.replace(/\.[^.]+$/, '') : this.currentSong.name
@@ -2028,6 +2032,7 @@ export const usePlayerStore = defineStore('player', {
                 this.currentMvId = mvId || mvHash
                 this.currentMvTitle = song.name + ' - MV'
                 this.currentMvPlayType = 'kugou'
+                this.currentMvDanmakuCid = null
                 this.showMvPlayer = true
                 return true
             } catch (e) {

@@ -1,12 +1,12 @@
 // electron/download-manager.js
 // 统一下载管理器
-// - 直链（mp4/mp3 等）：aria2c 多线程下载（32 连接）
+// - 直链（mp4/mp3 等）：内置 128 线程分片下载（不限速，不依赖 aria2c）
 // - m3u8 流：ffmpeg 合并为 mp4
 // - 本地文件：直接复制
 // - 统一历史记录（持久化到磁盘），分类：music / movie / anime / mv / video
 // - 同时发送新事件（download:*）和旧事件（video-download-*）以兼容 VideoDownloadToast
 import { ipcMain, app, dialog } from 'electron'
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import https from 'node:https'
@@ -304,7 +304,8 @@ async function startDownload(params) {
     // m3u8：并行分片下载 + ffmpeg 本地 concat 合并
     startM3u8SegmentsDownload(id, url, outputPath, headers, record)
   } else {
-    startAria2cDownload(id, url, outputPath, headers, record)
+    // 直链：内置 128 线程分片下载（不限速，不依赖 aria2c）
+    startBuiltinMultithread(id, url, outputPath, headers, record)
   }
 
   return { success: true, downloadId: id, path: outputPath }
@@ -341,134 +342,6 @@ function startLocalCopy(id, url, outputPath, record) {
   })
 }
 
-// ===== aria2c 多线程直链下载 =====
-function startAria2cDownload(id, url, outputPath, extraHeaders, record) {
-  // 检查 aria2c 是否存在（仅对绝对路径检查；裸名称走 PATH 由 spawn error 兜底）
-  const isBareName = ARIA2C_PATH === 'aria2c.exe' || ARIA2C_PATH === 'aria2c'
-  if (!isBareName && !fs.existsSync(ARIA2C_PATH)) {
-    console.warn(`[DownloadManager] aria2c 不存在: ${ARIA2C_PATH}，降级到内置多线程下载`)
-    startBuiltinMultithread(id, url, outputPath, extraHeaders, record)
-    return
-  }
-
-  const dir = path.dirname(outputPath)
-  const filename = path.basename(outputPath)
-
-  const args = [
-    '-x', '16',            // 每服务器最大连接数
-    '-s', '16',            // 分片数
-    '-k', '1M',            // 最小分片大小
-    '--max-tries=5',
-    '--retry-wait=3',
-    '--summary-interval=1',
-    '--console-log-level=notice',
-    '--download-result=hide',
-    '--file-allocation=none',
-    '--max-download-limit=0',       // 不限速
-    '--max-overall-download-limit=0', // 总体不限速
-    '-d', dir,
-    '-o', filename
-  ]
-
-  // 头部处理
-  const headerLines = (extraHeaders || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)
-  if (!headerLines.some(h => /^user-agent/i.test(h))) {
-    headerLines.push('User-Agent: ' + DEFAULT_UA)
-  }
-  for (const h of headerLines) {
-    args.push('--header', h)
-  }
-  args.push(url)
-
-  const proc = spawn(ARIA2C_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-  const state = { canceled: false, _lastReport: 0, startTime: Date.now() }
-  activeDownloads.set(id, {
-    process: proc,
-    canceled: false,
-    cancel: () => { state.canceled = true; try { proc.kill() } catch (e) {} }
-  })
-  record.status = 'downloading'
-
-  const reportProgress = (received, total, speed) => {
-    record.received = received
-    record.total = total
-    record.percent = total ? Math.min(100, (received / total) * 100) : 0
-    record.speed = speed
-    const now = Date.now()
-    if (now - state._lastReport > 400) {
-      state._lastReport = now
-      emit('download:progress', {
-        id, percent: record.percent, received, total, speed
-      })
-      emit('video-download-progress', {
-        downloadId: id, percent: record.percent, received, total, speed
-      })
-    }
-  }
-
-  const parseProgress = (line) => {
-    // [#abc 56MiB/120MiB(46%) CN:16 DL:8MiB ETA:8s]
-    const m = line.match(/\[#\w+\s+([\d.]+[KMG]?i?B)\/([\d.]+[KMG]?i?B)\((\d+)%\)\s+CN:\d+\s+DL:([\d.]+[KMG]?i?B)/)
-    if (m) {
-      const received = parseSize(m[1])
-      const total = parseSize(m[2])
-      const speed = parseSize(m[4])
-      reportProgress(received, total, speed)
-    }
-  }
-
-  proc.stdout?.on('data', (chunk) => {
-    const text = chunk.toString()
-    text.split(/\r?\n/).forEach(parseProgress)
-  })
-  proc.stderr?.on('data', (chunk) => {
-    // aria2c 一般不走 stderr，但保险起见也解析
-    const text = chunk.toString()
-    text.split(/\r?\n/).forEach(parseProgress)
-  })
-
-  proc.on('close', (code) => {
-    if (state.canceled) {
-      record.status = 'canceled'
-      record.error = '用户取消'
-      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath) } catch (e) {}
-    } else if (code !== 0) {
-      record.status = 'error'
-      record.error = `aria2c 退出码 ${code}`
-      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath) } catch (e) {}
-    } else {
-      record.status = 'done'
-      record.percent = 100
-      // 尝试获取实际文件大小
-      try { record.total = fs.statSync(outputPath).size; record.received = record.total } catch (e) {}
-    }
-    record.endTime = Date.now()
-    // 计算平均速度（保留显示），不清零
-    const dur = (record.endTime - record.startTime) / 1000
-    if (record.status === 'done' && dur > 0 && record.total > 0) {
-      record.speed = Math.round(record.total / dur)
-    } else if (record.status !== 'done') {
-      record.speed = 0
-    }
-    saveHistory()
-    activeDownloads.delete(id)
-
-    if (record.status === 'done') {
-      emit('download:done', { id, path: outputPath, speed: record.speed })
-      emit('video-download-done', { downloadId: id, path: outputPath, name: record.name, category: record.type, speed: record.speed })
-    } else {
-      emit('download:error', { id, error: record.error })
-      emit('video-download-error', { downloadId: id, error: record.error })
-    }
-  })
-
-  proc.on('error', (err) => {
-    console.warn(`[DownloadManager] aria2c 启动失败: ${err.message}，降级到内置多线程`)
-    activeDownloads.delete(id)
-    startBuiltinMultithread(id, url, outputPath, extraHeaders, record)
-  })
-}
-
 // ===== YouTube 下载（yt-dlp，自动合并音视频为 mp4） =====
 function startYoutubeDlpDownload(id, ytSrc, ytHeight, ytAuthed, outputPath, record) {
   // yt-dlp 会自动补扩展名，去掉我们推导的 .mp4 避免变成 .mp4.mp4
@@ -483,11 +356,11 @@ function startYoutubeDlpDownload(id, ytSrc, ytHeight, ytAuthed, outputPath, reco
     '--restrict-filenames',
     '--progress-template', 'download:[download] %(progress._percent_str)s of %(progress._total_bytes_str)s at %(progress._speed_str)s ETA %(progress._eta_str)s'
   ]
-  // aria2c 多线程下载（32线程×2=64并发，不限速）
+  // aria2c 外部下载器（单服务器连接上限 16，64 分片尽量压满带宽，不限速）
   if (fs.existsSync(ARIA2C_PATH)) {
     args.push(
       '--downloader', 'aria2c',
-      '--downloader-args', `aria2c:-x32 -s32 --max-overall-download-limit=0 --file-allocation=none --console-log-level=warn --summary-interval=0`
+      '--downloader-args', `aria2c:-x16 -s64 --max-download-limit=0 --max-overall-download-limit=0 --file-allocation=none --console-log-level=warn --summary-interval=0`
     )
   }
   // 已登录（官方网页 Cookie 已写入）时启用账号画质/会员内容：yt-dlp 最新版仅支持 --cookies
@@ -614,103 +487,28 @@ function startYoutubeDlpDownload(id, ytSrc, ytHeight, ytAuthed, outputPath, reco
   })
 }
 
-// ===== 内置多线程分片下载（不依赖外部工具的降级方案） =====
+// ===== 内置 128 线程分片下载（直链统一入口，不限速，不依赖外部工具） =====
 async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record) {
+  const state = { canceled: false, startTime: Date.now() }
+  activeDownloads.set(id, {
+    canceled: false,
+    cancel: () => { state.canceled = true }
+  })
+  record.status = 'downloading'
   try {
-    const headerObj = { 'User-Agent': DEFAULT_UA }
-    if (extraHeaders) {
-      for (const line of extraHeaders.split(/\r?\n/)) {
-        const idx = line.indexOf(':')
-        if (idx > 0) headerObj[line.slice(0, idx).trim()] = line.slice(idx + 1).trim()
-      }
-    }
-
-    const headRes = await axios.head(url, { headers: headerObj, timeout: 15000, maxRedirects: 5 }).catch(() => null)
-    const total = parseInt(headRes?.headers?.['content-length'] || '0', 10)
-    const acceptRanges = (headRes?.headers?.['accept-ranges'] || '').toLowerCase() === 'bytes'
-
-    const controller = new AbortController()
-    const state = { canceled: false, controller, _lastReport: 0, startTime: Date.now() }
-    activeDownloads.set(id, state)
-    record.status = 'downloading'
-
-    const report = (received) => {
-      const now = Date.now()
-      if (now - state._lastReport > 400) {
-        state._lastReport = now
-        const speed = received / ((now - state.startTime) / 1000 || 1)
-        record.received = received
-        record.total = total
-        record.speed = speed
-        record.percent = total ? (received / total) * 100 : 0
-        emit('download:progress', { id, percent: record.percent, received, total, speed })
-        emit('video-download-progress', { downloadId: id, percent: record.percent, received, total, speed })
-      }
-    }
-
-    if (!total || !acceptRanges) {
-      // 单线程
-      const res = await axios.get(url, { responseType: 'stream', headers: headerObj, timeout: 0, maxRedirects: 5, signal: controller.signal })
-      const ws = fs.createWriteStream(outputPath)
-      let received = 0
-      for await (const chunk of res.data) {
-        if (activeDownloads.get(id)?.canceled) {
-          ws.destroy()
-          try { fs.unlinkSync(outputPath) } catch (e) {}
-          throw new Error('已取消')
-        }
-        ws.write(chunk)
-        received += chunk.length
-        report(received)
-      }
-      await new Promise(r => ws.end(r))
-    } else {
-      // 多线程分片
-      const threads = 8
-      const partSize = Math.ceil(total / threads)
-      const parts = []
-      for (let i = 0; i < threads; i++) {
-        const start = i * partSize
-        const end = Math.min(total - 1, start + partSize - 1)
-        if (start > end) break
-        parts.push({ index: i, start, end, received: 0 })
-      }
-      const partFiles = parts.map(p => outputPath + '.part' + p.index)
-      const fd = fs.openSync(outputPath, 'w')
-      fs.ftruncateSync(fd, total)
-      fs.closeSync(fd)
-
-      async function downloadPart(p) {
-        const partPath = partFiles[p.index]
-        const ws = fs.createWriteStream(partPath)
-        const res = await axios.get(url, {
-          responseType: 'stream',
-          headers: { ...headerObj, Range: `bytes=${p.start}-${p.end}` },
-          timeout: 0, maxRedirects: 5, signal: controller.signal
-        })
-        for await (const chunk of res.data) {
-          if (activeDownloads.get(id)?.canceled) { ws.destroy(); throw new Error('已取消') }
-          ws.write(chunk)
-          p.received += chunk.length
-          report(parts.reduce((s, x) => s + x.received, 0))
-        }
-        await new Promise(r => ws.end(r))
-      }
-
-      await Promise.all(parts.map(downloadPart))
-      if (activeDownloads.get(id)?.canceled) throw new Error('已取消')
-      const outFd = fs.openSync(outputPath, 'r+')
-      for (const p of parts) {
-        const buf = fs.readFileSync(partFiles[p.index])
-        fs.writeSync(outFd, buf, 0, buf.length, p.start)
-        try { fs.unlinkSync(partFiles[p.index]) } catch (e) {}
-      }
-      fs.closeSync(outFd)
-    }
+    await downloadFileMultithread(url, outputPath, extraHeaders, (received, total, speed) => {
+      record.received = received
+      record.total = total
+      record.percent = total ? Math.min(100, (received / total) * 100) : 0
+      record.speed = speed
+      emit('download:progress', { id, percent: record.percent, received, total, speed })
+      emit('video-download-progress', { downloadId: id, percent: record.percent, received, total, speed })
+    }, state)
 
     record.status = 'done'
     record.percent = 100
     record.endTime = Date.now()
+    try { record.total = fs.statSync(outputPath).size; record.received = record.total } catch (e) {}
     // 计算平均速度（保留显示），不清零
     const dur = (record.endTime - record.startTime) / 1000
     if (dur > 0 && record.total > 0) {
@@ -721,19 +519,57 @@ async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record
     emit('download:done', { id, path: outputPath, speed: record.speed })
     emit('video-download-done', { downloadId: id, path: outputPath, name: record.name, category: record.type, speed: record.speed })
   } catch (e) {
-    record.status = activeDownloads.get(id)?.canceled ? 'canceled' : 'error'
+    record.status = state.canceled ? 'canceled' : 'error'
     record.error = e.message
     record.endTime = Date.now()
     saveHistory()
     activeDownloads.delete(id)
+    // 清理半成品与分片临时文件
     try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath) } catch (er) {}
+    try {
+      const dir = path.dirname(outputPath)
+      const base = path.basename(outputPath)
+      for (const f of fs.readdirSync(dir)) {
+        if (f.startsWith(base + '.part')) { try { fs.unlinkSync(path.join(dir, f)) } catch (er) {} }
+      }
+    } catch (er) {}
     emit('download:error', { id, error: record.error })
     emit('video-download-error', { downloadId: id, error: record.error })
   }
 }
 
-// ===== 多线程下载单个文件到指定路径（用于 DASH video/audio 分别下载）=====
-// 基于 axios + 自定义 Agent（maxSockets: Infinity），支持 Range 分片、取消、进度回调
+// ===== 多线程分片下载核心（128 线程封顶 / 分片级断点重试 / 流式合并） =====
+// 基于 axios + 自定义 Agent（maxSockets: Infinity + keepAlive），Range 分片不限速榨干带宽
+const DL_MAX_THREADS = 128              // 最大并发线程数
+const DL_MIN_PART = 1024 * 1024         // 最小分片 1MB（小文件自动减线程，避免请求开销反噬）
+
+// 探测文件大小与 Range 支持：HEAD 优先；被拒时用 GET Range: bytes=0-0 兜底
+// （B站 TV 签名 URL 等部分 CDN 拒绝 HEAD，GET 探测成功才能解锁 128 线程）
+async function probeDownload(url, headerObj) {
+  const head = await axios.head(url, { headers: headerObj, timeout: 15000, maxRedirects: 5, httpsAgent, httpAgent, validateStatus: () => true }).catch(() => null)
+  if (head && (head.status === 200 || head.status === 206)) {
+    const total = parseInt(head.headers?.['content-length'] || '0', 10)
+    const ranged = (head.headers?.['accept-ranges'] || '').toLowerCase() === 'bytes'
+    if (total > 0 && ranged) return { total, ranged: true }
+    if (total > 0) return { total, ranged: false }
+  }
+  const res = await axios.get(url, {
+    headers: { ...headerObj, Range: 'bytes=0-0' },
+    timeout: 15000, maxRedirects: 5, httpsAgent, httpAgent,
+    validateStatus: () => true, responseType: 'stream'
+  }).catch(() => null)
+  if (res) {
+    try { res.data?.destroy?.() } catch (e) {}
+    const m = String(res.headers?.['content-range'] || '').match(/\/(\d+)\s*$/)
+    if (res.status === 206 && m) return { total: parseInt(m[1], 10), ranged: true }
+    if (res.status > 0 && res.status < 300) {
+      const total = parseInt(res.headers?.['content-length'] || '0', 10)
+      if (total > 0) return { total, ranged: false }
+    }
+  }
+  return { total: 0, ranged: false }
+}
+
 async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, state) {
   const headerObj = { 'User-Agent': DEFAULT_UA }
   if (extraHeaders) {
@@ -743,27 +579,50 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
     }
   }
 
-  const headRes = await axios.head(url, { headers: headerObj, timeout: 15000, maxRedirects: 5, httpsAgent, httpAgent }).catch(() => null)
-  const total = parseInt(headRes?.headers?.['content-length'] || '0', 10)
-  const acceptRanges = (headRes?.headers?.['accept-ranges'] || '').toLowerCase() === 'bytes'
+  const { total, ranged } = await probeDownload(url, headerObj)
 
-  if (!total || !acceptRanges) {
-    // 单线程下载
+  // 滑动窗口实时速度（500ms 窗口，比平均值更贴近真实带宽）
+  let winT = Date.now()
+  let winBytes = 0
+  let winSpeed = 0
+  const currentSpeed = (received) => {
+    const now = Date.now()
+    if (now - winT >= 500) {
+      winSpeed = Math.round((received - winBytes) / ((now - winT) / 1000))
+      winT = now
+      winBytes = received
+    }
+    return winSpeed
+  }
+
+  // 上报节流（300ms 一报；调用方可能再节流一层，双节流无害）
+  let reportT = 0
+  let receivedTotal = 0
+  const maybeReport = (force) => {
+    const now = Date.now()
+    if (force || now - reportT >= 300) {
+      reportT = now
+      if (onProgress) onProgress(receivedTotal, total, currentSpeed(receivedTotal))
+    }
+  }
+
+  if (!total || !ranged) {
+    // 服务器不支持 Range / 未知大小 → 单线程直下
     const res = await axios.get(url, { responseType: 'stream', headers: headerObj, timeout: 0, maxRedirects: 5, httpsAgent, httpAgent })
     const ws = fs.createWriteStream(filePath)
-    let received = 0
     for await (const chunk of res.data) {
       if (state.canceled) { ws.destroy(); throw new Error('已取消') }
       ws.write(chunk)
-      received += chunk.length
-      if (onProgress) onProgress(received, total)
+      receivedTotal += chunk.length
+      maybeReport()
     }
     await new Promise(r => ws.end(r))
-    return { size: received }
+    maybeReport(true)
+    return { size: receivedTotal }
   }
 
-  // 多线程分片下载（4-16 线程，按文件大小自适应）
-  const threads = Math.min(16, Math.max(4, Math.ceil(total / (2 * 1024 * 1024))))
+  // 128 线程自适应：大文件满 128 线程，小文件按 1MB/片 递减
+  const threads = Math.min(DL_MAX_THREADS, Math.max(1, Math.floor(total / DL_MIN_PART)))
   const partSize = Math.ceil(total / threads)
   const parts = []
   for (let i = 0; i < threads; i++) {
@@ -774,37 +633,54 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
   }
   const partFiles = parts.map(p => filePath + '.part' + p.index)
 
+  // 分片下载：失败重试 3 次，重试时从已收字节续传（分片内断点）
   async function downloadPart(p) {
     const partPath = partFiles[p.index]
-    const ws = fs.createWriteStream(partPath)
-    const res = await axios.get(url, {
-      responseType: 'stream',
-      headers: { ...headerObj, Range: `bytes=${p.start}-${p.end}` },
-      timeout: 0, maxRedirects: 5, httpsAgent, httpAgent
-    })
-    for await (const chunk of res.data) {
-      if (state.canceled) { ws.destroy(); throw new Error('已取消') }
-      ws.write(chunk)
-      p.received += chunk.length
-      if (onProgress) onProgress(parts.reduce((s, x) => s + x.received, 0), total)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (state.canceled) throw new Error('已取消')
+      try {
+        const startByte = p.start + p.received
+        if (startByte > p.end) return
+        const ws = fs.createWriteStream(partPath, { flags: attempt > 0 ? 'a' : 'w' })
+        const res = await axios.get(url, {
+          responseType: 'stream',
+          headers: { ...headerObj, Range: `bytes=${startByte}-${p.end}` },
+          timeout: 0, maxRedirects: 5, httpsAgent, httpAgent
+        })
+        for await (const chunk of res.data) {
+          if (state.canceled) { ws.destroy(); throw new Error('已取消') }
+          ws.write(chunk)
+          p.received += chunk.length
+          receivedTotal += chunk.length
+          maybeReport()
+        }
+        await new Promise(r => ws.end(r))
+        return
+      } catch (e) {
+        if (state.canceled) throw e
+        if (attempt === 2) throw e
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
+      }
     }
-    await new Promise(r => ws.end(r))
   }
 
   await Promise.all(parts.map(downloadPart))
   if (state.canceled) throw new Error('已取消')
+  maybeReport(true)
 
-  // 合并分片
-  const fd = fs.openSync(filePath, 'w')
-  fs.ftruncateSync(fd, total)
-  fs.closeSync(fd)
-  const outFd = fs.openSync(filePath, 'r+')
+  // 流式按序合并（内存峰值仅为管道缓冲，不整块读入分片）
+  const out = fs.createWriteStream(filePath)
   for (const p of parts) {
-    const buf = fs.readFileSync(partFiles[p.index])
-    fs.writeSync(outFd, buf, 0, buf.length, p.start)
+    await new Promise((resolve, reject) => {
+      const rs = fs.createReadStream(partFiles[p.index])
+      rs.on('error', reject)
+      out.on('error', reject)
+      rs.on('end', resolve)
+      rs.pipe(out, { end: false })
+    })
     try { fs.unlinkSync(partFiles[p.index]) } catch (e) {}
   }
-  fs.closeSync(outFd)
+  await new Promise(r => out.end(r))
   return { size: total }
 }
 
@@ -831,18 +707,25 @@ async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraH
     audioHeaders = `Referer: https://www.bilibili.com/\r\nUser-Agent: ${DEFAULT_UA}`
   }
 
-  // 进度上报（合并 video + audio 的字节进度）
+  // 进度上报（合并 video + audio 的字节进度；速度取滑动窗口实时值，更贴近真实带宽）
   let vSize = 0, aSize = 0, vTotal = 0, aTotal = 0
+  let lastRptT = 0, lastRptBytes = 0, instSpeed = 0
   const reportProgress = () => {
     const now = Date.now()
     if (now - state._lastReport > 400) {
       state._lastReport = now
       const received = vSize + aSize
       const total = vTotal + aTotal
+      if (lastRptT) {
+        const dt = (now - lastRptT) / 1000
+        if (dt > 0) instSpeed = Math.round((received - lastRptBytes) / dt)
+      }
+      lastRptT = now
+      lastRptBytes = received
+      const speed = instSpeed || Math.round(received / ((now - state.startTime) / 1000 || 1))
       record.received = received
       record.total = total
       record.percent = total ? Math.min(99, (received / total) * 100) : 0
-      const speed = received / ((now - state.startTime) / 1000 || 1)
       record.speed = speed
       emit('download:progress', { id, percent: record.percent, received, total, speed })
       emit('video-download-progress', { downloadId: id, percent: record.percent, received, total, speed })

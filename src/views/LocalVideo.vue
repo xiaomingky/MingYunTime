@@ -6,7 +6,7 @@
 import { ref, computed, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
-import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube, Copy, Send, MonitorPlay, ListFilter, ImagePlus, Bookmark, Square, CheckSquare, Settings } from 'lucide-vue-next'
+import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube, Copy, Send, MonitorPlay, ListFilter, ImagePlus, Bookmark, Square, CheckSquare, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout, biliTvLoginQr, biliTvLoginCheck, biliTvLoginStatus, biliTvLogout, youtubeLoginOpen, youtubeLoginClose, youtubeLoginStatus, youtubeLogout, onYoutubeLoginDone, biliLiveRoom, biliLiveAreas, biliLiveStart, biliLiveUpdate, biliLiveStop, biliFavList, biliFavContent, biliFavSeason, biliArchives, downloadStart, onDownloadDone, onDownloadError, downloadGetDir, getBiliApiMode, setBiliApiMode } from '../api'
 import CustomSelect from '../components/CustomSelect.vue'
 
@@ -519,7 +519,8 @@ async function downloadOne(input, title, tag) {
     }
     const safe = String(title || 'video').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'video'
     const baseDir = await resolveVideoDownloadDir()
-    const filePath = baseDir ? `${baseDir}\\${safe}\\${safe}.mp4` : ''
+    // 图文图片按 .jpg 保存，其余视频一律 .mp4
+    const filePath = baseDir ? `${baseDir}\\${safe}\\${safe}${input && input.isImage ? '.jpg' : '.mp4'}` : ''
     const params = {
         url: s.url,
         name: safe,
@@ -585,11 +586,14 @@ async function downloadParseBatch() {
     batchDone.value = 0
     batchFail.value = 0
     for (const s of items) {
-        // 批量下载：文件名剥掉 [画质]（如 [1080p]）/（已登录）等装饰，只留主体标题（与单条下载一致）
-        batchCurrentName.value = (s.title || parsePageTitle.value || '视频流')
-            .replace(/\s*\[[^\]]*\]\s*/g, '')
-            .replace(/\s*[（(]已登录[）)]\s*/g, '')
-            .trim() || parsePageTitle.value || '视频流'
+        // 批量下载：文件名剥掉 [画质]（如 [1080p]）/（已登录）等装饰，只留主体标题（与单条下载一致）；
+        // 图文图片保留 [图N/M] 序号，避免同名覆盖
+        batchCurrentName.value = s.isImage
+            ? ((s.title || parsePageTitle.value || '图文图片').trim() || '图文图片')
+            : (s.title || parsePageTitle.value || '视频流')
+                .replace(/\s*\[[^\]]*\]\s*/g, '')
+                .replace(/\s*[（(]已登录[）)]\s*/g, '')
+                .trim() || parsePageTitle.value || '视频流'
         try {
             const ok = await downloadOne(s, batchCurrentName.value, '下载')
             if (ok) batchDone.value++; else batchFail.value++
@@ -1003,7 +1007,46 @@ const liveGroupOpen = reactive({})
 // 封面图加载失败时隐藏（抖音/快手封面 CDN 偶尔需要 Referer，加载不出就不显示）
 const onParseCoverError = (e) => { if (e?.target) e.target.style.display = 'none' }
 
+// ===== 图文图集浏览（抖音/快手图文作品解析出的图片流）=====
+const galleryOpen = ref(false)
+const galleryList = ref([])      // 图片 URL 全列表
+const galleryIndex = ref(0)      // 当前图片下标
+const galleryTitle = ref('')     // 图集标题（剥离 [图N/M] 装饰）
+const galleryLoading = ref(false)
+const openParseGallery = (s) => {
+    galleryList.value = (Array.isArray(s.imageList) && s.imageList.length) ? s.imageList : [s.url]
+    galleryIndex.value = Math.max(0, galleryList.value.indexOf(s.url))
+    galleryTitle.value = String(s.title || parsePageTitle.value || '图集').replace(/\s*\[图\d+\/\d+\]\s*/g, '').trim() || '图集'
+    galleryLoading.value = false
+    galleryOpen.value = true
+}
+const galleryPrev = () => { galleryIndex.value = galleryIndex.value > 0 ? galleryIndex.value - 1 : galleryList.value.length - 1 }
+const galleryNext = () => { galleryIndex.value = galleryIndex.value < galleryList.value.length - 1 ? galleryIndex.value + 1 : 0 }
+const onGalleryImgError = () => { galleryLoading.value = false }
+const downloadGalleryImage = async (u) => {
+    const url = u || galleryList.value[galleryIndex.value] || ''
+    if (!url) { messageStore.warning('图片地址无效'); return }
+    try {
+        const baseDir = await resolveVideoDownloadDir()
+        const safe = String(galleryTitle.value || '图集').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || '图集'
+        const idx = galleryList.value.length > 1 ? `_${galleryIndex.value + 1}` : ''
+        const r = await downloadStart({
+            url,
+            name: `${safe}${idx}`,
+            category: 'video',
+            askPath: false,
+            savePath: `${baseDir}\\${safe}\\${safe}${idx}.jpg`
+        })
+        if (r?.success) messageStore.success('图片开始下载，进度见下载专区', 3000)
+        else if (!r?.canceled) messageStore.error('图片下载失败：' + (r?.error || '未知错误'))
+    } catch (e) {
+        messageStore.error('图片下载失败：' + (e.message || e))
+    }
+}
+
 const playParsedStream = (s, baseOverride) => {
+    // 图文作品图片流 → 打开图集浏览，不走视频播放
+    if (s.isImage) { openParseGallery(s); return }
     const baseName = baseOverride || parsePageTitle.value || '网址解析视频'
     // 显示名同样只取 s.title 剥 [画质] 装饰，避免"标题 - 标题 [画质]"重复
     const name = baseOverride ? baseName : ((s.title || baseName).replace(/\s*\[[^\]]*\]\s*/g, '').trim() || baseName)
@@ -1020,6 +1063,7 @@ const playParsedStream = (s, baseOverride) => {
     playerStore.currentMvId = null
     playerStore.currentMvTitle = name
     playerStore.currentMvAudioUrl = s.audioUrl || ''  // DASH 流的音频地址，供播放器内下载时合并
+    playerStore.currentMvDanmakuCid = s.cid || null   // B站流携带 cid：播放器按 cid 拉取该 P 弹幕
     // 根据解析流类型设置播放模式（m3u8/flv/live/direct）
     // YouTube DASH 流（type='mp4'）用 direct 模式：原生 <video> 播放 + 独立 <audio> 同步音频
     // 真正的 HLS/FLV 直播才用 live/flv 模式
@@ -1082,7 +1126,10 @@ const downloadParsedStream = async (s) => {
         const baseName = parsePageTitle.value || '网址解析视频'
         // B站流：文件名只取原标题主体（剥离 [画质]/（已登录） 等装饰），其它平台沿用旧命名
         let name
-        if (s.bili) {
+        if (s.isImage) {
+            // 图文图片：保留标题的 [图N/M] 序号标识，避免同图集多图下载重名互相覆盖
+            name = (s.title || baseName).trim() || baseName
+        } else if (s.bili) {
             name = (s.title || baseName).replace(/\s*\[[^\]]*\]\s*/g, '').replace(/\s*[（(]已登录[）)]\s*/g, '').trim() || baseName
         } else if (s.ytSrc) {
             // YouTube：文件名取原标题主体，去掉 [画质] 装饰，交给 yt-dlp 下载
@@ -1110,7 +1157,9 @@ const downloadParsedStream = async (s) => {
             const baseDir = await resolveVideoDownloadDir()
             if (baseDir) {
                 const safe = String(name).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'video'
-                return downloadStart({ ...params, askPath: false, savePath: `${baseDir}\\${safe}\\${safe}.mp4` })
+                // 图文图片按 .jpg 保存（图片直链下载，无需 ffmpeg 合并）
+                const ext = s.isImage ? '.jpg' : '.mp4'
+                return downloadStart({ ...params, askPath: false, savePath: `${baseDir}\\${safe}\\${safe}${ext}` })
             }
             // 拿不到目录时：走旧逻辑弹窗选择
             return downloadVideo(params)
@@ -1285,6 +1334,7 @@ const playVideo = (video) => {
     playerStore.currentMvId = null
     playerStore.currentMvTitle = video.name
     playerStore.currentMvAudioUrl = ''
+    playerStore.currentMvDanmakuCid = null
     playerStore.currentMvPlayType = ''  // 本地视频走 direct
     playerStore.showMvPlayer = true
     if (playerStore.isPlaying) {
@@ -1316,6 +1366,7 @@ const playStream = async (s) => {
     playerStore.currentMvId = null
     playerStore.currentMvTitle = s.name + (isStreamLive(s) ? ' [LIVE]' : '')
     playerStore.currentMvAudioUrl = s.audioUrl || ''
+    playerStore.currentMvDanmakuCid = null
     // 设置播放类型提示，解决直播流无 .m3u8/.flv 后缀时播放失败
     playerStore.currentMvPlayType = playTypeForBili(s)
     playerStore.showMvPlayer = true
@@ -1750,26 +1801,57 @@ const typeLabel = (s) => {
                         <div class="parse-result-info" @click="playParsedStream(s)">
                             <div class="parse-result-name">
                                 {{ s.title || parsePageTitle || `视频流 ${i + 1}` }}
-                                <span class="parse-type-tag">{{ s.type }}</span>
+                                <span class="parse-type-tag">{{ s.type === 'image' ? '图文' : s.type }}</span>
+                                <span v-if="s.isImage" class="parse-nwm-tag" title="图文作品图片，点击浏览图集">图片</span>
                                 <span v-if="s.watermarkFree" class="parse-nwm-tag" title="已通过官方接口解析，视频流本身无水印">无水印</span>
                                 <span v-if="s.audioUrl" class="parse-dash-tag" title="DASH 音视频分离，下载时自动合并">DASH·合并</span>
                             </div>
                             <div class="parse-result-url" :title="s.url">{{ s.url }}</div>
                         </div>
-                        <button class="parse-result-download" :disabled="parsingDownloadingUrl === s.url" :title="parsingDownloadingUrl === s.url ? '下载中...' : '下载'" @click.stop="downloadParsedStream(s)">
+                        <button class="parse-result-download" :disabled="parsingDownloadingUrl === s.url" :title="parsingDownloadingUrl === s.url ? '下载中...' : (s.isImage ? '下载图片' : '下载')" @click.stop="downloadParsedStream(s)">
                             <Clock v-if="parsingDownloadingUrl === s.url" :size="16" class="spin" />
                             <Download v-else :size="16" />
                         </button>
-                        <div class="parse-result-play" @click="playParsedStream(s)">
-                            <Play :size="20" fill="currentColor" />
+                        <div class="parse-result-play" :title="s.isImage ? '浏览图集' : '播放'" @click="playParsedStream(s)">
+                            <ImagePlus v-if="s.isImage" :size="20" />
+                            <Play v-else :size="20" fill="currentColor" />
                         </div>
                     </div>
                 </transition-group>
                 <div v-if="g.list.length > 1" class="parse-more-toggle" @click="parseGroupOpen[g.key] = !parseGroupOpen[g.key]">
-                    {{ parseGroupOpen[g.key] ? '收起画质' : `该视频还有其他画质（${g.list.length - 1}）` }}
+                    {{ parseGroupOpen[g.key] ? '收起' : (g.list[0] && g.list[0].isImage ? `该图文还有其他图片（${g.list.length - 1}）` : `该视频还有其他画质（${g.list.length - 1}）`) }}
                 </div>
             </template>
         </div>
+
+        <!-- 图文图集浏览灯箱（抖音/快手图文作品） -->
+        <teleport to="body">
+            <div v-if="galleryOpen" class="parse-gallery-mask" @click.self="galleryOpen = false">
+                <div class="parse-gallery-box">
+                    <div class="parse-gallery-top">
+                        <span class="parse-gallery-title" :title="galleryTitle">{{ galleryTitle }}</span>
+                        <span class="parse-gallery-count" v-if="galleryList.length > 1">{{ galleryIndex + 1 }} / {{ galleryList.length }}</span>
+                        <button class="parse-gallery-close" @click="galleryOpen = false"><X :size="20" /></button>
+                    </div>
+                    <div class="parse-gallery-body">
+                        <button v-if="galleryList.length > 1" class="parse-gallery-nav prev" @click.stop="galleryPrev"><ChevronLeft :size="24" /></button>
+                        <img
+                            :src="galleryList[galleryIndex]"
+                            :key="galleryList[galleryIndex]"
+                            class="parse-gallery-img"
+                            referrerpolicy="no-referrer"
+                            alt=""
+                            @error="onGalleryImgError"
+                        />
+                        <button v-if="galleryList.length > 1" class="parse-gallery-nav next" @click.stop="galleryNext"><ChevronRight :size="24" /></button>
+                    </div>
+                    <div class="parse-gallery-bottom">
+                        <button class="live-start-btn small" @click="downloadGalleryImage()"><Download :size="13" /> 下载当前图</button>
+                        <button class="parse-gallery-close-btn" @click="galleryOpen = false">关闭</button>
+                    </div>
+                </div>
+            </div>
+        </teleport>
     </div>
 
 <!-- B站管理（直播推流 / 稿件管理 / 空间管理 / 收藏夹） -->
@@ -3279,6 +3361,134 @@ const typeLabel = (s) => {
 
 .parse-more-toggle:hover {
     background: #fdf3f4;
+}
+
+/* 图文图集浏览灯箱（teleport 到 body，需 :global 命中） */
+:global(.parse-gallery-mask) {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.72);
+    backdrop-filter: blur(6px);
+    animation: parseGalleryIn 0.18s ease;
+}
+@keyframes parseGalleryIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+:global(.parse-gallery-box) {
+    display: flex;
+    flex-direction: column;
+    width: min(92vw, 980px);
+    max-height: 88vh;
+    background: #fff;
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.35);
+}
+:global(.parse-gallery-top) {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid #f0f0f0;
+    background: #fafafa;
+}
+:global(.parse-gallery-title) {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+:global(.parse-gallery-count) {
+    font-size: 12px;
+    color: #e0454b;
+    font-weight: 600;
+}
+:global(.parse-gallery-close) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #888;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+:global(.parse-gallery-close:hover) {
+    background: #fdeaea;
+    color: #e0454b;
+}
+:global(.parse-gallery-body) {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 260px;
+    background: #111;
+    overflow: hidden;
+}
+:global(.parse-gallery-img) {
+    max-width: 100%;
+    max-height: calc(88vh - 130px);
+    object-fit: contain;
+    user-select: none;
+    -webkit-user-drag: none;
+}
+:global(.parse-gallery-nav) {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 56px;
+    border: none;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.14);
+    color: #fff;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    transition: all 0.2s;
+}
+:global(.parse-gallery-nav:hover) {
+    background: rgba(255, 255, 255, 0.3);
+}
+:global(.parse-gallery-nav.prev) { left: 14px; }
+:global(.parse-gallery-nav.next) { right: 14px; }
+:global(.parse-gallery-bottom) {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-top: 1px solid #f0f0f0;
+    background: #fafafa;
+}
+:global(.parse-gallery-close-btn) {
+    padding: 6px 18px;
+    border: 1px solid #e4e4e4;
+    border-radius: 8px;
+    background: #fff;
+    color: #666;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+:global(.parse-gallery-close-btn:hover) {
+    background: #f5f5f5;
+    color: #333;
 }
 
 .parse-group-divider {

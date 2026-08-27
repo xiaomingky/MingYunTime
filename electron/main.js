@@ -56,6 +56,8 @@ import { startQQMusicAPI, stopQQMusicAPI } from './qq-music.js'
 // 酷狗音乐 API 子进程(KuGouMusicApi,监听 3300 端口,platform=lite 概念版)
 import { startKugouMusicAPI, stopKugouMusicAPI } from './kugou-music.js'
 import { startNeteaseAPI, stopNeteaseAPI } from './netease-api.js'
+// 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）
+import './unlock.js'
 
 // --- Win7 兼容性初始化 ---
 if (process.platform === 'win32') {
@@ -86,6 +88,9 @@ app.commandLine.appendSwitch('disable-translate')
 app.commandLine.appendSwitch('disable-media-stream')  // 不用摄像头/麦克风（音频设备用 WebAudio 不依赖此）
 // 降低图片解码缓存内存（Chromium 默认会缓存大量解码后的图片位图）
 app.commandLine.appendSwitch('prune-to-zero', 'true')
+// 启用平台 HEVC/H.265 硬解码（Windows 安装了「HEVC 视频扩展」后，本地 H.265/MKV 视频可直接播放；
+// Chromium 官方构建默认不带 HEVC 软解，必须依赖系统 Media Foundation 解码器）
+app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport,PlatformHEVCDecoderSupportForHWDRM')
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 process.env.APP_ROOT = path.join(__dirname, '..')
@@ -670,6 +675,108 @@ ipcMain.handle('save-lyric', async (_, { songPath, lyricContent }) => {
     } catch (err) { return { success: false, error: err.message } }
 })
 
+// ===== 歌词保存目录（歌词获取面板配置，userData/lyric-dir.json） =====
+function getLyricDirSettingFile() {
+    try {
+        return path.join(app.getPath('userData'), 'lyric-dir.json')
+    } catch (e) {
+        return path.join(process.cwd(), 'lyric-dir.json')
+    }
+}
+
+// 读取用户设置的歌词保存目录（未设置返回 ''）
+function readSavedLyricDir() {
+    try {
+        const f = getLyricDirSettingFile()
+        if (fs.existsSync(f)) {
+            const d = JSON.parse(fs.readFileSync(f, 'utf8'))
+            if (d && typeof d.dir === 'string' && d.dir.trim()) return d.dir.trim()
+        }
+    } catch (e) {}
+    return ''
+}
+
+// 保存歌词目录设置（dir 传空表示恢复系统默认）
+function saveLyricDir(dir) {
+    try {
+        const f = getLyricDirSettingFile()
+        fs.mkdirSync(path.dirname(f), { recursive: true })
+        fs.writeFileSync(f, JSON.stringify({ dir: dir || '' }), 'utf8')
+    } catch (e) {
+        console.error('[LyricDir] 保存歌词目录失败:', e.message)
+    }
+}
+
+// 歌词保存目录：优先用户设置，未设置时回退系统下载区
+function resolveLyricDir() {
+    return readSavedLyricDir() || app.getPath('downloads')
+}
+
+// 歌词另存为（歌词获取面板用）：传 dir 表示直接写入该目录（不弹窗），否则弹保存对话框
+ipcMain.handle('lyric-save-as', async (_, { defaultName, content, dir }) => {
+    try {
+        const cleanName = (defaultName
+            ? String(defaultName).replace(/\.lrc$/i, '') + '.lrc'
+            : '歌词.lrc')
+            .replace(/[\\/:*?"<>|]/g, '_')
+        if (dir && String(dir).trim()) {
+            const saveDir = String(dir).trim()
+            fs.mkdirSync(saveDir, { recursive: true })
+            const filePath = path.join(saveDir, cleanName)
+            fs.writeFileSync(filePath, content || '', 'utf8')
+            return { success: true, path: filePath }
+        }
+        const { canceled, filePath } = await dialog.showSaveDialog({
+            title: '保存歌词',
+            defaultPath: path.join(resolveLyricDir(), cleanName),
+            filters: [
+                { name: '歌词文件', extensions: ['lrc'] },
+                { name: '文本文件', extensions: ['txt'] },
+            ],
+        })
+        if (canceled || !filePath) return { success: false, canceled: true }
+        fs.writeFileSync(filePath, content || '', 'utf8')
+        return { success: true, path: filePath }
+    } catch (err) { return { success: false, error: err.message } }
+})
+
+// 获取歌词保存目录（用户设置或系统默认）
+ipcMain.handle('lyric-dir:get', async () => {
+    try {
+        return { success: true, dir: resolveLyricDir(), configured: !!readSavedLyricDir() }
+    } catch (e) {
+        return { success: false, dir: '', error: e.message }
+    }
+})
+
+// 保存歌词目录（dir 为空表示恢复系统默认）
+ipcMain.handle('lyric-dir:save', async (_, { dir }) => {
+    try {
+        const target = (dir || '').replace(/[\\/]+$/, '')
+        if (target) {
+            fs.mkdirSync(target, { recursive: true })
+        }
+        saveLyricDir(target)
+        return { success: true, dir: target || app.getPath('downloads') }
+    } catch (e) {
+        return { success: false, dir: '', error: e.message }
+    }
+})
+
+// 弹出歌词保存目录选择框
+ipcMain.handle('lyric-dir:pick', async () => {
+    try {
+        const opts = { title: '选择歌词保存目录', properties: ['openDirectory', 'createDirectory'] }
+        const result = win
+            ? await dialog.showOpenDialog(win, opts)
+            : await dialog.showOpenDialog(opts)
+        if (result.canceled || !result.filePaths.length) return { success: false, canceled: true }
+        return { success: true, dir: result.filePaths[0] }
+    } catch (e) {
+        return { success: false, error: e.message }
+    }
+})
+
 ipcMain.handle('load-local-lyric', async (_, songPath) => {
     try {
         const lyricPath = songPath.replace(path.extname(songPath), '.lrc')
@@ -936,14 +1043,22 @@ ipcMain.handle('video-download', async (_, { url, name, headers, type, category,
     // audioUrl: DASH 音视频分离时，下载后由 ffmpeg 流复制合并（B站高画质，极快）
     // ytSrc/ytHeight: YouTube 视频时交给 yt-dlp 下载（自动合并音视频为 mp4）
     // B站视频流（bilivideo CDN）需带 Referer + 登录 Cookie 才能访问，否则 403
+    // 例外：TV 接口流（platform=android_tv_yst）必须用 BilibiliTV UA 且不能带 Referer（实测带 Referer/浏览器 UA → 403）
     let h = headers
     if (/bilivideo\.(com|cn)/i.test(url || '')) {
-        const cookies = loadBiliCookie()
-        h = Object.assign({}, headers || {})
-        h['Referer'] = 'https://www.bilibili.com/'
-        h['User-Agent'] = PARSE_UA
-        if (cookies && cookies.SESSDATA) {
-            h['Cookie'] = biliCookieString(cookies)
+        if (/platform=android_tv_yst/i.test(url || '')) {
+            h = Object.assign({}, headers || {})
+            h['User-Agent'] = BILI_TV_UA
+            delete h['Referer']
+            delete h['Origin']
+        } else {
+            const cookies = loadBiliCookie()
+            h = Object.assign({}, headers || {})
+            h['Referer'] = 'https://www.bilibili.com/'
+            h['User-Agent'] = PARSE_UA
+            if (cookies && cookies.SESSDATA) {
+                h['Cookie'] = biliCookieString(cookies)
+            }
         }
     }
     // YouTube 登录状态：仅在已登录(令牌已缓存)时让 yt-dlp 开启 OAuth 账号画质
@@ -1121,6 +1236,70 @@ function extractKuaishouFromApollo(root) {
     return { videoUrl, caption, coverUrl, qualities }
 }
 
+// 快手图文（图集）：从移动落地页的 window.INIT_STATE 提取完整图集。
+// 实测（2026-08-27）：图集作品移动页的 INIT_STATE 里含一份 "photo/simple/info" 缓存数据，
+// 顶层键做了字符平移混淆，但值本身是明文 JSON；其中 atlas.list 为全部图片路径（_0.jpg.._N.jpg），
+// atlas.cdn 为可用 CDN 域名，atlas.music 为背景音乐（m4a），photo.caption 为作品文案。
+// 无需关心键名，直接深度遍历所有值，按 /ufile/atlas/ 路径命中即可。
+function extractKuaishouAtlas(html) {
+    if (!html || typeof html !== 'string') return { imgUrls: [], caption: '', coverUrl: '', musicUrl: '' }
+    const marker = 'window.INIT_STATE = '
+    let idx = html.indexOf(marker)
+    if (idx < 0) {
+        // 兼容 var INIT_STATE = 无 window 前缀形式
+        const m2 = html.indexOf('INIT_STATE')
+        if (m2 < 0 || !/\bvar INIT_STATE\s*=/.test(html)) return { imgUrls: [], caption: '', coverUrl: '', musicUrl: '' }
+        idx = m2
+    }
+    const start = html.indexOf('{', idx)
+    if (start < 0) return { imgUrls: [], caption: '', coverUrl: '', musicUrl: '' }
+    const endTag = html.indexOf('</script>', start)
+    let raw = html.slice(start, endTag > 0 ? endTag : start + 2 * 1024 * 1024).trim()
+    if (raw.endsWith(';')) raw = raw.slice(0, -1)
+    let data = null
+    try { data = JSON.parse(raw) } catch (e) { data = null }
+    if (!data || typeof data !== 'object') return { imgUrls: [], caption: '', coverUrl: '', musicUrl: '' }
+
+    const result = { imgUrls: [], caption: '', coverUrl: '', musicUrl: '' }
+    const cds = new Set()
+    let captions = new Set()
+    const walk = (v, depth) => {
+        if (!v || typeof v !== 'object' || depth > 8) return
+        if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1); return }
+        if (Array.isArray(v.list) && v.list.length && /\/ufile\/atlas\//i.test(String(v.list[0]))) {
+            const cdnArr = Array.isArray(v.cdn) && v.cdn.length ? v.cdn
+                : (Array.isArray(v.cdnList) && v.cdnList.length ? v.cdnList.map(c => (typeof c === 'object' && c) ? c.cdn : c) : [])
+            const prefix = (cdnArr.find(c => String(c || '').startsWith('https://')))
+                || (cdnArr.length ? 'https://' + cdnArr[0] : '')
+            if (prefix) {
+                const paths = v.list.filter(p => /\/ufile\/atlas\/[A-Za-z0-9_~=+-]+\.[a-z0-9]+$/i.test(String(p).split('?')[0]))
+                for (const p of paths) {
+                    const url = prefix + String(p).replace(/\\\//g, '/')
+                    if (!result.imgUrls.includes(url)) result.imgUrls.push(url)
+                }
+            }
+            if (typeof v.music === 'string' && v.music && /\/ufile\/atlas\//i.test(v.music) && !result.musicUrl) {
+                result.musicUrl = prefix ? prefix + v.music.replace(/\\\//g, '/') : v.music.replace(/\\\//g, '/')
+            }
+        }
+        if (typeof v.caption === 'string' && v.caption && !result.caption) result.caption = v.caption.replace(/\s+/g, ' ').trim()
+        if (typeof v.coverUrl === 'string' && v.coverUrl && !result.coverUrl) {
+            result.coverUrl = v.coverUrl.replace(/\\\//g, '/')
+        } else if (Array.isArray(v.coverUrls) && v.coverUrls.length && !result.coverUrl) {
+            const c = typeof v.coverUrls[0] === 'object' ? v.coverUrls[0].url : v.coverUrls[0]
+            if (typeof c === 'string') result.coverUrl = c.replace(/\\\//g, '/')
+        }
+        if (Array.isArray(v.webpCoverUrls) && v.webpCoverUrls.length && !result.coverUrl) {
+            const c = typeof v.webpCoverUrls[0] === 'object' ? v.webpCoverUrls[0].url : v.webpCoverUrls[0]
+            if (typeof c === 'string') result.coverUrl = c.replace(/\\\//g, '/')
+        }
+        for (const k of Object.keys(v)) walk(v[k], depth + 1)
+        void cds; void captions
+    }
+    walk(data, 0)
+    return result
+}
+
 // 打开隐藏窗口跑真实会话，等页面 JS 执行完成，返回窗口实例与可复用的 Cookie 头。
 // 抖音/快手现已对无 Cookie 直连做风控，用真实会话（含 ttwid / 客户端注入的 __APOLLO_STATE__）才能拿到无水印直链。
 function openSessionBrowser(url, { waitExtra = 3000, timeout = 30000 } = {}) {
@@ -1205,6 +1384,70 @@ async function parseKuaishou(target, addStream) {
                     q.ratio ? `${title} [${q.ratio}]` : title,
                     { cover: ks.coverUrl, watermarkFree: true, quality: q.ratio || '' })
                 added++
+            }
+        } else {
+            // === 图文作品（photo 图集）===
+            // 优先从 window.INIT_STATE 的 photo/simple/info 缓存取完整图集（atlas.list，_0.jpg.._N.jpg 全量图片）
+            const atlas = extractKuaishouAtlas(res.data || '')
+            // PC 落地页（www.kuaishou.com/short-video）不含 INIT_STATE，转移动版页面再取一次完整图集
+            if (!atlas.imgUrls.length && !atlas.musicUrl && (res.data || '').indexOf('INIT_STATE') < 0) {
+                const pid = ((finalUrl || '').match(/photo\/([A-Za-z0-9_-]+)/) || [])[1]
+                    || ((finalUrl || '').match(/short-video\/([A-Za-z0-9_-]+)/) || [])[1] || ''
+                if (pid) {
+                    try {
+                        const mUrl = `https://v.m.chenzhongtech.com/fw/photo/${pid}?subBiz=BROWSE_SLIDE_PHOTO&photoId=${pid}&kpn=KUAISHOU`
+                        const mr = await axios.get(mUrl, {
+                            headers: { 'content-type': 'application/json; charset=UTF-8', 'User-Agent': DOUYIN_UA, 'referer': 'https://www.kuaishou.com/', 'cookie': KUAISHOU_COOKIE },
+                            responseType: 'text', timeout: 15000, validateStatus: () => true
+                        })
+                        const atlas2 = extractKuaishouAtlas(mr.data || '')
+                        if (atlas2.imgUrls.length && atlas.imgUrls.length === 0) {
+                            atlas.imgUrls = atlas2.imgUrls
+                            if (!atlas.musicUrl && atlas2.musicUrl) atlas.musicUrl = atlas2.musicUrl
+                            if (!atlas.caption && atlas2.caption) atlas.caption = atlas2.caption
+                            if (!atlas.coverUrl && atlas2.coverUrl) atlas.coverUrl = atlas2.coverUrl
+                        }
+                    } catch (e2) {}
+                }
+            }
+            if (atlas.imgUrls.length) {
+                if (atlas.caption) title = atlas.caption
+                if (atlas.coverUrl) cover = atlas.coverUrl
+                const coverUrl = atlas.coverUrl || atlas.imgUrls[0]
+                if (!cover) cover = coverUrl
+                atlas.imgUrls.forEach((u, i) => {
+                    const label = atlas.imgUrls.length > 1 ? ` [图${i + 1}/${atlas.imgUrls.length}]` : ''
+                    addStream(u, 'image', `${title}${label}`, { cover: coverUrl, isImage: true, imageList: atlas.imgUrls })
+                    added++
+                })
+                // 背景音乐（图集原声 m4a）作为可选音频流
+                if (atlas.musicUrl && /^https?:\/\//i.test(atlas.musicUrl)) {
+                    addStream(atlas.musicUrl, 'mp3', `${title} [背景音乐]`, { cover: coverUrl })
+                }
+            } else {
+                // 兜底：内联 <img class="image">（SSR 只渲染首图，单个作品时够用）
+                const imgRe = /<img class="image"[^>]*src="([^"]+)"/gi
+                const imgUrls = []
+                const seenPath = new Set()
+                let im
+                while ((im = imgRe.exec(res.data || '')) !== null && imgUrls.length < 30) {
+                    const u = String(im[1] || '').replace(/&amp;/g, '&').trim()
+                    const pathKey = u.replace(/^https?:\/\/[^/]+/i, '').split('?')[0]
+                    if (/^https?:\/\//i.test(u) && /yximgs|chenzhongtech|kwimgs/i.test(u) && !seenPath.has(pathKey)) {
+                        seenPath.add(pathKey)
+                        imgUrls.push(u)
+                    }
+                }
+                if (imgUrls.length >= 1) {
+                    if (ks.caption) title = ks.caption
+                    const coverUrl = imgUrls[0]
+                    if (!cover) cover = coverUrl
+                    imgUrls.forEach((u, i) => {
+                        const label = imgUrls.length > 1 ? ` [图${i + 1}/${imgUrls.length}]` : ''
+                        addStream(u, 'image', `${title}${label}`, { cover: coverUrl, isImage: true, imageList: imgUrls })
+                        added++
+                    })
+                }
             }
         }
     } catch (e) {}
@@ -1485,6 +1728,46 @@ async function parseDouyin(target, addStream) {
             const detail = data && data.aweme_detail
             if (detail) {
                 if (detail.desc) title = detail.desc
+                // ===== 图文作品（aweme_type=68，抖音图文笔记）=====
+                // 图文没有 video 流，只有 images 图集 + music 背景音乐；
+                // 若不拦截，video.play_addr 会把背景音乐的 mp4 音频误当成“视频流”解析
+                const noteImages = (detail.aweme_type === 68 || detail.is_image_post === 1)
+                    && Array.isArray(detail.images) && detail.images.length
+                    ? detail.images : null
+                if (noteImages) {
+                    const imgUrls = []
+                    for (const img of noteImages) {
+                        if (!img || typeof img !== 'object') continue
+                        // 候选池：url_list 为无水印（tplv-dy-aweme-images），download_url_list 为带水印（tplv-dy-water-v2）
+                        const cands = []
+                        for (const arr of [img.url_list, img.download_url_list]) {
+                            if (Array.isArray(arr)) for (const x of arr) {
+                                const c = String(x || '').replace(/\\\//g, '/')
+                                if (c && !cands.includes(c)) cands.push(c)
+                            }
+                        }
+                        if (typeof img.url === 'string' && img.url && !cands.includes(img.url)) cands.push(img.url)
+                        // 优先选无水印的，实在没有才回退到带水印图
+                        let u = cands.find(c => !/~tplv-dy-water-v2/i.test(c)) || cands[0] || ''
+                        u = String(u || '').replace(/\\\//g, '/')
+                        if (u && /^https?:\/\//i.test(u) && !imgUrls.includes(u)) imgUrls.push(u)
+                    }
+                    // 每张图一个独立流（image 类型），整组共享 imageList 供前端图集浏览
+                    const coverUrl = imgUrls[0] || ''
+                    imgUrls.forEach((u, i) => {
+                        const label = imgUrls.length > 1 ? ` [图${i + 1}/${imgUrls.length}]` : ''
+                        addStream(u, 'image', `${title}${label}`, { cover: coverUrl, isImage: true, imageList: imgUrls })
+                        added++
+                    })
+                    // 背景音乐（原声 BGM）作为可选音频流，前端可直接播放
+                    const musicUrl = detail.music && detail.music.play_url && detail.music.play_url.url_list
+                        && detail.music.play_url.url_list[0]
+                    if (musicUrl && /^https?:/.test(String(musicUrl))) {
+                        addStream(String(musicUrl).replace(/\\\//g, '/'), 'mp3', `${title} [背景音乐]`, { cover: coverUrl })
+                    }
+                    if (added && coverUrl) cover = coverUrl
+                    if (added) return { title, cover }
+                }
                 const video = detail.video || {}
                 // 多画质提取：遍历 bit_rate，每个档位输出一个独立流（参考 douyin_parse extract_video_qualities）
                 // 优先 play_addr（无水印直链），down load_addr 才带水印；再 playwm->play 双保险
@@ -2043,6 +2326,58 @@ async function extractBvid(target) {
 
 // 调用 B站 API 解析视频流
 // mode: 'web'（默认，网页接口+登录Cookie）| 'tv'（云视听小电视接口，无水印源，无需登录）
+
+// ===== B站 TV 模式画质增强 =====
+// TV 接口"未登录档"封顶 720P；当 TV 模式已拿到流但最高仅 720P、且 Web 已登录时，
+// 用 Web 接口（带 Cookie）补挂更高画质流。只添加高于 minQ（TV 最高档）的卡位，避免与 TV 流重复。
+// DASH 音视频分离优先（带 audioUrl 供下载合并）；"小说视频"等只有 durl 时退回 durl（跳过带 trial_duration 的试看段）。
+async function addBiliWebHigher({ host, params, pTitle, headers, qualityMap, addStream, minQ = 64, loggedInfo = '' }) {
+    const payloadOf = (body) => (host.includes('/pgc/') ? body?.result : body?.data)
+    try {
+        const r = await axios.get(host, { params: { ...params, qn: 127, fnval: 16, fourk: 1 }, headers, timeout: 10000 })
+        const payload = payloadOf(r.data)
+        if (r.data?.code === 0 && payload?.dash?.video?.length) {
+            const dash = payload.dash
+            const audios = (dash.audio || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+            const bestAudio = audios[0]
+            const audioUrl = bestAudio ? (bestAudio.baseUrl || bestAudio.base_url) : ''
+            const videos = (dash.video || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+            const seenQ = new Set()
+            let addedAny = false
+            for (const v of videos) {
+                if (seenQ.has(v.id)) continue
+                seenQ.add(v.id)
+                if (Number(v.id) > Number(minQ)) {
+                    const qLabel = qualityMap[v.id] || `${v.id}P`
+                    addStream(v.baseUrl || v.base_url, 'mp4', `${pTitle} [${qLabel} 登录高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
+                    addedAny = true
+                }
+            }
+            if (addedAny) return true
+        }
+    } catch (e) {}
+    try {
+        const w = await axios.get(host, { params: { ...params, qn: 127, fnval: 1, fourk: 1 }, headers, timeout: 10000 })
+        const payload = payloadOf(w.data)
+        if (w.data?.code === 0 && payload?.durl?.length) {
+            const durl = payload.durl
+            if (durl.some(d => (d.trial_duration || 0) > 0)) return false
+            const quality = Number(payload.quality) || 0
+            if (quality > Number(minQ)) {
+                const qLabel = qualityMap[quality] || `${quality}P`
+                durl.forEach((d, i) => {
+                    const partTitle = durl.length > 1
+                        ? `${pTitle} [${qLabel} 登录高画质·有声] - 第${i + 1}段${loggedInfo}`
+                        : `${pTitle} [${qLabel} 登录高画质·有声]${loggedInfo}`
+                    addStream(d.url, 'mp4', partTitle, { bili: true })
+                })
+                return true
+            }
+        }
+    } catch (e) {}
+    return false
+}
+
 async function parseBilibili(target, addStream, mode = 'web') {
     const bvidInfo = await extractBvid(target)
     if (!bvidInfo) return null
@@ -2052,7 +2387,9 @@ async function parseBilibili(target, addStream, mode = 'web') {
     const isLoggedIn = !!(biliCookies && biliCookies.SESSDATA)
     const useTv = mode === 'tv'
     const biliHeaders = { 'User-Agent': PARSE_UA, 'Referer': 'https://www.bilibili.com/' }
-    if (isLoggedIn && !useTv) {
+    // 只要 Web 已登录就带 Cookie（含 TV 模式回退到 Web 接口的场景）：
+    // TV 接口回退时若不带 Cookie，Web 接口按匿名档返回，画质被压到 720P（实测已充电/已登录仍只给 720P 的根因）
+    if (isLoggedIn) {
         biliHeaders['Cookie'] = biliCookieString(biliCookies)
     }
     let bvid = null
@@ -2092,8 +2429,25 @@ async function parseBilibili(target, addStream, mode = 'web') {
     const title = cleanBiliTitle(viewData.title)
     const pageTitle = title
     const qualityMap = { 127: '8K', 126: '杜比视界', 125: 'HDR', 120: '4K', 116: '1080P60', 112: '1080P高码率', 80: '1080P', 74: '720P60', 64: '720P', 32: '480P', 16: '360P' }
+    const qLabel0 = qualityMap[viewData.quality] || ''
     const loggedInfo = isLoggedIn ? '（已登录）' : '（未登录·仅低画质）'
     let addedAny = false
+    // 充电专属/付费受限：检测到 B 站只给"试看"时记录原因，最终由调用方提示用户
+    let blockedReason = ''
+    // 受限检测：仅当 durl 带 trial_duration(试看标记) 时判定为受限。
+    // 注意：B站"小说/故事视频"（短文/字幕+配图+音频 合成的竖屏短剧）的 durl[].length 是假值字段
+    //（如返回 509981s，而 view 真实时长仅 1545s），但文件完整可播（无 trial_duration、timelength 正常）。
+    // 若按"总时长 vs 真实时长 偏差>50%"判断会误拦截这类完整视频——实测已由此导致完整 1080P 被误报"充电专属"。
+    const biliAbnormalDurl = (durl) => {
+        if (!Array.isArray(durl) || !durl.length) return false
+        return durl.some(d => (d.trial_duration || 0) > 0)
+    }
+    const noteBlocked = () => {
+        if (blockedReason) return
+        blockedReason = isLoggedIn
+            ? '该视频为UP主充电专属内容：当前登录的B站账号未向该UP主充电（或登录Cookie已失效），接口只返回试看片段。请登录「已向该UP主充电的账号」后重新解析'
+            : '该视频为UP主充电专属内容：需登录B站账号（Web接口）且该账号已向该UP主充电后才能完整观看，当前未登录只返回试看片段'
+    }
 
     // 合集/分P：遍历所有 P（pages），每 P 各自请求 cid 对应的流
     const pages = (viewData.pages && viewData.pages.length > 0)
@@ -2108,12 +2462,25 @@ async function parseBilibili(target, addStream, mode = 'web') {
             ? `[P${pi + 1}] ${cleanBiliTitle(p.part || `第${pi + 1}P`)}`
             : title
         let pageAdded = false
+        // 本 P 的流统一打上 cid（前端播放时按 cid 拉取本 P 弹幕）
+        const pAddStream = (u, type, t, extra = {}) => addStream(u, type, t, { ...extra, cid: partialCid })
 
         // === 0. TV 接口模式（无需登录，无水印源）===
         if (useTv) {
+            let tvMaxQ = 0
             try {
-                pageAdded = await biliTvParsePage({ aid, cid: partialCid, pTitle, addStream, qualityMap })
-            } catch (e) { pageAdded = false }
+                const tvRes = await biliTvParsePage({ aid, cid: partialCid, pTitle, addStream: pAddStream, qualityMap })
+                if (tvRes && tvRes.ok) { pageAdded = true; tvMaxQ = Number(tvRes.maxQuality) || 0 }
+            } catch (e) { tvMaxQ = 0 }
+            // TV 接口只拿到 ≤720P 且 Web 已登录 → 补挂 Web 接口高画质流
+            //（TV 端未登录档封顶 720P；Web 接口带 Cookie 可解锁 1080P，解决"已登录/已充电仍只有 720P"）
+            if (pageAdded && isLoggedIn && tvMaxQ > 0 && tvMaxQ <= 64) {
+                await addBiliWebHigher({
+                    host: 'https://api.bilibili.com/x/player/playurl',
+                    params: { bvid, cid: partialCid },
+                    pTitle, headers: biliHeaders, qualityMap, addStream: pAddStream, minQ: tvMaxQ, loggedInfo
+                })
+            }
             if (pageAdded) { addedAny = true; continue }
             // TV 接口失败时自动回退到 web 接口逻辑
         }
@@ -2141,7 +2508,7 @@ async function parseBilibili(target, addStream, mode = 'web') {
                         if (seenQ.has(v.id)) return
                         seenQ.add(v.id)
                         const qLabel = qualityMap[v.id] || `${v.id}P`
-                        addStream(v.baseUrl || v.base_url, 'mp4', `${pTitle} [${qLabel} 高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
+                        pAddStream(v.baseUrl || v.base_url, 'mp4', `${pTitle} [${qLabel} 高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
                         pageAdded = true
                     })
                 }
@@ -2160,13 +2527,18 @@ async function parseBilibili(target, addStream, mode = 'web') {
                     const durl = r.data.data.durl
                     const quality = r.data.data.quality
                     const qLabel = qualityMap[quality] || `${quality}P`
-                    durl.forEach((d, i) => {
-                        const partTitle = durl.length > 1
-                            ? `${pTitle} [${qLabel} 完整·有声] - 第${i + 1}段${loggedInfo}`
-                            : `${pTitle} [${qLabel} 完整·有声]${loggedInfo}`
-                        addStream(d.url, 'mp4', partTitle, { bili: true })
-                    })
-                    pageAdded = true
+                    // 充电专属/试看：B 站对无权限请求会返回带 trial_duration 的试看段（dbo 短剧视频的 durl.length 为假值但文件完整，不作判断）
+                    if (biliAbnormalDurl(durl)) {
+                        noteBlocked()
+                    } else {
+                        durl.forEach((d, i) => {
+                            const partTitle = durl.length > 1
+                                ? `${pTitle} [${qLabel} 完整·有声] - 第${i + 1}段${loggedInfo}`
+                                : `${pTitle} [${qLabel} 完整·有声]${loggedInfo}`
+                            pAddStream(d.url, 'mp4', partTitle, { bili: true })
+                        })
+                        pageAdded = true
+                    }
                 }
             } catch (e) {}
         }
@@ -2188,7 +2560,7 @@ async function parseBilibili(target, addStream, mode = 'web') {
                             const partTitle = durl.length > 1
                                 ? `${pTitle} [${qLabel}] - 第${i + 1}段${loggedInfo}`
                                 : `${pTitle} [${qLabel}]${loggedInfo}`
-                            addStream(d.url, 'mp4', partTitle, { bili: true })
+                            pAddStream(d.url, 'mp4', partTitle, { bili: true })
                         })
                         pageAdded = true
                         break
@@ -2216,7 +2588,7 @@ async function parseBilibili(target, addStream, mode = 'web') {
                             const partTitle = res.durl.length > 1
                                 ? `${pTitle} [${qLabel} 电影·有声] - 第${i + 1}段${loggedInfo}`
                                 : `${pTitle} [${qLabel} 电影·有声]${loggedInfo}`
-                            addStream(d.url, 'mp4', partTitle, { bili: true })
+                            pAddStream(d.url, 'mp4', partTitle, { bili: true })
                         })
                         pageAdded = true
                     } else if (res.dash && (res.dash.video || []).length) {
@@ -2230,7 +2602,7 @@ async function parseBilibili(target, addStream, mode = 'web') {
                             if (seenQ.has(v.id)) return
                             seenQ.add(v.id)
                             const qLabel = qualityMap[v.id] || `${v.id}P`
-                            addStream(v.baseUrl || v.base_url, 'mp4', `${pTitle} [${qLabel} 电影·高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
+                            pAddStream(v.baseUrl || v.base_url, 'mp4', `${pTitle} [${qLabel} 电影·高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
                             pageAdded = true
                         })
                     }
@@ -2241,7 +2613,11 @@ async function parseBilibili(target, addStream, mode = 'web') {
         if (pageAdded) addedAny = true
     }
 
-    return addedAny ? { title: pageTitle } : null
+    if (blockedReason && !addedAny) {
+        // 全部 P 都被判定为受限（充电专属试看）且没有任何完整流 → 交由调用方给出明确提示
+        return { title: pageTitle, blockedReason, none: true }
+    }
+    return addedAny ? { title: pageTitle, blockedReason } : null
 }
 
 // ===== B站番剧/电影解析 =====
@@ -2284,7 +2660,8 @@ async function parseBilibiliBangumi(target, addStream, mode = 'web') {
     const isLoggedIn = !!(biliCookies && biliCookies.SESSDATA)
     const useTv = mode === 'tv'
     const biliHeaders = { 'User-Agent': PARSE_UA, 'Referer': 'https://www.bilibili.com/' }
-    if (isLoggedIn && !useTv) biliHeaders['Cookie'] = biliCookieString(biliCookies)
+    // 只要 Web 已登录就带 Cookie（TV 模式回退到 Web 接口时不再按匿名档返回 720P）
+    if (isLoggedIn) biliHeaders['Cookie'] = biliCookieString(biliCookies)
 
     // 1. 获取 season 信息和剧集列表
     let seasonData
@@ -2312,11 +2689,13 @@ async function parseBilibiliBangumi(target, addStream, mode = 'web') {
     const loggedInfo = isLoggedIn ? '（已登录）' : '（未登录·仅低画质）'
     const epTitle = `${title} 第${targetEp.title}话${targetEp.long_title ? ' ' + targetEp.long_title : ''}`.trim()
     let addedAny = false
+    // 本集流统一打上 cid（前端播放时按 cid 拉取弹幕）
+    const epAddStream = (u, type, t, extra = {}) => addStream(u, type, t, { ...extra, cid: targetEp.cid })
 
     // === 0. TV 接口模式（无需登录，无水印源）===
     if (useTv) {
         try {
-            addedAny = await biliTvParsePage({ aid: targetEp.aid, cid: targetEp.cid, pTitle: epTitle, addStream, bangumi: true, epId: targetEp.id, qualityMap })
+            addedAny = await biliTvParsePage({ aid: targetEp.aid, cid: targetEp.cid, pTitle: epTitle, addStream: epAddStream, bangumi: true, epId: targetEp.id, qualityMap })
         } catch (e) { addedAny = false }
         if (addedAny) return { title: epTitle }
         // TV 接口失败时自动回退到 web 接口逻辑
@@ -2340,7 +2719,7 @@ async function parseBilibiliBangumi(target, addStream, mode = 'web') {
                     if (seenQ.has(v.id)) return
                     seenQ.add(v.id)
                     const qLabel = qualityMap[v.id] || `${v.id}P`
-                    addStream(v.baseUrl || v.base_url, 'mp4', `${epTitle} [${qLabel} 高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
+                    epAddStream(v.baseUrl || v.base_url, 'mp4', `${epTitle} [${qLabel} 高画质·下载自动合并音频]${loggedInfo}`, { audioUrl, bili: true })
                     addedAny = true
                 })
             }
@@ -2361,7 +2740,7 @@ async function parseBilibiliBangumi(target, addStream, mode = 'web') {
                 const partTitle = durl.length > 1
                     ? `${epTitle} - 第${i + 1}段/共${durl.length}段 [${qLabel} 完整·有声]${loggedInfo}`
                     : `${epTitle} [${qLabel} 完整·有声]${loggedInfo}`
-                addStream(d.url, 'mp4', partTitle, { bili: true })
+                epAddStream(d.url, 'mp4', partTitle, { bili: true })
             })
             addedAny = true
         }
@@ -2383,7 +2762,7 @@ async function parseBilibiliBangumi(target, addStream, mode = 'web') {
                         const partTitle = durl.length > 1
                             ? `${epTitle} - 第${i + 1}段/共${durl.length}段 [${qLabel}]${loggedInfo}`
                             : `${epTitle} [${qLabel}]${loggedInfo}`
-                        addStream(d.url, 'mp4', partTitle, { bili: true })
+                        epAddStream(d.url, 'mp4', partTitle, { bili: true })
                     })
                     addedAny = true
                     break
@@ -4321,9 +4700,198 @@ ipcMain.handle('bilibili:tv-logout', () => {
     return { success: true }
 })
 
+// ===== 动漫专区 B站弹幕（web seg.so protobuf 接口，手写解析不引依赖） =====
+// DmSegMobileReply { elems: DanmakuElem[] }；DanmakuElem 关键字段：
+//   1 id(int64) 2 progress(int32,出现毫秒) 3 mode(1滚动/4底部/5顶部/6逆向/7高级/9BAS)
+//   4 fontsize 5 color(十进制) 7 content(string)
+// 输出 danmuku 插件格式 { text, time(秒), mode(0滚动/1顶部/2底部), color(#RRGGBB) }
+function readProtoVarint(buf, pos) {
+    let value = 0, shift = 0, b
+    do {
+        if (pos >= buf.length) return null
+        b = buf[pos++]
+        value += (b & 0x7F) * Math.pow(2, shift)
+        shift += 7
+    } while (b & 0x80 && shift < 64)
+    return { value, pos }
+}
+
+function parseBiliDanmakuElem(buf) {
+    const item = { text: '', time: 0, mode: 0, color: '#FFFFFF', size: 25 }
+    let pos = 0
+    while (pos < buf.length) {
+        const tag = readProtoVarint(buf, pos)
+        if (!tag) break
+        pos = tag.pos
+        const fieldNo = Math.floor(tag.value / 8)
+        const wireType = tag.value % 8
+        if (wireType === 0) {
+            const v = readProtoVarint(buf, pos)
+            if (!v) break
+            pos = v.pos
+            if (fieldNo === 2) item.time = v.value / 1000
+            else if (fieldNo === 3) item.mode = v.value
+            else if (fieldNo === 4) item.size = v.value
+            else if (fieldNo === 5) item.color = '#' + (v.value >>> 0).toString(16).padStart(6, '0')
+        } else if (wireType === 2) {
+            const len = readProtoVarint(buf, pos)
+            if (!len) break
+            pos = len.pos
+            if (fieldNo === 7) item.text = buf.subarray(pos, pos + len.value).toString('utf8')
+            pos += len.value
+        } else if (wireType === 5) { pos += 4 }
+        else if (wireType === 1) { pos += 8 }
+        else break
+    }
+    return item
+}
+
+function parseBiliDanmakuSeg(buf) {
+    const items = []
+    let pos = 0
+    while (pos < buf.length) {
+        const tag = readProtoVarint(buf, pos)
+        if (!tag) break
+        pos = tag.pos
+        const fieldNo = Math.floor(tag.value / 8)
+        const wireType = tag.value % 8
+        if (fieldNo === 1 && wireType === 2) {
+            const len = readProtoVarint(buf, pos)
+            if (!len) break
+            pos = len.pos
+            items.push(parseBiliDanmakuElem(buf.subarray(pos, pos + len.value)))
+            pos += len.value
+        } else if (wireType === 0) {
+            const v = readProtoVarint(buf, pos)
+            if (!v) break
+            pos = v.pos
+        } else if (wireType === 2) {
+            const len = readProtoVarint(buf, pos)
+            if (!len) break
+            pos = len.pos + len.value
+        } else if (wireType === 5) { pos += 4 }
+        else if (wireType === 1) { pos += 8 }
+        else break
+    }
+    return items
+}
+
+// 拉取单段弹幕（seg.so，每段 6 分钟；无弹幕段返回空数组）
+async function fetchBiliDanmakuSeg(cid, seg) {
+    const url = `https://api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=${cid}&segment_index=${seg}`
+    const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Referer': 'https://www.bilibili.com/' },
+        timeout: 15000
+    }).catch(() => null)
+    if (!res || !res.data) return []
+    const ct = String(res.headers?.['content-type'] || '')
+    // 非二进制（JSON 错误响应）说明无弹幕或风控，当空段处理
+    if (!/octet-stream|protobuf/i.test(ct)) return []
+    const buf = Buffer.from(res.data)
+    if (buf.length < 2) return []
+    return parseBiliDanmakuSeg(buf)
+}
+
+// B站 mode → danmuku 插件 mode（0滚动/1顶部/2底部），高级/代码弹幕丢弃
+const DM_MODE_MAP = { 1: 0, 4: 2, 5: 1, 6: 0 }
+
+// 拉取整集弹幕：不限段数、不限总量；按批并行拉段（每批 8 段），
+// 连续一整批（8 段 = 48 分钟）都无弹幕才视为到头（天然终止，稀疏弹幕不误截断）
+ipcMain.handle('bilibili:anime-danmaku', async (_, { cid }) => {
+    if (!cid) return { success: false, message: '缺少 cid' }
+    const BATCH = 8
+    const all = []
+    for (let start = 1; ; start += BATCH) {
+        const segs = []
+        for (let i = start; i < start + BATCH; i++) segs.push(i)
+        const results = await Promise.all(segs.map(s => fetchBiliDanmakuSeg(cid, s)))
+        let gotAny = false
+        for (const arr of results) {
+            if (arr.length) { gotAny = true; all.push(...arr) }
+        }
+        // 整批全空 → 弹幕已到头，停止
+        if (!gotAny) break
+    }
+    const data = all
+        .filter(d => d.text && DM_MODE_MAP[d.mode] !== undefined)
+        .map(d => ({ text: d.text, time: d.time, mode: DM_MODE_MAP[d.mode], color: d.color, size: d.size }))
+        .sort((a, b) => a.time - b.time)
+    return { success: true, data, count: data.length }
+})
+
+// ===== 动漫专区 B站番剧/电影取流（TV 接口，DASH 音视频分离） =====
+// 详情页点选集后调用：优先按 BV 号（x/tv/playurl）取流，失败兜底 ep_id（pgc playurltv）。
+// DASH 一次返回全部可用画质 → qualities 列表供播放器内切换；durl 兜底单档；全失败返回错误信息。
+// 注意：未 TV 登录时接口封顶 720P（dash video id 64/32），1080P+ 需 TV access_key。
+const BILI_QUALITY_LABEL = { 127: '8K', 126: '杜比', 125: 'HDR', 120: '4K', 116: '1080P60', 112: '1080P+', 80: '1080P', 74: '720P60', 64: '720P', 32: '480P', 16: '360P' }
+ipcMain.handle('bilibili:anime-playurl', async (_, { epId, aid, cid, bvid }) => {
+    if (!epId && !cid && !bvid) return { success: false, message: '缺少选集参数' }
+    const tryQns = [127, 116, 112, 80, 64, 32, 16]
+    const tvUrl = (v) => (v && (v.backup_url?.[0] || v.base_url || v.baseUrl)) || ''
+    // 取流模式：BV 号优先（x/tv/playurl），番剧 ep_id 兜底（pgc/player/api/playurltv）
+    const modes = []
+    if (bvid) modes.push({ bangumi: false, bvid, epId: '' })
+    if (epId) modes.push({ bangumi: true, bvid: '', epId })
+    for (const mode of modes) {
+        for (const qn of tryQns) {
+            const res = await biliTvFetchPlayurl({ aid, cid, bvid: mode.bvid, qn, fourk: 1, bangumi: mode.bangumi, epId: mode.epId })
+            if (!res) continue
+            // DASH：全部可用画质（去重降序）+ 最好音频（ArtVideoPlayer direct + audioUrl 同步播放）
+            if (res.dash && (res.dash.video || []).length) {
+                const videos = (res.dash.video || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                const audios = (res.dash.audio || []).slice().sort((a, b) => (b.id || 0) - (a.id || 0))
+                const audioUrl = audios.length ? tvUrl(audios[0]) : ''
+                const qualities = []
+                const seenQ = new Set()
+                for (const v of videos) {
+                    if (seenQ.has(v.id)) continue
+                    const u = tvUrl(v)
+                    if (!u) continue
+                    seenQ.add(v.id)
+                    qualities.push({
+                        qn: v.id || 0,
+                        label: BILI_QUALITY_LABEL[v.id] || `${v.id}P`,
+                        videoUrl: u,
+                        audioUrl
+                    })
+                }
+                if (qualities.length) {
+                    return {
+                        success: true,
+                        type: 'dash',
+                        videoUrl: qualities[0].videoUrl,
+                        audioUrl,
+                        quality: qualities[0].qn,
+                        qualityLabel: qualities[0].label,
+                        qualities
+                    }
+                }
+            }
+            // durl：整段有声直链（单档）
+            if (res.durl && res.durl.length) {
+                const u = tvUrl(res.durl[0])
+                if (u) {
+                    const q = res.quality || qn
+                    const label = BILI_QUALITY_LABEL[q] || `${q}P`
+                    return {
+                        success: true,
+                        type: 'durl',
+                        url: u,
+                        quality: q,
+                        qualityLabel: label,
+                        qualities: [{ qn: q, label, videoUrl: u, audioUrl: '' }]
+                    }
+                }
+            }
+        }
+    }
+    return { success: false, message: '取流失败，请检查网络或 TV 登录状态' }
+})
+
 // TV 取流：返回 { dash, durl, quality } 或 null；qn 失败时由调用方降级重试
-async function biliTvFetchPlayurl({ aid, cid, qn = 80, fourk = 1, bangumi = false, epId = '' }) {
-    const tvToken = loadBiliTvToken()
+// bvid 模式走 x/tv/playurl（按 BV 号取流）；bangumi 模式走 pgc/player/api/playurltv（ep_id）
+async function biliTvFetchPlayurl({ aid, cid, bvid = '', qn = 80, fourk = 1, bangumi = false, epId = '' }) {    const tvToken = loadBiliTvToken()
     const params = {
         appkey: BILI_TV_APPKEY,
         build: '106500',
@@ -4346,7 +4914,7 @@ async function biliTvFetchPlayurl({ aid, cid, qn = 80, fourk = 1, bangumi = fals
         if (tvToken.mid) params.mid = tvToken.mid
     }
     if (bangumi && epId) params.ep_id = epId
-    if (!bangumi) params.bvid = ''
+    if (!bangumi) params.bvid = bvid || ''
     const signed = appSignParams(BILI_TV_APPKEY, BILI_TV_APPSEC, params)
     const host = bangumi ? 'https://api.snm0516.aisee.tv/pgc/player/api/playurltv' : 'https://api.snm0516.aisee.tv/x/tv/playurl'
     try {
@@ -4360,8 +4928,11 @@ async function biliTvFetchPlayurl({ aid, cid, qn = 80, fourk = 1, bangumi = fals
             timeout: 10000,
             validateStatus: () => true
         })
-        if (r.data?.code !== 0 || !r.data.data) return null
-        const d = r.data.data
+        if (r.data?.code !== 0) return null
+        // 2026-08-27 实测：番剧 pgc/player/api/playurltv 返回【平铺结构】(dash/durl 在顶层，无 data 壳)；
+        // 普通 x/tv/playurl 可能带 data 壳。统一兼容两种结构。
+        const d = (r.data.data !== undefined && r.data.data !== null) ? r.data.data : r.data
+        if (!d || (!d.dash && !d.durl)) return null
         return {
             dash: d.dash || null,
             durl: (d.durl && d.durl.length) ? d.durl : null,
@@ -4397,7 +4968,8 @@ async function biliTvParsePage({ aid, cid, pTitle, addStream, bangumi = false, e
                 const qLabel = qualityMap[v.id] || `${v.id}P`
                 addStream(u, 'mp4', `${pTitle} [${qLabel} TV无水印·下载自动合并音频]`, { audioUrl, bili: true, tv: true })
             }
-            return true
+            // 返回本次 TV 实际拿到的最高的档位（用于判断是否需要补挂 Web 高画质）
+            return { ok: true, maxQuality: Math.max(res.quality || 0, ...videos.map(v => Number(v.id) || 0)) }
         }
         // durl：整段有声（可能分段）
         if (res.durl) {
@@ -4410,7 +4982,7 @@ async function biliTvParsePage({ aid, cid, pTitle, addStream, bangumi = false, e
                     : `${pTitle} [${qLabel} TV无水印·有声]`
                 addStream(u, 'mp4', partTitle, { bili: true, tv: true })
             })
-            return true
+            return { ok: true, maxQuality: res.quality || 0 }
         }
         // 该 qn 拿到返回但无流 → 直接换更低档
         lastErr = 'tv-no-stream'
@@ -4501,6 +5073,55 @@ ipcMain.handle('bilibili:archives', async (_, { pn = 1, ps = 10 }) => {
 })
 
 
+// 本地视频转码兜底：Chromium 无法直接解码的格式（RMVB/WMV3/H.264 10bit/Hi10P 等）
+// 用 ffmpeg 转成 H.264+AAC 的 MP4 后播放。产物缓存于 userData/transcode/，
+// 缓存 key = 路径+mtime，源文件更新后自动重转码。
+ipcMain.handle('video:transcode-file', async (_, { url }) => {
+    const src = String(url || '').trim()
+    if (!/^local-file:\/\//i.test(src)) return { success: false, error: '仅支持本地视频文件转码' }
+    let filePath = src.replace(/^local-file:\/\//i, '')
+    try { filePath = decodeURIComponent(filePath) } catch (e) {}
+    if (!filePath || !fs.existsSync(filePath)) return { success: false, error: '本地文件不存在：' + filePath }
+    try {
+        const stat = fs.statSync(filePath)
+        const hash = crypto.createHash('sha1').update(filePath + ':' + stat.mtimeMs).digest('hex').slice(0, 16)
+        const outDir = path.join(app.getPath('userData'), 'transcode')
+        if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true })
+        const outPath = path.join(outDir, `${hash}.mp4`)
+        if (fs.existsSync(outPath)) {
+            return { success: true, url: `local-file:///${encodeURIComponent(outPath)}`, cached: true }
+        }
+        const ffmpeg = getFfmpegPath()
+        await new Promise((resolve, reject) => {
+            const proc = spawn(ffmpeg, [
+                '-y', '-hide_banner', '-loglevel', 'error',
+                '-i', filePath,
+                '-map', '0:v:0', '-map', '0:a:0?',
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+                '-c:a', 'aac', '-movflags', '+faststart', '-threads', '0',
+                outPath
+            ], { windowsHide: true })
+            let errTail = ''
+            proc.stderr.on('data', (d) => {
+                errTail = (errTail + String(d)).slice(-4000)
+            })
+            const timer = setTimeout(() => {
+                try { proc.kill('SIGKILL') } catch (e) {}
+                reject(new Error('转码超时（10分钟）'))
+            }, 10 * 60 * 1000)
+            proc.on('error', (e) => { clearTimeout(timer); reject(new Error('无法启动 ffmpeg：' + e.message)) })
+            proc.on('close', (code) => {
+                clearTimeout(timer)
+                if (code === 0 && fs.existsSync(outPath)) resolve()
+                else reject(new Error('ffmpeg 转码失败（退出码 ' + code + '）' + (errTail ? '：' + errTail.trim().split('\n').pop() : '')))
+            })
+        })
+        return { success: true, url: `local-file:///${encodeURIComponent(outPath)}` }
+    } catch (e) {
+        return { success: false, error: e.message || '转码失败' }
+    }
+})
+
 ipcMain.handle('video:parse-url', async (_, { url }) => {
     try {
         const target = String(url || '').trim()
@@ -4524,6 +5145,8 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             // 透传 DASH 音频地址（用于下载时 ffmpeg 合并）等附加字段
             if (extra.audioUrl) item.audioUrl = extra.audioUrl
             if (extra.bili) item.bili = true
+            // B站流携带 cid：前端播放时按 cid 拉取弹幕
+            if (extra.cid) item.cid = extra.cid
             if (extra.ytSrc) item.ytSrc = extra.ytSrc
             if (extra.ytHeight) item.ytHeight = extra.ytHeight
             if (extra.isLive) item.isLive = true
@@ -4532,6 +5155,9 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             if (extra.watermarkFree) item.watermarkFree = true
             // 画质标签（抖音多画质）：用于列表展示，如 '1080p 超清'
             if (extra.quality) item.quality = extra.quality
+            // 图文作品图片流：标记该流为图片，并携带整个图集 URL 列表供前端图集浏览
+            if (extra.isImage) item.isImage = true
+            if (Array.isArray(extra.imageList)) item.imageList = extra.imageList
             found.set(clean, item)
         }
 
@@ -4624,7 +5250,11 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
             const biliResult = await parseBilibili(target, addStream, biliApiMode)
             if (biliResult) {
                 const streams = Array.from(found.values())
-                return { success: true, streams, pageTitle: biliResult.title || '', pageUrl: target }
+                // 全部受限（充电专属试看）且无任何完整流 → 明确提示原因
+                if (biliResult.blockedReason && !streams.length) {
+                    return { success: false, message: biliResult.blockedReason, pageUrl: target }
+                }
+                return { success: true, streams, pageTitle: biliResult.title || '', pageUrl: target, message: biliResult.blockedReason || '' }
             }
         }
 

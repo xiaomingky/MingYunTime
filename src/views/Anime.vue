@@ -1,12 +1,12 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { animeHome, animeSearch } from '../api'
+import { animeHome, animeSearch, biliTvLoginQr, biliTvLoginCheck, biliTvLoginStatus, biliTvLogout, biliLoginStatus } from '../api'
 import { useMessageStore } from '../store/message'
 import { useAnimeStore } from '../store/anime'
 import { useSearchHistoryStore } from '../store/searchHistory'
 import SearchSuggest from '../components/SearchSuggest.vue'
-import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock, RefreshCw, Heart, Trash2, X } from 'lucide-vue-next'
+import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock, RefreshCw, Heart, Trash2, X, MonitorPlay, Check, LogOut } from 'lucide-vue-next'
 import './anime-common.css'
 
 const router = useRouter()
@@ -26,15 +26,166 @@ function isCoverFailed(url) {
     return failedCovers.value.has(url)
 }
 
-// ===== 源配置（4线路：官方/推荐/经典/备用，由后端 anime.js 自动故障转移）=====
+// ===== 源配置（B站TV 默认优先 + 4樱花线路，由后端 anime.js 分流处理）=====
 const sources = [
+    { id: 'bilibili', label: 'B站TV', desc: '无水印片源·需TV登录' },
     { id: 'yhfs', label: '官方线路', desc: '官方直连' },
     { id: 'yhf', label: '推荐线路', desc: '稳定优先' },
     { id: 'xdm', label: '经典线路', desc: '资源全' },
     { id: 'yhdmfan', label: '备用线路', desc: '兜底' }
 ]
 
-const currentSource = ref('yhfs')
+const currentSource = ref('bilibili')
+
+// ===== B站TV 源：番剧/电影切换 + TV 登录 =====
+const biliCat = ref('anime') // 'anime' 番剧 | 'movie' 电影
+const isBiliSource = computed(() => currentSource.value === 'bilibili')
+function switchBiliCat(cat) {
+    if (biliCat.value === cat) return
+    biliCat.value = cat
+    // 切换类型后重新加载对应数据：搜索模式按类型重搜，首页模式重拉当前类型
+    if (searchMode.value && keyword.value.trim()) {
+        handleSearch()
+    } else {
+        fetchHome()
+    }
+}
+
+// TV 端登录状态（云视听小电视 access_key，解锁 TV 接口 1080P+）
+const biliTvLoggedIn = ref(false)
+const biliTvMid = ref('')
+const biliTvUserInfo = ref(null)
+const showBiliTvQr = ref(false)
+const biliTvQrUrl = ref('')
+const biliTvAuthCode = ref('')
+const biliTvLocalId = ref('')
+const biliTvQrStatus = ref('')  // '' | 'waiting' | 'scanned' | 'expired' | 'error'
+const biliTvQrError = ref('')
+let biliTvPollTimer = null
+const biliTvQrImgUrl = computed(() => {
+    if (!biliTvQrUrl.value) return ''
+    return `https://api.qrserver.com/v1/create-qr-code/?size=240x240&margin=8&data=${encodeURIComponent(biliTvQrUrl.value)}`
+})
+
+async function loadBiliTvStatus() {
+    try {
+        const res = await biliTvLoginStatus()
+        if (res?.success && res.loggedIn) {
+            biliTvLoggedIn.value = true
+            biliTvMid.value = res.mid || ''
+            biliTvUserInfo.value = res.userInfo || null
+        } else {
+            biliTvLoggedIn.value = false
+            biliTvMid.value = ''
+            biliTvUserInfo.value = null
+        }
+    } catch (e) {}
+}
+
+// 点击登录胶囊：先检测网址解析登录状态 → 已登录提示复用 / 未登录扫码
+async function handleBiliLogin() {
+    try {
+        const tv = await biliTvLoginStatus()
+        if (tv?.success && tv.loggedIn) {
+            const uname = tv.userInfo?.uname || tv.mid || ''
+            const ok = await messageStore.confirm(`检测到网址解析已登录 B站TV 账号「${uname}」，是否使用该账号？`, '使用已有账号')
+            if (ok) {
+                biliTvLoggedIn.value = true
+                biliTvMid.value = tv.mid || ''
+                biliTvUserInfo.value = tv.userInfo || null
+                messageStore.success(`已使用 TV 账号「${uname}」`, 2500)
+                return
+            }
+            // 取消 = 换号扫码（新扫码会覆盖原 token）
+        } else {
+            const web = await biliLoginStatus()
+            if (web?.success && web.loggedIn) {
+                const uname = web.userInfo?.uname || ''
+                const ok = await messageStore.confirm(
+                    `已检测到网址解析的 B站网页账号「${uname}」。TV 接口需 TV 端账号才能解锁高清，是否现在打开 TV 扫码登录？`,
+                    'TV端登录'
+                )
+                if (!ok) return
+            }
+        }
+        openBiliTvQr()
+    } catch (e) {
+        openBiliTvQr()
+    }
+}
+
+async function openBiliTvQr() {
+    if (showBiliTvQr.value) return
+    showBiliTvQr.value = true
+    biliTvQrStatus.value = ''
+    biliTvQrError.value = ''
+    try {
+        const res = await biliTvLoginQr()
+        if (res?.success) {
+            biliTvQrUrl.value = res.qrcodeUrl
+            biliTvAuthCode.value = res.authCode
+            biliTvLocalId.value = res.localId
+            biliTvQrStatus.value = 'waiting'
+            startBiliTvPoll()
+        } else {
+            biliTvQrStatus.value = 'error'
+            biliTvQrError.value = res?.message || '获取二维码失败'
+        }
+    } catch (e) {
+        biliTvQrStatus.value = 'error'
+        biliTvQrError.value = e.message || '获取二维码失败'
+    }
+}
+
+function startBiliTvPoll() {
+    stopBiliTvPoll()
+    biliTvPollTimer = setInterval(async () => {
+        try {
+            const res = await biliTvLoginCheck({ authCode: biliTvAuthCode.value, localId: biliTvLocalId.value })
+            if (res?.loggedIn) {
+                stopBiliTvPoll()
+                biliTvLoggedIn.value = true
+                showBiliTvQr.value = false
+                await loadBiliTvStatus()
+                messageStore.success('TV端登录成功，TV 接口已解锁高清', 3000)
+            } else if (res?.status === 'scanned') {
+                biliTvQrStatus.value = 'scanned'
+            } else if (res?.status === 'expired') {
+                stopBiliTvPoll()
+                biliTvQrStatus.value = 'expired'
+            }
+        } catch (e) {}
+    }, 2000)
+}
+
+function stopBiliTvPoll() {
+    if (biliTvPollTimer) { clearInterval(biliTvPollTimer); biliTvPollTimer = null }
+}
+
+function closeBiliTvQr() {
+    showBiliTvQr.value = false
+    stopBiliTvPoll()
+}
+
+async function refreshBiliTvQr() {
+    stopBiliTvPoll()
+    await openBiliTvQr()
+}
+
+async function logoutBiliTv() {
+    if (!await messageStore.confirm('确定退出 TV 端登录？TV 接口将回落 720P。', '退出TV登录')) return
+    try {
+        await biliTvLogout()
+        biliTvLoggedIn.value = false
+        biliTvMid.value = ''
+        biliTvUserInfo.value = null
+        messageStore.success('已退出 TV 端登录')
+    } catch (e) { messageStore.error('退出失败') }
+}
+
+function onTvAvatarError() {
+    if (biliTvUserInfo.value) biliTvUserInfo.value = { ...biliTvUserInfo.value, face: '' }
+}
 
 // ===== 刷新当前视图（首页 / 搜索结果）=====
 const refreshing = ref(false)
@@ -60,6 +211,10 @@ const keyword = ref('')
 const searchResultsRaw = ref([])
 const searchMode = ref(false)
 const searchLoading = ref(false)
+
+// B站源首页区块标题（随番剧/电影切换变化）
+const latestTitle = computed(() => isBiliSource.value ? `${biliCat.value === 'movie' ? '电影' : '番剧'} · 最新更新` : '最新更新')
+const hotTitle = computed(() => isBiliSource.value ? `${biliCat.value === 'movie' ? '电影' : '番剧'} · 热门推荐` : '热门推荐')
 
 // 搜索结果去重 + 过滤无封面项（避免出现"有名字没图片"的重复项）
 // 优先保留有封面的项；同 id 只保留第一个
@@ -165,7 +320,8 @@ const fetchHome = async () => {
     loading.value = true
     searchMode.value = false
     try {
-        const res = await animeHome(currentSource.value)
+        // B站TV 源按当前番剧/电影类型加载；樱花线路忽略 cat 参数
+        const res = await animeHome(currentSource.value, { cat: biliCat.value })
         if (res?.success && res.data) {
             // 去重（同 id 只保留第一个）
             const dedup = (arr) => {
@@ -210,7 +366,7 @@ const handleSearch = async () => {
     searchLoading.value = true
     searchMode.value = true
     try {
-        const res = await animeSearch(currentSource.value, keyword.value)
+        const res = await animeSearch(currentSource.value, keyword.value, { cat: biliCat.value })
         if (res?.success) {
             searchResultsRaw.value = res.data || []
             currentPage.value = 1
@@ -250,7 +406,7 @@ function restoreSearchState() {
             return false
         }
         keyword.value = state.keyword || ''
-        currentSource.value = state.source || 'yhfs'
+        currentSource.value = state.source || 'bilibili'
         searchResultsRaw.value = state.results || []
         currentPage.value = state.page || 1
         searchMode.value = true
@@ -275,7 +431,7 @@ const onSelectSuggest = (kw) => {
 const onSelectItem = (item) => {
     showSearchSuggest.value = false
     if (item?.type === 'anime' && item.id) {
-        router.push(`/anime/${item.source || 'yhfs'}/${item.id}`)
+        router.push(`/anime/${item.source || 'bilibili'}/${item.id}`)
     }
 }
 
@@ -294,6 +450,7 @@ const switchSource = (src) => {
     if (currentSource.value === src) return
     currentSource.value = src
     animeStore.setSource(src)
+    if (src === 'bilibili') loadBiliTvStatus()
     if (searchMode.value && keyword.value) {
         handleSearch()
     } else {
@@ -316,13 +473,16 @@ onMounted(() => {
     // 否则尝试恢复上次搜索状态（从详情页返回时）
     if (restoreSearchState()) {
         // 恢复成功，不加载首页
+        if (currentSource.value === 'bilibili') loadBiliTvStatus()
         return
     }
     fetchHome()
+    if (currentSource.value === 'bilibili') loadBiliTvStatus()
 })
 
 onUnmounted(() => {
     stopCarousel()
+    stopBiliTvPoll()
 })
 </script>
 
@@ -342,6 +502,48 @@ onUnmounted(() => {
                     @click="switchSource(s.id)"
                 >
                     {{ s.label }}
+                </button>
+            </div>
+            <!-- B站源：番剧/电影切换 -->
+            <div v-if="isBiliSource" class="bili-cat-tabs">
+                <button
+                    class="bili-cat-tab"
+                    :class="{ active: biliCat === 'anime' }"
+                    @click="switchBiliCat('anime')"
+                ><Tv :size="13" /> 番剧</button>
+                <button
+                    class="bili-cat-tab"
+                    :class="{ active: biliCat === 'movie' }"
+                    @click="switchBiliCat('movie')"
+                ><Film :size="13" /> 电影</button>
+            </div>
+            <!-- B站TV 登录胶囊（仅 B站 源显示） -->
+            <div v-if="isBiliSource" class="bili-login-wrap">
+                <button
+                    v-if="!biliTvLoggedIn"
+                    class="login-capsule bili-tv"
+                    @click="handleBiliLogin"
+                    title="TV 接口需扫码登录才能解锁 1080P+"
+                >
+                    <MonitorPlay :size="13" /><span>TV登录</span>
+                </button>
+                <button
+                    v-else
+                    class="login-capsule bili-tv logged"
+                    @click="logoutBiliTv"
+                    title="点击退出 TV 端登录"
+                >
+                    <img
+                        v-if="biliTvUserInfo?.face"
+                        :src="biliTvUserInfo.face"
+                        class="capsule-avatar"
+                        alt=""
+                        referrerpolicy="no-referrer"
+                        @error="onTvAvatarError"
+                    />
+                    <MonitorPlay v-else :size="13" />
+                    <span class="capsule-name">{{ biliTvUserInfo?.uname || (biliTvMid ? `TV·${biliTvMid}` : 'TV已登录') }}</span>
+                    <LogOut :size="12" />
                 </button>
             </div>
             <!-- 我的收藏按钮（线路一旁） -->
@@ -553,8 +755,8 @@ onUnmounted(() => {
                 </div>
             </div>
 
-            <!-- 分类导航 -->
-            <div class="category-nav">
+            <!-- 分类导航（樱花线路专用；B站TV 用番剧/电影切换，不显示） -->
+            <div v-if="!isBiliSource" class="category-nav">
                 <div
                     v-for="cat in categories"
                     :key="cat.id"
@@ -570,7 +772,7 @@ onUnmounted(() => {
             <section v-if="homeData.latest.length > 0" class="section">
                 <div class="section-header">
                     <h3 class="section-title">
-                        <Clock :size="16" /> 最新更新
+                        <Clock :size="16" /> {{ latestTitle }}
                     </h3>
                 </div>
                 <div class="horizontal-scroll">
@@ -601,7 +803,7 @@ onUnmounted(() => {
             <section v-if="homeData.hot.length > 0" class="section">
                 <div class="section-header">
                     <h3 class="section-title">
-                        <Flame :size="16" /> 热门推荐
+                        <Flame :size="16" /> {{ hotTitle }}
                     </h3>
                 </div>
                 <div class="anime-grid">
@@ -664,6 +866,44 @@ onUnmounted(() => {
             </section>
 
         </template>
+
+        <!-- B站 TV 端扫码登录弹窗 -->
+        <transition name="modal">
+            <div v-if="showBiliTvQr" class="anime-overlay" @click.self="closeBiliTvQr">
+                <div class="bili-qr-modal">
+                    <div class="qr-header">
+                        <h3>TV 端扫码登录</h3>
+                        <X :size="18" class="clickable" @click="closeBiliTvQr" />
+                    </div>
+                    <div class="bili-qr-body">
+                        <div v-if="biliTvQrStatus === 'error'" class="bili-qr-error">
+                            <p>{{ biliTvQrError }}</p>
+                            <button class="qr-btn" @click="refreshBiliTvQr">
+                                <RefreshCw :size="14" /> 重新获取
+                            </button>
+                        </div>
+                        <div v-else-if="biliTvQrStatus === 'expired'" class="bili-qr-expired">
+                            <p>二维码已过期</p>
+                            <button class="qr-btn" @click="refreshBiliTvQr">
+                                <RefreshCw :size="14" /> 刷新二维码
+                            </button>
+                        </div>
+                        <div v-else class="bili-qr-img-wrap">
+                            <img v-if="biliTvQrImgUrl" :src="biliTvQrImgUrl" alt="TV端登录二维码" class="bili-qr-img" />
+                            <div v-if="biliTvQrStatus === 'scanned'" class="bili-qr-scanned">
+                                <Check :size="40" />
+                                <p>已扫码，请在手机上确认</p>
+                            </div>
+                        </div>
+                        <div class="bili-qr-tips">
+                            <p v-if="biliTvQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码完成 TV 端登录</p>
+                            <p v-else-if="biliTvQrStatus === 'scanned'">等待确认中...</p>
+                            <p class="bili-qr-benefit">登录后解锁 1080P+/大会员档，未登录封顶 720P</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </transition>
     </div>
 </template>
 
@@ -1473,5 +1713,199 @@ onUnmounted(() => {
     color: #999;
     padding: 0 4px;
     user-select: none;
+}
+
+/* ===== B站TV 源：番剧/电影切换 ===== */
+.bili-cat-tabs {
+    display: flex;
+    gap: 4px;
+    background: #fff;
+    padding: 4px;
+    border-radius: 20px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.bili-cat-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px;
+    background: transparent;
+    border: none;
+    border-radius: 16px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #666;
+    transition: all 0.2s;
+}
+
+.bili-cat-tab:hover { color: #0a7ee0; }
+.bili-cat-tab.active { background: #0a7ee0; color: #fff; }
+
+/* ===== B站TV 登录胶囊 ===== */
+.bili-login-wrap {
+    display: flex;
+    align-items: center;
+}
+
+.login-capsule {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 12px;
+    border-radius: 14px;
+    border: 1px solid transparent;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s;
+}
+
+.login-capsule.bili-tv {
+    background: rgba(0, 150, 255, 0.1);
+    color: #0a7ee0;
+    border-color: rgba(0, 150, 255, 0.32);
+}
+.login-capsule.bili-tv:hover { background: rgba(0, 150, 255, 0.16); }
+
+.login-capsule.logged { padding: 0 6px 0 4px; }
+.login-capsule.logged:hover { opacity: 0.85; }
+
+.capsule-avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: rgba(0, 0, 0, 0.08);
+}
+
+.capsule-name {
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ===== B站 TV 扫码弹窗 ===== */
+.anime-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+}
+
+.bili-qr-modal {
+    background: #fff;
+    border-radius: 14px;
+    width: min(360px, 92vw);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+
+.qr-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.qr-header h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: #333;
+}
+
+.qr-header .clickable {
+    color: #999;
+    cursor: pointer;
+    transition: color 0.15s;
+}
+.qr-header .clickable:hover { color: #c20c0c; }
+
+.bili-qr-body {
+    padding: 28px 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+}
+
+.bili-qr-img-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.bili-qr-img {
+    width: 240px;
+    height: 240px;
+    border-radius: 10px;
+    border: 1px solid #eee;
+}
+
+.bili-qr-scanned {
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.92);
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: #22c55e;
+    font-size: 13px;
+}
+
+.bili-qr-error, .bili-qr-expired {
+    text-align: center;
+    color: #ef4444;
+    font-size: 14px;
+    padding: 40px 0;
+}
+
+.bili-qr-error .qr-btn, .bili-qr-expired .qr-btn { margin-top: 16px; }
+
+.qr-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 14px;
+    background: #0a7ee0;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+.qr-btn:hover { opacity: 0.9; }
+
+.bili-qr-tips {
+    text-align: center;
+    font-size: 12px;
+    color: #888;
+    line-height: 1.8;
+}
+
+.bili-qr-tips strong { color: #0a7ee0; }
+.bili-qr-benefit { color: #fb7299; margin-top: 4px; }
+
+/* 弹窗过渡 */
+.modal-enter-active, .modal-leave-active { transition: opacity 0.2s; }
+.modal-enter-from, .modal-leave-to { opacity: 0; }
+.modal-enter-active .bili-qr-modal, .modal-leave-active .bili-qr-modal {
+    transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s;
+}
+.modal-enter-from .bili-qr-modal, .modal-leave-to .bili-qr-modal {
+    transform: translateY(12px) scale(0.96);
+    opacity: 0;
 }
 </style>

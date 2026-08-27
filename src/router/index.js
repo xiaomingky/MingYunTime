@@ -8,7 +8,6 @@ import LocalMusic from '../views/LocalMusic.vue'
 import RecentPlay from '../views/RecentPlay.vue'
 import LocalVideo from '../views/LocalVideo.vue'
 import AlbumDetail from '../views/AlbumDetail.vue'
-import CloudMusic from '../views/CloudMusic.vue'
 import Downloads from '../views/Downloads.vue'
 import NetEaseCloud from '../views/NetEaseCloud.vue'
 import Settings from '../views/Settings.vue'
@@ -87,11 +86,6 @@ const routes = [
         path: '/desktop-lyrics',
         name: 'DesktopLyrics',
         component: () => import('../views/DesktopLyrics.vue')
-    },
-    {
-        path: '/cloud',
-        name: 'CloudMusic',
-        component: CloudMusic
     },
     {
         path: '/netease-cloud',

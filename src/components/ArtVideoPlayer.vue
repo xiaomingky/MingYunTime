@@ -4,6 +4,7 @@
 // 功能：选集面板 / 上一集下一集 / 音量增强(Web Audio 增益最高1000%) / 画质切换 / 倍速 / 快捷键
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Artplayer from 'artplayer'
+import ArtplayerDanmuku from 'artplayer-plugin-danmuku'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
 import { Film, RefreshCw, X } from 'lucide-vue-next'
@@ -13,6 +14,12 @@ const props = defineProps({
     playType: { type: String, default: 'm3u8' }, // m3u8 | direct | flv | live
     // DASH 音视频分离时的音频地址（B站高画质流是纯视频，需同步播放音频）
     audioUrl: { type: String, default: '' },
+    // 多画质列表（B站TV）：[{ qn, label, videoUrl, audioUrl }]，多于 1 档时显示画质切换按钮
+    qualities: { type: Array, default: () => [] },
+    // 当前画质档位 qn（父层指定初始档，切换后通过 qualityChange 事件同步回父层）
+    currentQn: { type: Number, default: 0 },
+    // 弹幕列表（B站TV）：[{ text, time, mode(0滚动/1顶部/2底部), color, size }]
+    danmaku: { type: Array, default: () => [] },
     badge: { type: String, default: '' },
     autoplay: { type: Boolean, default: true },
     hasPrev: { type: Boolean, default: false },
@@ -20,7 +27,7 @@ const props = defineProps({
     episodes: { type: Array, default: () => [] },
     currentEpisode: { type: Object, default: null }
 })
-const emit = defineEmits(['ended', 'retry', 'ready', 'error', 'prev', 'next', 'selectEpisode', 'playing'])
+const emit = defineEmits(['ended', 'retry', 'ready', 'error', 'prev', 'next', 'selectEpisode', 'playing', 'qualityChange'])
 
 const artContainerEl = ref(null)
 // ArtPlayer 根节点（$player，全屏目标）。遮罩层 Teleport 进去，全屏时仍可见
@@ -31,6 +38,53 @@ const playerError = ref('')
 const showEpPanel = ref(false)
 // 真直播标识（duration=Infinity 时显示）
 const liveBadge = ref(false)
+
+// ===== 画质切换（B站TV 多档位 DASH）=====
+const showQualityPanel = ref(false)
+// 当前生效画质 qn（父层 currentQn 优先，否则取最高档）
+const activeQn = ref(0)
+const activeQualityLabel = computed(() => {
+    const q = props.qualities.find(item => item.qn === activeQn.value)
+    return q ? q.label : '画质'
+})
+
+// 切换画质：art.switchQuality 保持播放进度（ArtPlayer 5.x 的 switchUrl 会回到 0，勿用），
+// DASH 音频各档共用同一地址，无需重挂音频
+async function switchQuality(q) {
+    showQualityPanel.value = false
+    if (!art || !q || q.qn === activeQn.value) return
+    const prevQn = activeQn.value
+    activeQn.value = q.qn
+    const time = art.currentTime || 0
+    const wasPlaying = art.video && !art.video.paused
+    try {
+        await art.switchQuality(q.videoUrl)
+        // 兜底恢复进度与播放状态
+        if (art) {
+            if (Math.abs((art.currentTime || 0) - time) > 1) {
+                try { art.currentTime = time } catch (e) {}
+            }
+            if (wasPlaying) art.play().catch(() => {})
+            art.notice.show = `画质已切换至 ${q.label}`
+            updateQualityControl()
+        }
+        emit('qualityChange', q.qn)
+    } catch (e) {
+        activeQn.value = prevQn
+        if (art) art.notice.show = '画质切换失败，请重试'
+    }
+}
+
+// 同步控制条画质按钮文字
+function updateQualityControl() {
+    if (!art) return
+    const dom = art.controls.biliQuality
+    if (dom) dom.innerHTML = `<span class="avp-text-btn quality-active">${activeQualityLabel.value}</span>`
+}
+
+// ===== 弹幕（B站，滚动/顶部/底部）=====
+// 显隐/透明度/速度用插件自带的设置面板开关（ArtPlayer 设置里的"显示弹幕"），不再另加控制条按钮
+const danmakuOn = ref(true)
 
 // ===== 音量增强（Web Audio API 增益节点，可超过系统 100%）=====
 const boostSteps = [1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
@@ -139,7 +193,7 @@ function buildControls() {
         index: 7,
         html: '<span class="avp-text-btn">选集</span>',
         tooltip: '选集',
-        click: () => { showEpPanel.value = !showEpPanel.value }
+        click: () => { showEpPanel.value = !showEpPanel.value; showQualityPanel.value = false }
     })
     // 音量增强
     list.push({
@@ -150,6 +204,17 @@ function buildControls() {
         tooltip: '音量增强（点击切换）',
         click: () => cycleGainBoost()
     })
+    // 画质切换（B站TV 多档位 DASH，多于 1 档时显示）
+    if (props.qualities.length > 1) {
+        list.push({
+            name: 'biliQuality',
+            position: 'right',
+            index: 9,
+            html: `<span class="avp-text-btn quality-active">${activeQualityLabel.value}</span>`,
+            tooltip: '画质切换',
+            click: () => { showQualityPanel.value = !showQualityPanel.value; showEpPanel.value = false }
+        })
+    }
     return list
 }
 
@@ -484,6 +549,9 @@ async function createPlayer(src) {
     if (!src || !artContainerEl.value) return
     playerError.value = ''
     showEpPanel.value = false
+    showQualityPanel.value = false
+    // 画质档位随新流重置：父层指定档优先，否则取最高档
+    activeQn.value = props.currentQn || (props.qualities[0]?.qn || 0)
 
     const artType = resolveArtType(src)
 
@@ -518,8 +586,25 @@ async function createPlayer(src) {
         backdrop: true,
         playsInline: true,
         miniProgressBar: true,
-        controls: buildControls()
+        controls: buildControls(),
+        // 弹幕插件（B站TV）：滚动/顶部/底部，防重叠，随倍速同步
+        plugins: [
+            ArtplayerDanmuku({
+                danmaku: props.danmaku,
+                speed: 6,
+                opacity: 0.9,
+                fontSize: 22,
+                antiOverlap: true,
+                synchronousPlayback: true,
+                visible: danmakuOn.value
+            })
+        ]
     })
+
+    // 弹幕插件就绪后恢复隐藏状态（visible 仅在 emit 时生效，初始隐藏需手动 hide）
+    if (!danmakuOn.value) {
+        nextTick(() => { try { art?.plugins?.artplayerPluginDanmuku?.hide() } catch (e) {} })
+    }
 
     // 遮罩层 Teleport 到 $player 内（全屏时仍可见）
     playerEl.value = art.template.$player
@@ -558,6 +643,15 @@ watch(() => props.src, (newSrc) => {
 watch(() => props.audioUrl, () => {
     if (art && props.src) initDashAudio()
 })
+
+// 弹幕数据后到（异步拉取完成）或更新：load() 换弹幕源，无需重建播放器
+// 显隐交给插件自带设置面板（"显示弹幕"开关），此处只负责喂数据
+watch(() => props.danmaku, (list) => {
+    const dk = art?.plugins?.artplayerPluginDanmuku
+    if (!dk || !art) return
+    if ((list || []).length === 0) return
+    dk.load(list).catch(() => {})
+}, { deep: false })
 
 onMounted(() => {
     if (props.src) nextTick(() => createPlayer(props.src))
@@ -609,6 +703,25 @@ defineExpose({ art })
                             @click="onEpisodeSelect(ep)"
                         >{{ ep.title }}</button>
                     </div>
+                </div>
+            </transition>
+
+            <!-- 画质面板（B站TV 多档位，与选集面板互斥） -->
+            <transition name="avp-slide">
+                <div v-if="showQualityPanel && !playerError" class="avp-ep-panel avp-quality-panel" @click.stop>
+                    <div class="avp-ep-header">
+                        <span>画质 ({{ qualities.length }})</span>
+                        <button class="avp-ep-close" @click="showQualityPanel = false"><X :size="14" /></button>
+                    </div>
+                    <transition-group name="avp-qual" tag="div" class="avp-ep-list avp-quality-list">
+                        <button
+                            v-for="q in qualities"
+                            :key="q.qn"
+                            class="avp-ep-item"
+                            :class="{ active: q.qn === activeQn }"
+                            @click="switchQuality(q)"
+                        >{{ q.label }}</button>
+                    </transition-group>
                 </div>
             </transition>
 
@@ -830,5 +943,28 @@ defineExpose({ art })
 .avp-slide-enter-from, .avp-slide-leave-to {
     opacity: 0;
     transform: translateY(8px);
+}
+
+/* ===== 画质切换 ===== */
+.art-container :deep(.art-control .avp-text-btn.quality-active) {
+    color: #ff9f9f;
+}
+/* 画质面板：单列较窄，贴右侧控制条上方 */
+.avp-quality-panel {
+    width: 150px;
+}
+.avp-quality-list {
+    grid-template-columns: 1fr;
+}
+/* 画质列表项折叠/展开动画 */
+.avp-qual-enter-active, .avp-qual-leave-active {
+    transition: opacity .18s, transform .18s;
+}
+.avp-qual-enter-from, .avp-qual-leave-to {
+    opacity: 0;
+    transform: translateX(10px);
+}
+.avp-qual-move {
+    transition: transform .18s;
 }
 </style>
