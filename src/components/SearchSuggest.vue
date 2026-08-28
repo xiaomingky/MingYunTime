@@ -5,7 +5,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Search, Clock, Trash2, Flame, X, ArrowUpRight, TrendingUp, Loader2 } from 'lucide-vue-next'
 import { useSearchHistoryStore } from '../store/searchHistory'
 import { usePlatformStore } from '../store/platform'
-import { cloudSearch, animeSearch, movieSearch } from '../api'
+import { cloudSearch, animeSearch, movieSearch, biliVideoSearch } from '../api'
 import { qqSearch, normalizeQQSong } from '../api/qq'
 import { kugouSearch, normalizeKugouSong } from '../api/kugou'
 
@@ -114,6 +114,18 @@ async function doLiveSearch(kw) {
                 sub: m.tags || m.desc || '',
                 cover: m.cover || '',
                 type: 'movie'
+            }))
+        } else if (module === 'bilibili-video') {
+            // B站视频专区实时搜索。返回 { success, data: { list: [...] } }
+            const res = await biliVideoSearch({ keyword: kw, page: 1 })
+            const list = Array.isArray(res?.data?.list) ? res.data.list : []
+            liveResults.value = list.slice(0, 6).map(v => ({
+                id: v.bvid,
+                bvid: v.bvid,
+                name: v.title,
+                sub: v.author || '',
+                cover: v.cover || '',
+                type: 'bilibili-video'
             }))
         }
     } catch (e) {

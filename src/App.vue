@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, onUnmounted, watch, provide } from 'vue'
+import { ref, onMounted, computed, onUnmounted, watch, provide, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getPendingLockTarget } from './router'
 import { usePlayerStore } from './store/player'
@@ -445,13 +445,23 @@ const kugouNavItems = [
     { id: '/kugou/singers', label: '歌手', icon: Mic },
     { id: '/kugou/categories', label: '歌单分类', icon: ListMusic },
 ]
-// 视频分组（动漫区/影视区）：三平台共用，侧边栏可下拉展开，默认折叠
+// 视频分组（动漫区/影视区/B站区）：三平台共用，侧边栏可下拉展开，默认折叠
+// B站官方小电视图标（从网址解析的 bilibili-fill 路径，单色 currentColor）
+const BiliLogoIcon = (props) => h('svg', {
+    viewBox: '0 0 24 24',
+    width: props.size || 18,
+    height: props.size || 18,
+    fill: 'currentColor',
+    'aria-hidden': 'true',
+    style: 'flex-shrink: 0; display: inline-block; vertical-align: -2px'
+}, [h('path', { d: 'M18.223 3.086a1.25 1.25 0 0 1 0 1.768L17.08 5.996h1.17A3.75 3.75 0 0 1 22 9.747v7.5a3.75 3.75 0 0 1-3.75 3.75H5.75A3.75 3.75 0 0 1 2 17.247v-7.5a3.75 3.75 0 0 1 3.75-3.75h1.166L5.775 4.855a1.25 1.25 0 1 1 1.767-1.768l2.652 2.652c.079.079.145.165.198.257h3.213c.053-.092.12-.18.199-.258l2.651-2.652a1.25 1.25 0 0 1 1.768 0zm.027 5.42H5.75a1.25 1.25 0 0 0-1.247 1.157l-.003.094v7.5c0 .659.51 1.199 1.157 1.246l.093.004h12.5a1.25 1.25 0 0 0 1.247-1.157l.003-.093v-7.5c0-.69-.56-1.25-1.25-1.25zm-10 2.5c.69 0 1.25.56 1.25 1.25v1.25a1.25 1.25 0 1 1-2.5 0v-1.25c0-.69.56-1.25 1.25-1.25zm7.5 0c.69 0 1.25.56 1.25 1.25v1.25a1.25 1.25 0 1 1-2.5 0v-1.25c0-.69.56-1.25 1.25-1.25z' })])
 const videoChildren = [
     { id: '/anime', label: '动漫区', icon: MonitorPlay },
     { id: '/movie', label: '影视区', icon: Film },
+    { id: '/bilibili', label: 'B站区', icon: BiliLogoIcon },
 ]
 const videoGroupOpen = ref(false)
-const isVideoRoute = computed(() => route.path.startsWith('/anime') || route.path.startsWith('/movie'))
+const isVideoRoute = computed(() => route.path.startsWith('/anime') || route.path.startsWith('/movie') || route.path.startsWith('/bilibili'))
 // 进入视频子区时自动展开（刷新/直达路由也能看到当前项）
 watch(() => route.path, () => {
     if (isVideoRoute.value) videoGroupOpen.value = true
@@ -1468,7 +1478,14 @@ const openGithub = () => {
       </aside>
 
       <div class="main-content-wrapper">
-         <router-view :key="$route.fullPath" />
+         <!-- B站列表页 keep-alive 缓存：从详情页返回时保留搜索结果/收藏夹浏览位置
+              key 必须放在 component 上（不能放 router-view 上）：key 放 router-view 会在每次
+              路由切换时重建整个 RouterView 子树，keep-alive 的缓存随之销毁，列表页无法被缓存 -->
+         <router-view v-slot="{ Component }">
+            <keep-alive include="BilibiliVideo">
+               <component :is="Component" :key="$route.name" />
+            </keep-alive>
+         </router-view>
       </div>
     </div>
 

@@ -3,6 +3,7 @@
 // 数据源：神马电影网（标准 maccms 结构）
 //   主源：https://www.smdyu.com  (神马电影网，maccms 结构，player_aaaa 直接提供 m3u8)
 //   说明：appys.pro / czys.tv 的 TLS 握手在大陆机房稳定失败，已弃用
+//   B站已独立为专区（electron/bilibili-video.js），不再作为影视片源
 // 播放：通过 player_aaaa.url 提取 m3u8，前端用 hls.js 播放
 import { ipcMain } from 'electron'
 import axios from 'axios'

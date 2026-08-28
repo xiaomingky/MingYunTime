@@ -40,6 +40,11 @@ const AnimeDetail = () => import('../views/AnimeDetail.vue')
 const Movie = () => import('../views/Movie.vue')
 const MovieDetail = () => import('../views/MovieDetail.vue')
 
+// B站视频专区（懒加载，独立于影视区）
+const BilibiliVideo = () => import('../views/BilibiliVideo.vue')
+const BilibiliVideoDetail = () => import('../views/BilibiliVideoDetail.vue')
+const BiliUserSpace = () => import('../views/BiliUserSpace.vue')
+
 const routes = [
     // ========== 网易云平台路由（默认） ==========
     {
@@ -123,6 +128,29 @@ const routes = [
         path: '/movie/:source/:id',
         name: 'MovieDetail',
         component: MovieDetail
+    },
+    // B站视频专区（独立模块，仿B站官方）
+    {
+        path: '/bilibili',
+        name: 'BilibiliVideo',
+        component: BilibiliVideo
+    },
+    {
+        path: '/bilibili/:bvid',
+        name: 'BilibiliVideoDetail',
+        component: BilibiliVideoDetail
+    },
+    {
+        // PGC（番剧/电影）季详情：搜索结果点击番剧/电影卡片进入
+        path: '/bilibili/season/:seasonId',
+        name: 'BilibiliSeasonDetail',
+        component: BilibiliVideoDetail
+    },
+    {
+        // UP 主主页：点击作者/头像进入
+        path: '/bilibili/user/:mid',
+        name: 'BiliUserSpace',
+        component: BiliUserSpace
     },
 
     // ========== QQ 音乐平台路由（独立路径前缀 /qq/） ==========

@@ -58,6 +58,10 @@ website/
 
 # 临时测试文件
 test-*.js
+test-*.cjs
+_*.js
+_*.cjs
+_*/
 explorer.html
 
 BLOG*.md

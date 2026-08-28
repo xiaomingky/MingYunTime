@@ -282,6 +282,23 @@ export const animeParsePlayUrl = (source, episodeUrl, scheme = 1) => animeBridge
 export const animeMetaSearch = (title) => animeBridge().invoke('anime:meta:search', { title })
 export const animeMetaRelated = (bgmId) => animeBridge().invoke('anime:meta:related', { bgmId })
 
+// ---------- B站视频专区（独立模块，通过 Electron IPC 调用主进程） ----------
+export const biliVideoHome = (params = {}) => animeBridge().invoke('bilibili:video-home', params)
+export const biliVideoSearch = (params) => animeBridge().invoke('bilibili:video-search', params)
+export const biliVideoDetail = (bvid) => animeBridge().invoke('bilibili:video-detail', { bvid })
+export const biliVideoPlayurl = (params) => animeBridge().invoke('bilibili:video-playurl', params)
+export const biliVideoSeasonDetail = (params) => animeBridge().invoke('bilibili:video-season-detail', params)
+export const biliVideoPgcPlayurl = (params) => animeBridge().invoke('bilibili:video-pgc-playurl', params)
+export const biliVideoLike = (bvid, like = 1) => animeBridge().invoke('bilibili:video-like', { bvid, like })
+export const biliVideoCoin = (bvid, multiply = 1, selectLike = 0, aid = 0) => animeBridge().invoke('bilibili:video-coin', { bvid, multiply, selectLike, aid })
+export const biliVideoFav = (aid, cancel = false) => animeBridge().invoke('bilibili:video-fav', { aid, cancel })
+export const biliVideoComments = (aid, page = 1, upMid = 0) => animeBridge().invoke('bilibili:video-comments', { aid, page, upMid })
+export const biliVideoCommentReplies = (aid, rpid, pn = 1, upMid = 0) => animeBridge().invoke('bilibili:video-comment-replies', { aid, rpid, pn, upMid })
+export const biliVideoInteract = (aid, bvid = '') => animeBridge().invoke('bilibili:video-interact', { aid, bvid })
+export const biliVideoUserSpace = (mid, page = 1) => animeBridge().invoke('bilibili:user-space', { mid, page })
+export const biliVideoUserSeasons = (mid, pageNum = 1, pageSize = 10) => animeBridge().invoke('bilibili:video-user-seasons', { mid, pageNum, pageSize })
+export const biliVideoSeasonArchives = (mid, seasonId, pageNum = 1) => animeBridge().invoke('bilibili:video-season-archives', { mid, seasonId, pageNum })
+
 // ---------- 电影模块（通过 Electron IPC 调用主进程） ----------
 export const movieSources = () => animeBridge().invoke('movie:sources')
 export const movieHome = (source) => animeBridge().invoke('movie:home', { source })

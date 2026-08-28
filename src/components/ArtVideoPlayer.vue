@@ -162,30 +162,8 @@ function cycleGainBoost() {
 }
 
 // ===== ArtPlayer 控制按钮 =====
-const ICON_PREV = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>'
-const ICON_NEXT = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>'
-
 function buildControls() {
     const list = []
-    // 上一集 / 下一集（有剧集时显示，图标按钮省空间）
-    if (props.episodes.length > 0) {
-        list.push({
-            name: 'prevEp',
-            position: 'right',
-            index: 5,
-            html: ICON_PREV,
-            tooltip: '上一集',
-            click: () => emit('prev')
-        })
-        list.push({
-            name: 'nextEp',
-            position: 'right',
-            index: 6,
-            html: ICON_NEXT,
-            tooltip: '下一集',
-            click: () => emit('next')
-        })
-    }
     // 选集面板
     list.push({
         name: 'episodes',
@@ -596,7 +574,10 @@ async function createPlayer(src) {
                 fontSize: 22,
                 antiOverlap: true,
                 synchronousPlayback: true,
-                visible: danmakuOn.value
+                visible: danmakuOn.value,
+                // 弹幕发射器宽度阈值：播放器宽度小于该值时，输入框自动沉到播放器底部，
+                // 避免输入框占据控制条中部空间导致右侧按钮被挤压，最右全屏按钮始终可见
+                width: 800
             })
         ]
     })
@@ -769,6 +750,12 @@ defineExpose({ art })
 }
 .art-container :deep(.art-control .avp-text-btn.boost-active) {
     color: #ff6b6b;
+}
+
+/* ===== 控制条挤压策略：左右按钮组禁止收缩，空间不足时中间按钮被裁，最右全屏按钮始终贴边可见 ===== */
+.art-container :deep(.art-controls-left),
+.art-container :deep(.art-controls-right) {
+    flex-shrink: 0 !important;
 }
 
 /* ===== 集数提示 ===== */

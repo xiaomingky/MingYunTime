@@ -366,6 +366,13 @@ const favHasMore = ref(false)
 const favSelected = ref(new Set())
 const favLoadingContent = ref(false)
 const favTotalPages = computed(() => Math.max(1, Math.ceil(favTotal.value / 20)))
+// 页码条：页数多时只显示前几个 + 省略号 + 末尾页，保证一行不溢出（-1 为省略号标记）
+const FAV_PAGE_HEAD = 3
+const favPageItems = computed(() => {
+    const total = favTotalPages.value
+    if (total <= FAV_PAGE_HEAD + 1) return Array.from({ length: total }, (_, i) => i + 1)
+    return [...Array.from({ length: FAV_PAGE_HEAD }, (_, i) => i + 1), -1, total]
+})
 async function loadFavList() {
     favLoading.value = true
     try {
@@ -2122,6 +2129,10 @@ const typeLabel = (s) => {
                 </div>
                 <div v-if="favMedias.length > 0" class="bili-pager">
                     <button class="page-num" :disabled="favPage <= 1 || favLoadingContent" @click="loadFavContent(favPage - 1)">上一页</button>
+                    <template v-for="n in favPageItems" :key="n">
+                        <span v-if="n === -1" class="page-ellipsis">…</span>
+                        <button v-else class="page-num" :class="{ active: n === favPage }" @click="loadFavContent(n)">{{ n }}</button>
+                    </template>
                     <span class="bili-pager-info">第 {{ favPage }} / {{ favTotalPages }} 页 · 共 {{ favTotal }} 项</span>
                     <button class="page-num" :disabled="favPage >= favTotalPages || favLoadingContent" @click="loadFavContent(favPage + 1)">下一页</button>
                 </div>
@@ -4244,7 +4255,10 @@ const typeLabel = (s) => {
     transition: all .15s;
 }
 .bili-pager .page-num:hover:not(:disabled) { border-color: #c20c0c; color: #c20c0c; }
+.bili-pager .page-num.active { background: #c20c0c; border-color: #c20c0c; color: #fff; font-weight: 600; }
+.bili-pager .page-num.active:hover { color: #fff; }
 .bili-pager .page-num:disabled { opacity: .4; cursor: not-allowed; }
+.bili-pager .page-ellipsis { color: #999; padding: 0 4px; user-select: none; }
 .bili-pager-info { font-size: 12px; color: #999; }
 
 /* ===== 收藏夹：合集展开 ===== */

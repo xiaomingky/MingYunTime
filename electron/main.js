@@ -31,6 +31,7 @@ function getFfmpegPath() {
 
 // 动漫模块
 import './anime.js'
+import './bilibili-video.js'
 import './anime-meta.js'
 import './movie.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
