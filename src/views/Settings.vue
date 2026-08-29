@@ -14,6 +14,100 @@ import {
     eventToCombo
 } from '../store/settings'
 import { API_LINES, switchApiLine } from '../api/index'
+import { CheckSquare, Square, LogIn } from 'lucide-vue-next'
+import { biliGetWebCookie, biliSetWebCookie, biliGetTvToken, biliSetTvToken } from '../api/index'
+
+// ===== 侧边栏分区显示（设置不可隐藏） =====
+const SIDEBAR_SECTIONS = [
+    { id: '/', label: '发现音乐' },
+    { id: '/video', label: 'MV' },
+    { id: '/anime', label: '动漫区' },
+    { id: '/movie', label: '影视区' },
+    { id: '/bilibili', label: 'B站区' },
+    { id: '/local', label: '本地音乐' },
+    { id: '/local-video', label: '本地视频' },
+    { id: '/recent', label: '最近播放' },
+    { id: '/netease-cloud', label: '官方云盘' },
+    { id: '/downloads', label: '下载' },
+    { id: '/smart-edu', label: '智慧教材' },
+]
+const hiddenSections = ref(JSON.parse(localStorage.getItem('hidden_sections') || '[]'))
+const isSectionHidden = (id) => hiddenSections.value.includes(id)
+function toggleSection(id) {
+    hiddenSections.value = isSectionHidden(id)
+        ? hiddenSections.value.filter(i => i !== id)
+        : [...hiddenSections.value, id]
+    localStorage.setItem('hidden_sections', JSON.stringify(hiddenSections.value))
+    window.dispatchEvent(new Event('sections-changed'))
+}
+
+// ===== B站登录态（Web Cookie / TV Token） =====
+const biliWebCookie = ref('')
+const biliTvToken = ref('')
+const biliCookieInput = ref('')
+const showBiliCookieInput = ref(false)
+const biliTvInput = ref('')
+const showBiliTvInput = ref(false)
+const biliAuthLoadError = ref('')
+const loadBiliAuth = async () => {
+    biliAuthLoadError.value = ''
+    try {
+        const [w, t] = await Promise.all([biliGetWebCookie(), biliGetTvToken()])
+        biliWebCookie.value = w?.cookie || ''
+        biliTvToken.value = t?.token || ''
+    } catch (e) {
+        // 典型原因：主进程为旧版本（未含读取接口），需重启应用
+        biliAuthLoadError.value = '读取失败：' + (e.message || '未知错误') + '（若刚更新，请重启应用）'
+    }
+}
+async function copyPlainText(text, tip) {
+    if (!text) return
+    try {
+        await navigator.clipboard.writeText(text)
+        messageStore.success(tip || '已复制到剪贴板', 1200)
+    } catch (e) {
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        try {
+            document.execCommand('copy')
+            messageStore.success(tip || '已复制到剪贴板', 1200)
+        } catch (err) {
+            messageStore.error('复制失败，请手动选择文本复制')
+        }
+        document.body.removeChild(ta)
+    }
+}
+async function biliTvTokenLogin() {
+    const v = biliTvInput.value.trim()
+    if (!v) return messageStore.warning('请先粘贴 TV Token')
+    const res = await biliSetTvToken(v)
+    if (res?.success) {
+        messageStore.success('TV Token 登录成功')
+        biliTvInput.value = ''
+        showBiliTvInput.value = false
+        loadBiliAuth()
+    } else {
+        messageStore.error(res?.message || 'TV Token 登录失败')
+    }
+}
+
+async function biliCookieLogin() {
+    const v = biliCookieInput.value.trim()
+    if (!v) return messageStore.warning('请先粘贴 Cookie')
+    const res = await biliSetWebCookie(v)
+    if (res?.success) {
+        messageStore.success('Cookie 登录成功')
+        biliCookieInput.value = ''
+        showBiliCookieInput.value = false
+        loadBiliAuth()
+    } else {
+        messageStore.error(res?.message || 'Cookie 登录失败')
+    }
+}
 import {
     kugouYouthVip,
     kugouYouthDayVip,
@@ -432,6 +526,7 @@ loadMusicNaming()
 
 onMounted(() => {
     window.addEventListener('keydown', onShortcutKeydown)
+    loadBiliAuth()
     if (platformStore.isKugou && kugouUserStore.isLoggedIn) {
         refreshYouthVipInfo()
     }
@@ -711,6 +806,79 @@ onUnmounted(() => {
         </div>
       </section>
 
+      <!-- 侧边栏分区显示 -->
+      <section class="settings-card">
+        <div class="card-title">
+          <Check :size="16" />
+          <span>侧边栏分区显示</span>
+        </div>
+        <p class="card-tip">取消勾选的分区将从侧边栏隐藏（"设置"不可隐藏），立即生效。</p>
+        <div class="section-checks">
+          <label
+            v-for="sec in SIDEBAR_SECTIONS"
+            :key="sec.id"
+            class="section-check"
+            :title="isSectionHidden(sec.id) ? '点击显示该分区' : '点击隐藏该分区'"
+            @click.prevent="toggleSection(sec.id)"
+          >
+            <CheckSquare v-if="!isSectionHidden(sec.id)" :size="15" class="check-icon active" />
+            <Square v-else :size="15" class="check-icon" />
+            <span>{{ sec.label }}</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- B站登录态 -->
+      <section class="settings-card">
+        <div class="card-title">
+          <Check :size="16" />
+          <span>B站登录态（Cookie / Token）</span>
+        </div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Web 端 Cookie</div>
+            <div class="setting-desc">B站 Web 扫码登录产生的 Cookie，可复制或粘贴登录</div>
+          </div>
+          <div class="bili-cookie-actions">
+            <button class="mini-btn" @click="copyPlainText(biliWebCookie, 'Web Cookie 已复制')"><Copy :size="13" /> 复制</button>
+            <button class="mini-btn" @click="showBiliCookieInput = !showBiliCookieInput"><LogIn :size="13" /> {{ showBiliCookieInput ? '收起' : 'Cookie 登录' }}</button>
+          </div>
+        </div>
+        <div v-if="biliAuthLoadError" class="bili-auth-error">{{ biliAuthLoadError }}</div>
+        <textarea v-if="biliWebCookie" class="bili-cookie-view" readonly>{{ biliWebCookie }}</textarea>
+        <div v-else class="bili-cookie-empty">未登录（无 Cookie）</div>
+        <div class="collapse-wrap" :class="{ collapsed: !showBiliCookieInput }">
+          <div class="collapse-inner">
+            <div class="bili-cookie-login">
+              <textarea v-model="biliCookieInput" class="bili-cookie-view" placeholder="粘贴 Cookie：SESSDATA=xxx; bili_jct=xxx; ...（也支持 JSON 格式）"></textarea>
+              <button class="mini-btn primary" @click="biliCookieLogin"><LogIn :size="13" /> 登录</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="setting-row" style="margin-top: 14px">
+          <div class="setting-info">
+            <div class="setting-label">TV 端 Token</div>
+            <div class="setting-desc">TV 扫码登录凭证（accessKey 等），可复制备用</div>
+          </div>
+          <div class="bili-cookie-actions">
+            <button class="mini-btn" @click="copyPlainText(biliTvToken, 'TV Token 已复制')"><Copy :size="13" /> 复制</button>
+            <button class="mini-btn" @click="showBiliTvInput = !showBiliTvInput"><LogIn :size="13" /> {{ showBiliTvInput ? '收起' : 'Token 登录' }}</button>
+          </div>
+        </div>
+        <div class="collapse-wrap" :class="{ collapsed: !showBiliTvInput }">
+          <div class="collapse-inner">
+            <div class="bili-cookie-login">
+              <textarea v-model="biliTvInput" class="bili-cookie-view" placeholder="粘贴 TV Token JSON（含 accessKey），或直接粘贴 accessKey 字符串"></textarea>
+              <button class="mini-btn primary" @click="biliTvTokenLogin"><LogIn :size="13" /> 登录</button>
+            </div>
+          </div>
+        </div>
+        <textarea v-if="biliTvToken" class="bili-cookie-view" readonly>{{ biliTvToken }}</textarea>
+        <div v-else class="bili-cookie-empty">未登录（无 TV Token）</div>
+      </section>
+
       <!-- 关于 -->
       <section class="settings-card">
         <div class="card-title">
@@ -727,8 +895,9 @@ onUnmounted(() => {
 
   <!-- 领取 VIP 结果弹窗 -->
   <Teleport to="body">
+    <Transition name="modal-pop">
     <div v-if="youthResultModal" class="youth-result-overlay" @click.self="youthResultModal = false">
-      <div class="youth-result-modal">
+      <div class="youth-result-modal modal-panel">
         <div class="youth-result-icon" :class="youthResult.ok ? 'ok' : 'fail'">
           <CheckCircle2 v-if="youthResult.ok" :size="36" />
           <AlertCircle v-else :size="36" />
@@ -739,6 +908,7 @@ onUnmounted(() => {
         <button class="youth-result-btn clickable" @click="youthResultModal = false">知道了</button>
       </div>
     </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -1285,5 +1455,77 @@ onUnmounted(() => {
     font-size: 12px;
     color: #888;
     line-height: 1.5;
+}
+</style>
+<style scoped>
+/* 侧边栏分区勾选 */
+.section-checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+}
+.section-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #555;
+    cursor: pointer;
+    user-select: none;
+}
+.section-check:hover { color: #333; }
+
+/* B站登录态 */
+.bili-cookie-actions { display: flex; gap: 8px; }
+.mini-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+    color: #555;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.mini-btn:hover { border-color: #fb7299; color: #fb7299; }
+.mini-btn.primary { background: #fb7299; border-color: #fb7299; color: #fff; }
+.mini-btn.primary:hover { background: #fc8bab; }
+.bili-cookie-view {
+    width: 100%;
+    min-height: 64px;
+    max-height: 140px;
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e5e5e5;
+    border-radius: 8px;
+    font-size: 12px;
+    font-family: Consolas, monospace;
+    color: #555;
+    resize: vertical;
+    box-sizing: border-box;
+    word-break: break-all;
+}
+.bili-cookie-login { margin-top: 10px; }
+.bili-cookie-login .bili-cookie-view { min-height: 80px; }
+.bili-cookie-login .mini-btn { margin-top: 8px; }
+.bili-auth-error {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border: 1px solid #f5c2c7;
+    border-radius: 8px;
+    background: #fff5f6;
+    color: #c0392b;
+    font-size: 12px;
+}
+.bili-cookie-empty {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px dashed #e0e0e0;
+    border-radius: 8px;
+    font-size: 12px;
+    color: #aaa;
 }
 </style>

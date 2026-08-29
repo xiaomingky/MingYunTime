@@ -363,8 +363,9 @@ onUnmounted(() => stopAllPolling())
 </script>
 
 <template>
+  <Transition name="modal-pop">
   <div class="login-modal-overlay" v-if="show" @click.self="emit('close')">
-    <div class="login-modal">
+    <div class="login-modal modal-panel">
       <div class="header">
         <span class="title">{{ modalTitle }}</span>
         <X class="close-btn" @click="emit('close')" />
@@ -598,10 +599,13 @@ onUnmounted(() => stopAllPolling())
         </div>
       </template>
     </div>
+  </div>
+  </Transition>
 
     <!-- 酷狗多账户选择弹窗（手机号关联多个账户时显示） -->
+    <Transition name="modal-pop">
     <div v-if="showKugouAccountPicker" class="account-picker-overlay" @click.self="cancelKugouAccountPicker">
-      <div class="account-picker-modal">
+      <div class="account-picker-modal modal-panel">
         <div class="account-picker-header">
           <span class="account-picker-title">请选择要登录的账户</span>
           <X :size="18" class="account-picker-close" @click="cancelKugouAccountPicker" />
@@ -627,7 +631,7 @@ onUnmounted(() => stopAllPolling())
         </div>
       </div>
     </div>
-  </div>
+  </Transition>
 </template>
 
 <style scoped>

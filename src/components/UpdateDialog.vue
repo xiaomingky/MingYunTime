@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
-import { X, Download, Sparkles, ChevronRight, ExternalLink } from 'lucide-vue-next'
+import { useMessageStore } from '../store/message'
+import { X, Download, Sparkles } from 'lucide-vue-next'
 
 const props = defineProps({
     visible: Boolean,
@@ -9,21 +10,27 @@ const props = defineProps({
     downloadUrl: String
 })
 const emit = defineEmits(['close'])
+const messageStore = useMessageStore()
 
 const downloading = ref(false)
 
-const handleDownload = () => {
+// 直接走应用统一下载管理器（下载页"文档"分类，不跳浏览器）
+const handleDownload = async () => {
+    if (downloading.value) return
     downloading.value = true
-    // 优先用 bridge 打开（Electron 内会用默认浏览器下载）
-    const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
-    if (bridge?.send) {
-        bridge.send('open-external', props.downloadUrl)
-    } else {
-        // 直接用 a 标签触发下载
-        const a = document.createElement('a')
-        a.href = props.downloadUrl
-        a.download = ''
-        a.click()
+    try {
+        const { downloadStart } = await import('../api')
+        const fileName = (props.downloadUrl || '').split('?')[0].split('/').pop()
+        await downloadStart({
+            url: props.downloadUrl,
+            name: fileName || undefined,
+            category: 'document'
+        })
+        messageStore.success('安装包已加入下载列表')
+        setTimeout(() => emit('close'), 1200)
+    } catch (e) {
+        messageStore.error('下载失败：' + (e.message || '未知错误'))
+        downloading.value = false
     }
 }
 
@@ -60,8 +67,7 @@ const formatNotes = (raw) => {
           <button class="btn-skip" @click="emit('close')">稍后提醒</button>
           <button class="btn-download" :class="{ loading: downloading }" @click="handleDownload">
             <Download :size="18" />
-            {{ downloading ? '已打开下载页' : '立即下载' }}
-            <ExternalLink :size="12" />
+            {{ downloading ? '已加入下载列表' : '立即下载' }}
           </button>
         </div>
       </div>
@@ -90,8 +96,8 @@ const formatNotes = (raw) => {
 .update-dialog {
   background: #fff;
   border-radius: 20px;
-  width: 520px;
-  max-height: 80vh;
+  width: min(680px, 92vw);
+  max-height: 78vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 25px 80px rgba(0, 0, 0, 0.2);
@@ -103,23 +109,25 @@ const formatNotes = (raw) => {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 24px 28px 16px;
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  padding: 22px 28px 18px;
+  background: linear-gradient(135deg, #fb7299, #f0567a);
   color: #fff;
 }
 .header-icon {
-  background: rgba(255,255,255,0.2);
-  width: 48px; height: 48px;
-  border-radius: 14px;
+  background: rgba(255,255,255,0.22);
+  width: 46px; height: 46px;
+  border-radius: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
 }
 .header-text h2 {
   margin: 0 0 4px;
-  font-size: 18px;
+  font-size: 19px;
   font-weight: 700;
+  letter-spacing: 0.5px;
 }
 .version-badge {
   font-size: 12px;
@@ -140,9 +148,13 @@ const formatNotes = (raw) => {
   overflow-y: auto;
   flex: 1;
   font-size: 14px;
-  line-height: 1.8;
+  line-height: 1.85;
   color: #444;
+  scrollbar-width: thin;
 }
+.dialog-body :deep(p) { margin: 6px 0; }
+.dialog-body :deep(ul) { margin: 4px 0 8px; padding-left: 4px; }
+.dialog-body :deep(h4:first-child) { margin-top: 0; }
 .dialog-body :deep(h4) {
   font-size: 14px;
   color: #1a1a2e;
@@ -171,24 +183,24 @@ const formatNotes = (raw) => {
   cursor: pointer;
   transition: all 0.2s;
 }
-.btn-skip:hover { background: #f5f5f5; color: #666; }
+.btn-skip:hover { background: #f5f5f5; color: #666; border-color: #ccc; }
 .btn-download {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  padding: 10px 24px;
+  padding: 11px 24px;
   border-radius: 10px;
   border: none;
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  background: linear-gradient(135deg, #fb7299, #f0567a);
   color: #fff;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
 }
-.btn-download:hover { box-shadow: 0 4px 20px rgba(99,102,241,0.4); transform: translateY(-1px); }
+.btn-download:hover { box-shadow: 0 4px 20px rgba(251,114,153,0.45); transform: translateY(-1px); }
 .btn-download.loading { opacity: 0.7; pointer-events: none; }
 
 .dialog-enter-active { transition: opacity 0.2s ease; }

@@ -49,6 +49,8 @@ const rootRef = ref(null)
 // 下拉浮层用 fixed 定位，脱离父容器 overflow 限制
 const dropdownStyle = ref({})
 const dropdownRef = ref(null)
+// 展开方向（空间不足时向上弹），用于方向感知的展开动画
+const dropUp = ref(false)
 
 // 打开时计算浮层位置（基于触发器在视口中的位置）
 const updateDropdownPosition = () => {
@@ -57,6 +59,7 @@ const updateDropdownPosition = () => {
     const spaceBelow = window.innerHeight - rect.bottom
     // 向下展开空间不足且上方空间更大时，向上展开
     const showAbove = spaceBelow < 240 && rect.top > spaceBelow
+    dropUp.value = showAbove
     dropdownStyle.value = {
         left: rect.left + 'px',
         minWidth: rect.width + 'px',
@@ -112,8 +115,8 @@ const toggleOpen = () => {
     if (props.disabled) return
     open.value = !open.value
     if (open.value) {
-        // 下一帧计算位置（等待 DOM 渲染）
-        nextTick(updateDropdownPosition)
+        // 浮层常驻（v-show），无需等 DOM 创建，直接同步定位，避免首次打开卡顿
+        updateDropdownPosition()
     }
 }
 
@@ -180,8 +183,10 @@ onUnmounted(() => {
         </div>
 
         <Teleport to="body">
-            <Transition name="cs-dropdown">
-                <div v-if="open" class="cs-dropdown cs-dropdown-fixed" :class="{ compact }" ref="dropdownRef" :style="dropdownStyle" @click.stop>
+            <!-- 常驻浮层容器：v-show 显隐，打开时同步定位不卡。
+                 选项列表仅在 open 时渲染（v-if），关闭即销毁 —— 避免大选项列表永久挂在 DOM 里撑内存 -->
+            <div v-show="open" class="cs-dropdown cs-dropdown-fixed" :class="{ compact, 'drop-up': dropUp }" ref="dropdownRef" :style="dropdownStyle" @click.stop>
+                <template v-if="open">
                     <template v-for="(opt, gi) in normalizedOptions" :key="opt.group ? 'g' + gi : opt.value">
                         <!-- 分组 -->
                         <template v-if="opt.children">
@@ -207,8 +212,8 @@ onUnmounted(() => {
                             {{ opt.label }}
                         </div>
                     </template>
-                </div>
-            </Transition>
+                </template>
+            </div>
         </Teleport>
     </div>
 </template>
@@ -343,16 +348,23 @@ onUnmounted(() => {
     background-color: #f5f5f5;
 }
 
-/* 下拉动画 */
-.cs-dropdown-enter-active,
-.cs-dropdown-leave-active {
-    transition: opacity 0.15s ease, transform 0.15s ease;
+/* 下拉展开动画：浮层从 display:none 变为可见时 CSS 动画自动重放；
+   按展开方向区分从上滑入/从下滑入。关闭保持瞬时（菜单收起要干脆） */
+.cs-dropdown.cs-dropdown-fixed {
+    animation: cs-drop-in-down 0.16s cubic-bezier(0.25, 0.8, 0.35, 1);
+    transform-origin: top center;
 }
-
-.cs-dropdown-enter-from,
-.cs-dropdown-leave-to {
-    opacity: 0;
-    transform: translateY(-4px);
+.cs-dropdown.cs-dropdown-fixed.drop-up {
+    animation-name: cs-drop-in-up;
+    transform-origin: bottom center;
+}
+@keyframes cs-drop-in-down {
+    from { opacity: 0; transform: translateY(-5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+@keyframes cs-drop-in-up {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 </style>
 

@@ -113,7 +113,12 @@ cloudRequest.interceptors.request.use(config => {
 cloudRequest.interceptors.response.use(
     response => response.data,
     error => {
-        if (error.response?.data) return error.response.data
+        if (error.response?.data) {
+            const body = error.response.data
+            // 错误也以 body resolve，但附带 HTTP 状态码，便于调用方区分 401(令牌无效)/404(锁不存在) 等
+            if (body && typeof body === 'object') return { ...body, __status: error.response.status }
+            return { message: String(body), __status: error.response.status }
+        }
         return Promise.reject(error)
     }
 )
@@ -298,6 +303,11 @@ export const biliVideoInteract = (aid, bvid = '') => animeBridge().invoke('bilib
 export const biliVideoUserSpace = (mid, page = 1) => animeBridge().invoke('bilibili:user-space', { mid, page })
 export const biliVideoUserSeasons = (mid, pageNum = 1, pageSize = 10) => animeBridge().invoke('bilibili:video-user-seasons', { mid, pageNum, pageSize })
 export const biliVideoSeasonArchives = (mid, seasonId, pageNum = 1) => animeBridge().invoke('bilibili:video-season-archives', { mid, seasonId, pageNum })
+export const biliVideoConclusion = (bvid, cid) => animeBridge().invoke('bilibili:video-conclusion', { bvid, cid })
+export const biliGetWebCookie = () => animeBridge().invoke('bili:get-web-cookie')
+export const biliSetWebCookie = (cookie) => animeBridge().invoke('bili:set-web-cookie', cookie)
+export const biliGetTvToken = () => animeBridge().invoke('bili:get-tv-token')
+export const biliSetTvToken = (token) => animeBridge().invoke('bili:set-tv-token', token)
 
 // ---------- 电影模块（通过 Electron IPC 调用主进程） ----------
 export const movieSources = () => animeBridge().invoke('movie:sources')
@@ -350,6 +360,20 @@ export const downloadCheckDir = (dir) => animeBridge().downloadCheckDir(dir)
 export const downloadPickDir = () => animeBridge().downloadPickDir()
 export const downloadGetDir = () => animeBridge().downloadGetDir()
 export const downloadSaveDir = (dir) => animeBridge().downloadSaveDir(dir)
+// ---------- 智慧教育教材（国家中小学智慧教育平台，通过 Electron IPC） ----------
+export const smartEduCatalog = () => animeBridge().smartEduCatalog()
+export const smartEduDetail = (contentId) => animeBridge().smartEduDetail(contentId)
+export const smartEduPreview = (contentId) => animeBridge().smartEduPreview(contentId)
+export const smartEduAudios = (contentId) => animeBridge().smartEduAudios(contentId)
+export const smartEduDownloadPdf = (contentId, title) => animeBridge().smartEduDownloadPdf(contentId, title)
+export const smartEduDownloadAudio = (url, title) => animeBridge().smartEduDownloadAudio(url, title)
+export const smartEduProbeAudio = (url) => animeBridge().smartEduProbeAudio(url)
+export const smartEduLoginOpen = () => animeBridge().smartEduLoginOpen()
+export const smartEduLoginStatus = () => animeBridge().smartEduLoginStatus()
+export const smartEduLoginManual = (raw) => animeBridge().smartEduLoginManual(raw)
+export const smartEduTestToken = () => animeBridge().smartEduTestToken()
+export const smartEduLogout = () => animeBridge().smartEduLogout()
+export const onSmartEduLoginDone = (cb) => animeBridge().onSmartEduLoginDone(cb)
 // 音乐命名格式（下载音乐命名 + 本地音乐识别）
 export const getMusicNaming = () => animeBridge().getMusicNaming()
 export const saveMusicNaming = (d) => animeBridge().saveMusicNaming(d)
@@ -361,6 +385,10 @@ export const onVideoDownloadError = (cb) => animeBridge().onVideoDownloadError(c
 // ---------- 统一下载管理器（新） ----------
 // category: 'music' | 'movie' | 'anime' | 'mv' | 'video'
 export const downloadStart = (params) => animeBridge().downloadStart(params)
+export const downloadProbeName = (url) => animeBridge().invoke('download:probe-name', url)
+export const downloadPause = (downloadId) => animeBridge().downloadPause(downloadId)
+export const downloadResume = (downloadId) => animeBridge().downloadResume(downloadId)
+export const onDownloadPaused = (cb) => animeBridge().onDownloadPaused(cb)
 export const downloadCancel = (downloadId) => animeBridge().downloadCancel(downloadId)
 export const downloadList = () => animeBridge().downloadList()
 export const downloadRemove = (downloadId) => animeBridge().downloadRemove(downloadId)

@@ -118,6 +118,8 @@ const bridgeAPI = {
     // ===== 统一下载管理器（新） =====
     downloadStart: (params) => ipcRenderer.invoke('download:start', params),
     downloadCancel: (downloadId) => ipcRenderer.invoke('download:cancel', { downloadId }),
+    downloadPause: (downloadId) => ipcRenderer.invoke('download:pause', { downloadId }),
+    downloadResume: (downloadId) => ipcRenderer.invoke('download:resume', { downloadId }),
     downloadList: () => ipcRenderer.invoke('download:list'),
     downloadRemove: (downloadId) => ipcRenderer.invoke('download:remove', { downloadId }),
     downloadClear: (status) => ipcRenderer.invoke('download:clear', { status }),
@@ -126,6 +128,11 @@ const bridgeAPI = {
         const sub = (_, data) => cb(data)
         ipcRenderer.on('download:started', sub)
         return () => ipcRenderer.removeListener('download:started', sub)
+    },
+    onDownloadPaused: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('download:paused', sub)
+        return () => ipcRenderer.removeListener('download:paused', sub)
     },
     onDownloadProgress: (cb) => {
         const sub = (_, data) => cb(data)
@@ -144,6 +151,24 @@ const bridgeAPI = {
     },
     // 网易云 MV 搜索（按歌名匹配）
     ncmMvSearch: (keyword) => ipcRenderer.invoke('ncm-mv-search', { keyword }),
+    // 智慧教育教材（国家中小学智慧教育平台）
+    smartEduCatalog: () => ipcRenderer.invoke('smart-edu:catalog'),
+    smartEduDetail: (contentId) => ipcRenderer.invoke('smart-edu:detail', { contentId }),
+    smartEduPreview: (contentId) => ipcRenderer.invoke('smart-edu:preview', { contentId }),
+    smartEduAudios: (contentId) => ipcRenderer.invoke('smart-edu:audios', { contentId }),
+    smartEduDownloadPdf: (contentId, title) => ipcRenderer.invoke('smart-edu:download-pdf', { contentId, title }),
+    smartEduDownloadAudio: (url, title) => ipcRenderer.invoke('smart-edu:download-audio', { url, title }),
+    smartEduProbeAudio: (url) => ipcRenderer.invoke('smart-edu:probe-audio', { url }),
+    smartEduLoginOpen: () => ipcRenderer.invoke('smart-edu:login-open'),
+    smartEduLoginStatus: () => ipcRenderer.invoke('smart-edu:login-status'),
+    smartEduLoginManual: (raw) => ipcRenderer.invoke('smart-edu:login-manual', { raw }),
+    smartEduTestToken: () => ipcRenderer.invoke('smart-edu:test-token'),
+    smartEduLogout: () => ipcRenderer.invoke('smart-edu:logout'),
+    onSmartEduLoginDone: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('smartedu-login-done', sub)
+        return () => ipcRenderer.removeListener('smartedu-login-done', sub)
+    },
     // 打开本地文件/文件夹路径
     openPath: (p) => ipcRenderer.invoke('open-path', { path: p }),
     // 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）

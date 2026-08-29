@@ -55,7 +55,8 @@ const CATEGORY_LABELS = {
   movie: '影视',
   anime: '动漫',
   mv: 'MV',
-  video: '视频'
+  video: '视频',
+  document: '文档'
 }
 
 let win = null
@@ -305,7 +306,7 @@ async function startDownload(params) {
     startM3u8SegmentsDownload(id, url, outputPath, headers, record)
   } else {
     // 直链：内置 128 线程分片下载（不限速，不依赖 aria2c）
-    startBuiltinMultithread(id, url, outputPath, headers, record)
+    startBuiltinMultithread(id, url, outputPath, headers, record, !!params.autoName, Number(params.threads) || 0)
   }
 
   return { success: true, downloadId: id, path: outputPath }
@@ -488,60 +489,91 @@ function startYoutubeDlpDownload(id, ytSrc, ytHeight, ytAuthed, outputPath, reco
 }
 
 // ===== 内置 128 线程分片下载（直链统一入口，不限速，不依赖外部工具） =====
-async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record) {
-  const state = { canceled: false, startTime: Date.now() }
+async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record, autoName = false, customThreads = 0) {
+  const state = { canceled: false, paused: false, autoName, customThreads, startTime: Date.now() }
+  record.engine = 'multi'
   activeDownloads.set(id, {
     canceled: false,
-    cancel: () => { state.canceled = true }
+    cancel: () => { state.canceled = true; try { state.abortAll?.() } catch (e) {} },
+    pause: () => { state.paused = true; try { state.abortAll?.() } catch (e) {} },
+    resume: () => { state.paused = false }
   })
   record.status = 'downloading'
   try {
-    await downloadFileMultithread(url, outputPath, extraHeaders, (received, total, speed) => {
-      record.received = received
-      record.total = total
-      record.percent = total ? Math.min(100, (received / total) * 100) : 0
-      record.speed = speed
-      emit('download:progress', { id, percent: record.percent, received, total, speed })
-      emit('video-download-progress', { downloadId: id, percent: record.percent, received, total, speed })
-    }, state)
-
-    record.status = 'done'
-    record.percent = 100
-    record.endTime = Date.now()
-    try { record.total = fs.statSync(outputPath).size; record.received = record.total } catch (e) {}
-    // 计算平均速度（保留显示），不清零
-    const dur = (record.endTime - record.startTime) / 1000
-    if (dur > 0 && record.total > 0) {
-      record.speed = Math.round(record.total / dur)
-    }
-    saveHistory()
-    activeDownloads.delete(id)
-    emit('download:done', { id, path: outputPath, speed: record.speed })
-    emit('video-download-done', { downloadId: id, path: outputPath, name: record.name, category: record.type, speed: record.speed })
-  } catch (e) {
-    record.status = state.canceled ? 'canceled' : 'error'
-    record.error = e.message
-    record.endTime = Date.now()
-    saveHistory()
-    activeDownloads.delete(id)
-    // 清理半成品与分片临时文件
-    try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath) } catch (er) {}
-    try {
-      const dir = path.dirname(outputPath)
-      const base = path.basename(outputPath)
-      for (const f of fs.readdirSync(dir)) {
-        if (f.startsWith(base + '.part')) { try { fs.unlinkSync(path.join(dir, f)) } catch (er) {} }
+    // 暂停→等待恢复循环：downloadFileMultithread 返回 {paused:true} 时保留分片目录等待续传
+    while (true) {
+      const r = await downloadFileMultithread(url, outputPath, extraHeaders, (received, total, speed) => {
+        record.received = received
+        record.total = total
+        record.percent = total ? Math.min(100, (received / total) * 100) : 0
+        record.speed = speed
+        emit('download:progress', { id, percent: record.percent, received, total, speed })
+        emit('video-download-progress', { downloadId: id, percent: record.percent, received, total, speed })
+      }, state)
+      if (r?.paused) {
+        record.status = 'paused'
+        record.speed = 0
+        saveHistory()
+        emit('download:paused', { id })
+        while (state.paused && !state.canceled) await new Promise(res => setTimeout(res, 250))
+        if (state.canceled) throw new Error('已取消')
+        record.status = 'downloading'
+        continue
       }
+      // Content-Disposition 实际文件名（未手动命名时采用）：合并前已在函数内改写目标路径
+      if (r?.name) {
+        outputPath = path.join(path.dirname(outputPath), r.name)
+        record.name = path.basename(outputPath)
+        record.path = outputPath
+        saveHistory()
+      }
+      record.status = 'done'
+      record.percent = 100
+      record.endTime = Date.now()
+      try { record.total = fs.statSync(outputPath).size; record.received = record.total } catch (e) {}
+      // 计算平均速度（保留显示），不清零
+      const dur = (record.endTime - record.startTime) / 1000
+      if (dur > 0 && record.total > 0) {
+        record.speed = Math.round(record.total / dur)
+      }
+      saveHistory()
+      activeDownloads.delete(id)
+      emit('download:done', { id, path: outputPath, speed: record.speed })
+      emit('video-download-done', { downloadId: id, path: outputPath, name: record.name, category: record.type, speed: record.speed })
+      return
+    }
+  } catch (e) {
+    record.status = state.canceled ? 'canceled' : (e.paused || state.paused ? 'paused' : 'error')
+    record.error = state.canceled ? '已取消' : e.message
+    record.endTime = Date.now()
+    record.speed = 0
+    saveHistory()
+    activeDownloads.delete(id)
+    // 清理半成品与分片临时目录（分片目录带随机后缀，按 前缀 扫描删除；暂停的任务保留目录供续传）
+    try {
+      if (!state.paused && fs.existsSync(outputPath)) fs.unlinkSync(outputPath)
     } catch (er) {}
+    if (!state.paused) {
+      try {
+        const pdir = path.dirname(outputPath)
+        const pbase = path.basename(outputPath)
+        for (const f of fs.readdirSync(pdir)) {
+          if (f.startsWith(pbase + '.parts')) {
+            try { fs.rmSync(path.join(pdir, f), { recursive: true, force: true }) } catch (er) {}
+          }
+        }
+      } catch (er) {}
+    }
     emit('download:error', { id, error: record.error })
     emit('video-download-error', { downloadId: id, error: record.error })
   }
 }
 
+
 // ===== 多线程分片下载核心（128 线程封顶 / 分片级断点重试 / 流式合并） =====
 // 基于 axios + 自定义 Agent（maxSockets: Infinity + keepAlive），Range 分片不限速榨干带宽
 const DL_MAX_THREADS = 128              // 最大并发线程数
-const DL_MIN_PART = 1024 * 1024         // 最小分片 1MB（小文件自动减线程，避免请求开销反噬）
+const DL_MIN_PART = 4 * 1024 * 1024     // 最小分片 4MB（小文件自动减线程；4MB 起 128 并发对网盘/限流源过于激进易 403）
 
 // 探测文件大小与 Range 支持：HEAD 优先；被拒时用 GET Range: bytes=0-0 兜底
 // （B站 TV 签名 URL 等部分 CDN 拒绝 HEAD，GET 探测成功才能解锁 128 线程）
@@ -571,6 +603,9 @@ async function probeDownload(url, headerObj) {
 }
 
 async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, state) {
+  // 暂停/取消统一经 AbortController 中止在途请求；partDir 挂在 state 上供暂停-恢复复用
+  const ac = new AbortController()
+  state.abortAll = () => { try { ac.abort() } catch (e) {} }
   const headerObj = { 'User-Agent': DEFAULT_UA }
   if (extraHeaders) {
     for (const line of extraHeaders.split(/\r?\n/)) {
@@ -622,7 +657,8 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
   }
 
   // 128 线程自适应：大文件满 128 线程，小文件按 1MB/片 递减
-  const threads = Math.min(DL_MAX_THREADS, Math.max(1, Math.floor(total / DL_MIN_PART)))
+  // 并发线程：4MB/片自动递减，但下限 32（NDM 等下载器 32 线程即可稳定跑满网盘直链）
+  const threads = Math.min(DL_MAX_THREADS, Math.max(32, Math.floor(total / DL_MIN_PART)))
   const partSize = Math.ceil(total / threads)
   const parts = []
   for (let i = 0; i < threads; i++) {
@@ -631,44 +667,123 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
     if (start > end) break
     parts.push({ index: i, start, end, received: 0 })
   }
-  const partFiles = parts.map(p => filePath + '.part' + p.index)
+  // 分片临时目录（与目标同盘，合并后整体删除；避免在下载目录堆放大量 .part 文件）。
+  // 目录按下载 ID 隔离：同一目标文件并发下载时各自独立，杜绝"一边合并删目录、一边写分片"的 EPERM/ENOENT 竞争
+  // 分片目录按目标文件隔离（video/audio 并发下载时各自独立）
+  state.partDirs = state.partDirs || new Map()
+  let partDir = state.partDirs.get(filePath)
+  if (!partDir) {
+    partDir = filePath + '.parts_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+    state.partDirs.set(filePath, partDir)
+  }
+  for (let mk = 0; mk < 3; mk++) {
+    try { fs.mkdirSync(partDir, { recursive: true }); break } catch (e) { if (mk === 2) throw e }
+  }
+  const partFiles = parts.map(p => path.join(partDir, 'part_' + p.index))
+  // 暂停-恢复：扫描既有分片文件，恢复已收字节偏移（文件大小即断点）
+  if (state.resumable) {
+    for (const p of parts) {
+      try {
+        const st = fs.statSync(partFiles[p.index])
+        if (st.size > 0) p.received = Math.min(st.size, p.end - p.start + 1)
+      } catch (e) {}
+    }
+  }
+  state.resumable = true
 
-  // 分片下载：失败重试 3 次，重试时从已收字节续传（分片内断点）
-  async function downloadPart(p) {
+  // 分片下载：失败重试 3 次，重试时从已收字节续传（分片内断点）。
+  // ws 必须挂 error 监听：目录被清理/磁盘异常时 createWriteStream 的错误走事件，
+  // 无监听会变成主进程未捕获异常直接崩溃
+  async function downloadPart(p, abort) {
     const partPath = partFiles[p.index]
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (state.canceled) throw new Error('已取消')
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (state.canceled || abort.v) throw new Error('已取消')
+      let wsError = null
       try {
         const startByte = p.start + p.received
         if (startByte > p.end) return
-        const ws = fs.createWriteStream(partPath, { flags: attempt > 0 ? 'a' : 'w' })
-        const res = await axios.get(url, {
-          responseType: 'stream',
-          headers: { ...headerObj, Range: `bytes=${startByte}-${p.end}` },
-          timeout: 0, maxRedirects: 5, httpsAgent, httpAgent
-        })
+        let res = null
+        const ws = fs.createWriteStream(partPath, { flags: p.received > 0 ? 'a' : 'w' })
+        ws.on('error', (err) => { wsError = err; try { res?.data?.destroy() } catch (e) {} })
+        try {
+          res = await axios.get(url, {
+            responseType: 'stream',
+            headers: { ...headerObj, Range: `bytes=${startByte}-${p.end}` },
+            timeout: 0, maxRedirects: 5, httpsAgent, httpAgent,
+            signal: ac.signal
+          })
+        } catch (e) {
+          try { ws.destroy() } catch (e2) {}
+          if (state.paused && (e.code === 'ERR_CANCELED' || ac.signal.aborted)) {
+            throw Object.assign(new Error('已暂停'), { paused: true })
+          }
+          throw e
+        }
+        // 分片 0 的响应头：Content-Disposition 真实文件名 + Content-Type 扩展名兜底
+        if (p.index === 0 && !cdName) {
+          cdName = parseCDName(res.headers?.['content-disposition'])
+          if (!cdName) {
+            try {
+              const ct = String(res.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase()
+              const base = decodeURIComponent(new URL(url).pathname.split('/').pop() || '')
+              const ext = DL_CT_EXT_MAP[ct]
+              if (ext && base && !base.match(/\\.[A-Za-z0-9]{1,8}$/)) cdName = base + ext
+            } catch (e) {}
+          }
+        }
         for await (const chunk of res.data) {
-          if (state.canceled) { ws.destroy(); throw new Error('已取消') }
+          if (wsError) throw wsError
+          if (state.canceled || abort.v) { ws.destroy(); throw new Error('已取消') }
           ws.write(chunk)
           p.received += chunk.length
           receivedTotal += chunk.length
           maybeReport()
         }
+        if (wsError) throw wsError
         await new Promise(r => ws.end(r))
+        if (wsError) throw wsError
         return
       } catch (e) {
-        if (state.canceled) throw e
-        if (attempt === 2) throw e
-        await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
+        if (state.paused && (e.code === 'ERR_CANCELED' || ac.signal.aborted || e.paused)) {
+          throw Object.assign(new Error('已暂停'), { paused: true })
+        }
+        if (state.canceled || abort.v) throw new Error('已取消')
+        if (attempt === 4) throw e
+        // 阶梯退避：0.8s → 2s → 5s → 10s → 20s；限流类错误（403/429）额外多等 3s
+        const backoff = [800, 2000, 5000, 10000, 20000][attempt]
+        const st = e.response?.status
+        await new Promise(r => setTimeout(r, backoff + (st === 403 || st === 429 ? 3000 : 0)))
       }
     }
   }
 
-  await Promise.all(parts.map(downloadPart))
+  // 全部分片收敛后才进入合并/清理：任一片失败先置中止位等其余分片退出，
+  // 杜绝"清理删除目录时其他分片仍在写入"导致的 EPERM 未捕获崩溃
+  let firstErr = null
+  let cdName = ''
+  const abort = { v: false }
+  await Promise.all(parts.map(async (p) => {
+    try { await downloadPart(p, abort) } catch (e) {
+      if (!firstErr) firstErr = e
+      abort.v = true
+    }
+  }))
   if (state.canceled) throw new Error('已取消')
+  if (state.paused) return { paused: true }
+  if (firstErr) {
+    // 403/410 等给出可读原因（网盘直链常见：链接过期、UA/Referer/Cookie 不对、限流）
+    const st = firstErr.response?.status
+    if (st === 403) throw new Error('链接拒绝访问(403)：链接可能已过期，或 UA/Referer/Cookie 不正确')
+    if (st === 410 || st === 404) throw new Error('链接已失效(' + st + ')：请重新获取下载链接')
+    throw firstErr
+  }
   maybeReport(true)
 
   // 流式按序合并（内存峰值仅为管道缓冲，不整块读入分片）
+  if (cdName && state.autoName) {
+    const renamed = path.join(path.dirname(filePath), cdName)
+    if (path.resolve(renamed) !== path.resolve(filePath)) filePath = renamed
+  }
   const out = fs.createWriteStream(filePath)
   for (const p of parts) {
     await new Promise((resolve, reject) => {
@@ -678,10 +793,11 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
       rs.on('end', resolve)
       rs.pipe(out, { end: false })
     })
-    try { fs.unlinkSync(partFiles[p.index]) } catch (e) {}
   }
   await new Promise(r => out.end(r))
-  return { size: total }
+  // 分片合并完成，整体清理临时目录
+  try { fs.rmSync(partDir, { recursive: true, force: true }) } catch (e) {}
+  return { size: total, name: (cdName && state.autoName) ? cdName : null }
 }
 
 // ===== DASH 音视频分离下载 + ffmpeg 合并（B站高画质专用）=====
@@ -742,8 +858,11 @@ async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraH
       aSize = r; aTotal = t; reportProgress()
     }, state)
 
-    await Promise.all([videoPromise, audioPromise])
+    // 全部收敛后才继续：视频失败时音频可能仍在写入，立即清理 tmpdir 会引发 ENOENT/EPERM
+    const settled = await Promise.allSettled([videoPromise, audioPromise])
     if (state.canceled) throw new Error('已取消')
+    const firstErr = settled.find(r => r.status === 'rejected')
+    if (firstErr) throw firstErr.reason
 
     // 进度推进到合并阶段
     record.percent = 99
@@ -1149,6 +1268,92 @@ async function retryDownload(id) {
 }
 
 // ===== IPC Handlers =====
+// 探测下载真实文件名（设置页/自定义下载自动填充）：
+// 1) Content-Disposition（filename* UTF-8 / filename） 2) 重定向后最终 URL 的带后缀文件名 3) Content-Type 推断扩展名
+function parseCDName(cd) {
+  const s = String(cd || '')
+  const mStar = s.match(/filename\*=\s*(?:UTF-8|utf-8)''([^;]+)/i)
+  const mPlain = s.match(/filename\s*=\s*"([^"]+)"/i) || s.match(/filename\s*=\s*([^;]+)/i)
+  let name = ''
+  if (mStar) name = decodeURIComponent(mStar[1].trim().replace(/^"|"$/g, ''))
+  else if (mPlain) name = mPlain[1].trim().replace(/^"|"$/g, '')
+  return name.replace(/[\\/:*?"<>|]/g, '_').trim()
+}
+
+// Content-Type → 扩展名（probe 兜底 + 下载完成重命名共用）
+const DL_CT_EXT_MAP = {
+        'application/zip': '.zip', 'application/x-zip-compressed': '.zip',
+        'application/x-rar-compressed': '.rar', 'application/vnd.rar': '.rar',
+        'application/x-7z-compressed': '.7z', 'application/gzip': '.gz',
+        'application/x-gzip': '.gz', 'application/x-tar': '.tar',
+        'application/x-iso9660-image': '.iso', 'application/vnd.android.package-archive': '.apk',
+        'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
+        'video/quicktime': '.mov', 'video/x-msvideo': '.avi', 'video/x-flv': '.flv',
+        'video/mpeg': '.mpeg', 'video/mp2t': '.ts', 'video/x-ms-wmv': '.wmv',
+        'audio/mpeg': '.mp3', 'audio/flac': '.flac', 'audio/mp4': '.m4a',
+        'audio/aac': '.aac', 'audio/wav': '.wav', 'audio/x-wav': '.wav',
+        'audio/ogg': '.ogg', 'audio/opus': '.opus', 'audio/x-ape': '.ape',
+        'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+        'image/webp': '.webp', 'image/bmp': '.bmp', 'image/svg+xml': '.svg',
+        'application/pdf': '.pdf', 'text/plain': '.txt',
+        'application/msword': '.doc',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+        'application/vnd.ms-excel': '.xls',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+        'application/vnd.ms-powerpoint': '.ppt',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+        'application/epub+zip': '.epub',
+        'application/x-msdownload': '.exe', 'application/x-msi': '.msi',
+        'application/x-apple-diskimage': '.dmg'
+      }
+
+ipcMain.handle('download:probe-name', async (_, url) => {
+  try {
+    // 流式 GET：只取响应头（拿到 Content-Disposition 即销毁流），比 HEAD 兼容性好
+    const res = await axios.get(url, {
+      responseType: 'stream',
+      headers: { 'User-Agent': DEFAULT_UA },
+      timeout: 15000,
+      maxRedirects: 5,
+      validateStatus: () => true
+    })
+    const finish = () => { try { res.data?.destroy() } catch (e) {} }
+    const cd = String(res.headers?.['content-disposition'] || '')
+    let name = ''
+    const mStar = cd.match(/filename\*=\s*(?:UTF-8|utf-8)''([^;]+)/i)
+    const mPlain = cd.match(/filename\s*=\s*"([^"]+)"/i) || cd.match(/filename\s*=\s*([^;]+)/i)
+    if (mStar) name = decodeURIComponent(mStar[1].trim().replace(/^"|"$/g, ''))
+    else if (mPlain) name = mPlain[1].trim().replace(/^"|"$/g, '')
+
+    // 重定向后最终 URL 里带真实扩展名的文件名
+    if (!name) {
+      try {
+        const finalUrl = res.request?.res?.responseURL || res.request?.responseURL || url
+        const last = decodeURIComponent(new URL(finalUrl).pathname.split('/').pop() || '')
+        if (/\.[A-Za-z0-9]{1,8}$/.test(last)) name = last
+      } catch (e) {}
+    }
+
+    // Content-Type 明确指向具体类型时，路径基名 + 扩展名；
+    // 泛型类型（octet-stream/text/html）+ 无扩展名基名（多为哈希 ID）→ 不猜，返回空让用户手填
+    if (!name) {
+      const ct = String(res.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase()
+      const extMap = DL_CT_EXT_MAP
+      const ext = extMap[ct]
+      if (ext && ct !== 'text/plain') {
+        const base = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'download')
+        name = base + ext
+      }
+    }
+
+    finish()
+    name = (name || '').replace(/[\/:*?"<>|]/g, '_').trim()
+    return { success: true, name: name || '' }
+  } catch (e) {
+    return { success: false, name: '', error: e.message }
+  }
+})
+
 ipcMain.handle('download:start', async (_, params) => {
   try {
     return await startDownload(params)
@@ -1220,6 +1425,20 @@ ipcMain.handle('download:pick-dir', async () => {
   }
 })
 
+ipcMain.handle('download:pause', async (_, { downloadId }) => {
+  const item = activeDownloads.get(downloadId)
+  if (!item?.pause) return { success: false, error: '该任务不支持暂停' }
+  item.pause()
+  return { success: true }
+})
+
+ipcMain.handle('download:resume', async (_, { downloadId }) => {
+  const item = activeDownloads.get(downloadId)
+  if (!item?.resume) return { success: false, error: 'no such pausable task' }
+  item.resume()
+  return { success: true }
+})
+
 ipcMain.handle('download:cancel', async (_, { downloadId }) => {
   const item = activeDownloads.get(downloadId)
   if (!item) return { success: false, error: 'no such active download' }
@@ -1283,5 +1502,20 @@ export function setDownloadManagerWindow(w) {
 export function getYtDlpPath() {
   return YTDLP_PATH
 }
+
+// 应用启动后清理历史遗留的分片/合并临时目录（*.parts / *.tmpdir）：
+// 之前版本直接把 part 文件写进下载目录，或因进程被杀留下残骸；现在统一收敛到
+// <目标文件>.parts / <目标文件>.tmpdir，启动时整批删除，避免下载目录堆积垃圾
+app.whenReady?.().then(() => {
+  try {
+    const dir = resolveDownloadDir()
+    if (!dir || !fs.existsSync(dir)) return
+    for (const name of fs.readdirSync(dir)) {
+      if (name.endsWith('.parts') || name.includes('.parts_') || name.endsWith('.tmpdir')) {
+        try { fs.rmSync(path.join(dir, name), { recursive: true, force: true }) } catch (e) {}
+      }
+    }
+  } catch (e) {}
+})
 
 

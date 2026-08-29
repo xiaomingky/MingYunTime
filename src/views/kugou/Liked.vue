@@ -391,9 +391,10 @@ onMounted(loadLiked)
     flex-shrink: 0; cursor: pointer;
 }
 .kugou-check-icon {
-    color: #ccc;
-    transition: color 0.2s;
+    color: var(--text-light);
+    transition: color 0.15s;
 }
+.kugou-check-icon:hover { color: var(--text-secondary); }
 .kugou-check-icon.active {
     color: var(--primary-color);
 }

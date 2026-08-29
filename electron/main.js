@@ -34,6 +34,8 @@ import './anime.js'
 import './bilibili-video.js'
 import './anime-meta.js'
 import './movie.js'
+// 智慧教育教材专区（国家中小学智慧教育平台 basic.smartedu.cn）
+import { getSmartEduHeaders, getMediaInjectionHeaders } from './smart-edu.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
 import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload, getYtDlpPath } from './download-manager.js'
 // 抖音 a_bogus 签名：逐字加载 video-parser 原始 a_bogus.js（sloppy mode，vm 执行），
@@ -314,7 +316,9 @@ function createWindow() {
                 // YouTube CDN（googlevideo 直链 + youtubei）
                 'https://*.googlevideo.com/*', 'http://*.googlevideo.com/*',
                 'https://*.youtube.com/*', 'http://*.youtube.com/*',
-                'https://i.ytimg.com/*', 'https://i9.ytimg.com/*'
+                'https://i.ytimg.com/*', 'https://i9.ytimg.com/*',
+                // 国家中小学智慧教育平台 CDN 全域（教材 PDF / 音频 / 预览图，需 X-Nd-Auth 认证头才能访问私有资源）
+                'https://*.cbern.com.cn/*', 'http://*.cbern.com.cn/*'
             ]
         },
         (details, callback) => {
@@ -364,6 +368,17 @@ function createWindow() {
                 details.requestHeaders['Referer'] = 'https://www.youtube.com/'
                 details.requestHeaders['Origin'] = 'https://www.youtube.com'
                 details.requestHeaders['User-Agent'] = PARSE_UA
+            } else if (/cbern\.com\.cn/i.test(u)) {
+                // 智慧教育 CDN：仅对「已探测成功」的精确 URL 注入对应认证头（音频播放等），
+                // 未知 URL 一律不加头——预签名公开资源乱注入反而 403，双头同时注入会 400
+                const mediaHeaders = getMediaInjectionHeaders(u)
+                if (mediaHeaders) {
+                    if (mediaHeaders['X-Nd-Auth']) details.requestHeaders['X-Nd-Auth'] = mediaHeaders['X-Nd-Auth']
+                    if (mediaHeaders['Authorization']) details.requestHeaders['Authorization'] = mediaHeaders['Authorization']
+                    details.requestHeaders['Referer'] = mediaHeaders['Referer'] || 'https://basic.smartedu.cn/'
+                    details.requestHeaders['User-Agent'] = mediaHeaders['User-Agent'] || PARSE_UA
+                    if (mediaHeaders['Cookie']) details.requestHeaders['Cookie'] = mediaHeaders['Cookie']
+                }
             }
             callback({ requestHeaders: details.requestHeaders })
         }
@@ -5573,17 +5588,16 @@ app.whenReady().then(() => {
 
     // 2. song-cover 协议 (带 LRU 缓存 + 兜底逻辑)
     // 缓存已解析的封面 Buffer，避免每次切歌都重新 parseFile 音频元数据
-    const _coverCache = new Map()    // key: filePath+static → { data, mimeType, ts }
+    const _coverCache = new Map()    // key: filePath → { data, mimeType, ts }
     const _COVER_CACHE_MAX = 8       // 最多缓存 8 首歌的封面（省内存，旧值 30 占用过多）
     const _COVER_CACHE_TTL = 300000  // 5 分钟过期（旧值 10 分钟，缩短以加速释放）
 
     protocol.registerBufferProtocol('song-cover', async (request, callback) => {
         try {
             const urlStr = request.url
-            const hasStaticParam = urlStr.includes('?static=1')
             // 健壮解析：兼容 Chromium 对 song-cover:/// 规范化后的各种形式
             // 原始: song-cover:///C:/path/file.mp3  规范化后可能: song-cover://C:/path/file.mp3
-            let filePath = urlStr.replace(/^song-cover:\/+/i, '').replace(/\?static=1.*$/, '').replace(/\?param=.*$/, '')
+            let filePath = urlStr.replace(/^song-cover:\/+/i, '').replace(/\?param=.*$/, '')
             filePath = decodeURIComponent(filePath)
 
             if (process.platform === 'win32') {
@@ -5594,7 +5608,7 @@ app.whenReady().then(() => {
             if (!fs.existsSync(filePath)) return callback({ statusCode: 404 })
 
             // LRU 缓存检查：命中则直接返回，避免重复 parseFile
-            const cacheKey = filePath + (hasStaticParam ? '?static' : '')
+            const cacheKey = filePath
             const cached = _coverCache.get(cacheKey)
             if (cached && (Date.now() - cached.ts < _COVER_CACHE_TTL)) {
                 return callback({ mimeType: cached.mimeType, data: cached.data })
@@ -5605,31 +5619,26 @@ app.whenReady().then(() => {
                 const metadata = await (await getMM()).parseFile(filePath)
                 if (metadata.common.picture && metadata.common.picture.length > 0) {
                     const pic = metadata.common.picture[0]
-                    // 如果要求静态图片且内嵌的是GIF，则跳过使用兜底图
-                    if (hasStaticParam && pic.format === 'image/gif') {
-                        // 跳过GIF，继续查找其他图片
-                    } else {
-                        // music-metadata 11.x 的 pic.data 是 Uint8Array，Electron registerBufferProtocol 需要 Buffer
-                        const buf = Buffer.isBuffer(pic.data) ? pic.data : Buffer.from(pic.data)
-                        // 写入 LRU 缓存
-                        if (_coverCache.size >= _COVER_CACHE_MAX) {
-                            // 删除最早的条目（Map 保持插入顺序）
-                            const firstKey = _coverCache.keys().next().value
-                            _coverCache.delete(firstKey)
-                        }
-                        _coverCache.set(cacheKey, { data: buf, mimeType: pic.format, ts: Date.now() })
-                        return callback({ mimeType: pic.format, data: buf })
+                    // music-metadata 11.x 的 pic.data 是 Uint8Array，Electron registerBufferProtocol 需要 Buffer
+                    const buf = Buffer.isBuffer(pic.data) ? pic.data : Buffer.from(pic.data)
+                    // 写入 LRU 缓存
+                    if (_coverCache.size >= _COVER_CACHE_MAX) {
+                        // 删除最早的条目（Map 保持插入顺序）
+                        const firstKey = _coverCache.keys().next().value
+                        _coverCache.delete(firstKey)
                     }
+                    _coverCache.set(cacheKey, { data: buf, mimeType: pic.format, ts: Date.now() })
+                    return callback({ mimeType: pic.format, data: buf })
                 }
             } catch (e) { }
 
             // 提取同目录图片（依次尝试：同名 → cover/folder/album/front → 目录内任意图片）
             const dir = path.dirname(filePath)
             const baseName = path.basename(filePath, path.extname(filePath))
-            const exts = hasStaticParam ? ['.png', '.jpg', '.jpeg', '.webp'] : ['.gif', '.png', '.jpg', '.jpeg', '.webp']
+            const exts = ['.gif', '.png', '.jpg', '.jpeg', '.webp']
             const mimeOf = (ext) => ext === '.gif' ? 'image/gif' : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
 
-            // 1. 与音乐同名的图片（保留 GIF 动图优先级）
+            // 1. 与音乐同名的图片（GIF 动图优先）
             for (const ext of exts) {
                 const imgPath = path.join(dir, baseName + ext)
                 if (fs.existsSync(imgPath)) {
@@ -5638,9 +5647,7 @@ app.whenReady().then(() => {
             }
 
             // 2. 通用封面文件名（cover / folder / album / front）
-            const coverNames = hasStaticParam
-                ? ['cover', 'Cover', 'folder', 'Folder', 'album', 'Album', 'front', 'Front']
-                : ['cover', 'Cover', 'folder', 'Folder', 'album', 'Album', 'front', 'Front']
+            const coverNames = ['cover', 'Cover', 'folder', 'Folder', 'album', 'Album', 'front', 'Front']
             for (const cn of coverNames) {
                 for (const ext of exts) {
                     const imgPath = path.join(dir, cn + ext)

@@ -9,6 +9,7 @@ import { useMessageStore } from '../store/message'
 import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube, Copy, Send, MonitorPlay, ListFilter, ImagePlus, Bookmark, Square, CheckSquare, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout, biliTvLoginQr, biliTvLoginCheck, biliTvLoginStatus, biliTvLogout, youtubeLoginOpen, youtubeLoginClose, youtubeLoginStatus, youtubeLogout, onYoutubeLoginDone, biliLiveRoom, biliLiveAreas, biliLiveStart, biliLiveUpdate, biliLiveStop, biliFavList, biliFavContent, biliFavSeason, biliArchives, downloadStart, onDownloadDone, onDownloadError, downloadGetDir, getBiliApiMode, setBiliApiMode } from '../api'
 import CustomSelect from '../components/CustomSelect.vue'
+import BiliCookieLogin from '../components/BiliCookieLogin.vue'
 
 // 平台图标（解析框上方滚动展示）
 import platformDouyin from '../assets/icons/douyin.png'
@@ -1782,7 +1783,11 @@ const typeLabel = (s) => {
             <div class="parse-results-title">
                 <span>共解析到 {{ parseResults.length }} 个视频流{{ parsePageTitle ? ` · ${parsePageTitle}` : '' }}</span>
                 <span class="parse-batch-actions">
-                    <label class="parse-check-all"><input type="checkbox" :checked="parseAllChecked" @change="toggleParseAll" /> 全选</label>
+                    <label class="parse-check-all" @click.prevent="toggleParseAll">
+                        <CheckSquare v-if="parseAllChecked" :size="16" class="check-icon active" />
+                        <Square v-else :size="16" class="check-icon" />
+                        全选
+                    </label>
                     <button class="live-start-btn small" :disabled="!parseSel.size || batchDownloading" @click="downloadParseBatch">
                         <Download :size="13" /> 批量下载{{ parseSel.size ? `（${parseSel.size}）` : '' }}
                     </button>
@@ -2245,6 +2250,7 @@ const typeLabel = (s) => {
                     <p v-if="biliQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码登录</p>
                     <p v-else-if="biliQrStatus === 'scanned'">等待确认中...</p>
                     <p class="bili-qr-benefit">登录后解析B站视频可解锁更高画质（1080P/4K）</p>
+                    <BiliCookieLogin mode="web" />
                 </div>
             </div>
         </div>
@@ -2283,6 +2289,7 @@ const typeLabel = (s) => {
                     <p v-if="biliTvQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码完成 TV 端登录</p>
                     <p v-else-if="biliTvQrStatus === 'scanned'">等待确认中...</p>
                     <p class="bili-qr-benefit">TV 接口与网页登录相互独立，TV 端登录后解锁 1080P+/大会员档</p>
+                    <BiliCookieLogin mode="tv" />
                 </div>
             </div>
         </div>
@@ -4189,7 +4196,7 @@ const typeLabel = (s) => {
 .bili-item-action:hover { border-color: #c20c0c; color: #c20c0c; }
 .bili-load-more { text-align: center; margin-top: 12px; }
 .bili-sub-empty { text-align: center; color: #999; font-size: 13px; padding: 30px 0; }
-/* 复选框（本地音乐样式：Square/CheckSquare 图标） */
+/* 复选框（格式转换同款：Square/CheckSquare 方形图标） */
 .bili-check, .parse-check {
     display: flex;
     align-items: center;
@@ -4205,15 +4212,13 @@ const typeLabel = (s) => {
     pointer-events: none;
 }
 .bili-check .check-icon, .parse-check .check-icon {
-    color: #ccc;
-    transition: color .2s;
+    color: var(--text-light);
+    transition: color 0.15s;
     flex-shrink: 0;
 }
-.bili-check .check-icon.active, .parse-check .check-icon.active {
-    color: var(--primary-color, #c20c0c);
-}
-.bili-check:hover .check-icon, .parse-check:hover .check-icon { color: #999; }
-.bili-check:hover .check-icon.active, .parse-check:hover .check-icon.active { color: #c20c0c; }
+.bili-check .check-icon:hover, .parse-check .check-icon:hover { color: var(--text-secondary); }
+.bili-check .check-icon.active, .parse-check .check-icon.active { color: var(--primary-color); }
+.bili-check:hover .check-icon.active, .parse-check:hover .check-icon.active { color: var(--primary-color); }
 /* 收藏夹类型徽章 */
 .bili-type-badge {
     display: inline-block;

@@ -31,7 +31,6 @@ const coverMode = ref(localStorage.getItem('song_detail_cover_mode') || 'classic
 watch(coverMode, (v) => { localStorage.setItem('song_detail_cover_mode', v) })
 const noScale = ref(localStorage.getItem('song_detail_no_scale') === 'true')
 watch(noScale, (v) => { localStorage.setItem('song_detail_no_scale', v) })
-const showGifCover = ref(localStorage.getItem('song_detail_show_gif_cover') !== 'false')
 // 歌词设置项默认折叠收起
 const showLyricSettings = ref(false)
 
@@ -42,18 +41,9 @@ watch(() => playerStore.currentSong.id, () => {
     }
 })
 
-const toggleGifCover = () => {
-    showGifCover.value = !showGifCover.value
-    localStorage.setItem('song_detail_show_gif_cover', showGifCover.value)
-}
-
 const getCoverUrl = () => {
     const picUrl = playerStore.currentSong.al?.picUrl || ''
     if (!picUrl) return ''
-    // 如果是本地歌曲的song-cover协议，根据设置添加参数
-    if (picUrl.startsWith('song-cover:') && !showGifCover.value) {
-        return picUrl + '?static=1'
-    }
     return picUrl
 }
 
@@ -870,16 +860,6 @@ onMounted(() => {
                 <div class="stylus-rod"></div>
                 <div class="stylus-head"></div>
             </div>
-            <!-- GIF/静态封面切换 -->
-            <div v-if="playerStore.currentSong.al?.picUrl?.startsWith('song-cover:')" class="cover-toggle no-drag" @click="toggleGifCover">
-                <div class="toggle-track" :class="{ active: showGifCover }">
-                    <div class="toggle-thumb">
-                        <ImagePlay v-if="showGifCover" :size="12" />
-                        <Image v-else :size="12" />
-                    </div>
-                    <span class="toggle-label">{{ showGifCover ? 'GIF' : '静态' }}</span>
-                </div>
-            </div>
         </div>
         
         <div class="song-header">
@@ -1565,57 +1545,6 @@ onMounted(() => {
     height: 6px;
     background: #bbb;
     border-radius: 2px;
-}
-
-.cover-toggle {
-    position: absolute;
-    bottom: 12px;
-    right: 12px;
-    z-index: 10;
-    cursor: pointer;
-}
-
-.toggle-track {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    background: rgba(0, 0, 0, 0.5);
-    backdrop-filter: blur(10px);
-    padding: 4px 4px 4px 10px;
-    border-radius: 20px;
-    transition: all 0.3s ease;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.toggle-track:hover {
-    background: rgba(0, 0, 0, 0.7);
-}
-
-.toggle-thumb {
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: white;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #333;
-    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-}
-
-.toggle-track.active .toggle-thumb {
-    transform: translateX(2px);
-    background: var(--primary-color);
-    color: white;
-}
-
-.toggle-label {
-    font-size: 11px;
-    color: rgba(255, 255, 255, 0.9);
-    font-weight: 500;
-    padding-right: 6px;
-    user-select: none;
 }
 
 .song-name-container {

@@ -352,9 +352,10 @@ onUnmounted(() => { stopCarousel() })
                     <div class="results-info">共 {{ searchResults.length }} 条结果，第 {{ currentPage }} / {{ totalPages }} 页</div>
                     <div class="anime-grid">
                         <div
-                            v-for="item in pagedSearchResults"
+                            v-for="(item, idx) in pagedSearchResults"
                             :key="`${item.source}-${item.id}`"
                             class="anime-card"
+                            v-reveal="(idx % 12) * 35"
                             @click="openDetail(item)"
                         >
                             <div class="cover-wrapper">

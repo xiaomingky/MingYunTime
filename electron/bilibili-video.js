@@ -172,8 +172,11 @@ const biliRankCache = new Map() // rid -> { ts, list }
 async function biliRegionRankList(rid) {
   const cached = biliRankCache.get(rid)
   if (cached && Date.now() - cached.ts < 10 * 60 * 1000) return cached.list
-  const r = await biliApiGet('https://api.bilibili.com/x/web-interface/ranking/v2', { rid, type: 'all' })
-  const list = (r?.data?.list || []).map(biliCard)
+  // ranking/v2 已对番剧(13)/国创(167) 等 PGC 分区返回 -400（B站下架分区排行）：
+  // 静默降级为空列表，由上层走 newlist（分区最新投稿）兜底，不再把请求错误抛给前端
+  const list = await biliApiGet('https://api.bilibili.com/x/web-interface/ranking/v2', { rid, type: 'all' })
+    .then(r => (r?.data?.list || []).map(biliCard))
+    .catch(() => [])
   biliRankCache.set(rid, { ts: Date.now(), list })
   return list
 }
@@ -207,6 +210,13 @@ async function biliHome({ cat = '推荐', page = 1 }) {
       const archives = r?.data?.archives || []
       list.push(...archives.map(biliCard))
       hasMore = archives.length >= 30
+      // 右侧排行榜：newlist 第一页前 10（ranking/v2 已下架番剧/国创等 PGC 分区）
+      if (page === 1) {
+        ranking = archives.slice(0, 10).map(biliCard)
+      } else {
+        const r1 = await biliApiGet('https://api.bilibili.com/x/web-interface/newlist', { rid, page: 1, ps: 30 }).catch(() => null)
+        ranking = ((r1?.data?.archives || []).slice(0, 10)).map(biliCard)
+      }
     }
   }
   return { list, hasMore, ranking }
@@ -443,8 +453,30 @@ function biliCommentItem(r, upMid = 0) {
     // UP主徽章：评论者是视频作者（官方显示红色"UP"标）
     isUp: upMid && String(member.mid || r.mid) === String(upMid),
     message: String(r.content?.message || ''),
+    // 图片评论：content.pictures（九图以内），前端缩略图渲染
+    pictures: (r.content?.pictures || []).map(pc => ({
+      url: String(pc.img_src || '').replace(/^http:\/\//, 'https://'),
+      w: pc.img_width || 0,
+      h: pc.img_height || 0
+    })),
     // B站表情表 {[key]: {url, size}}，size 1 小表情 / 2 大表情；前端按 [key] 匹配渲染成图片
     emote: r.content?.emote || null,
+    // 硬核会员标识（is_senior_member=1）：LV6 评论者用 level_h.svg 加强版徽章（红 LV6 + 闪电）
+    senior: Number(member.is_senior_member) === 1,
+    // 个性装扮：佩戴的评论卡装扮牌（装扮商城 user_sailing.cardbg，如番剧联动勋章牌，显示在评论右侧）
+    sailing: (member.user_sailing?.cardbg?.image) ? {
+      name: member.user_sailing.cardbg.name || '',
+      image: String(member.user_sailing.cardbg.image || '').replace(/^http:\/\//, 'https://'),
+      // 装扮收藏编号（官方字段：num_prefix 前缀如 "CD." + num_desc 六位序号 + color 文字色）
+      numPrefix: member.user_sailing.cardbg.fan?.num_prefix || '',
+      numDesc: member.user_sailing.cardbg.fan?.num_desc || '',
+      color: member.user_sailing.cardbg.fan?.color || ''
+    } : null,
+    // 评论卡装饰（另一套 decorate 字段，少数活动装扮整卡换肤）
+    decorate: (r.decorate && (r.decorate.bg_url || r.decorate.image_large || r.decorate.image)) ? {
+      name: r.decorate.name || '',
+      bgUrl: String(r.decorate.bg_url || r.decorate.image_large || r.decorate.image || '').replace(/^http:\/\//, 'https://')
+    } : null,
     like: r.like || 0,
     rcount: r.rcount || 0,       // 子楼总数
     ctime: r.ctime || 0,
@@ -791,9 +823,18 @@ async function biliUserSpace({ mid = 0, page = 1 }) {
       face: String(card.face || '').replace(/^http:\/\//, 'https://'),
       sign: String(card.sign || '').replace(/<[^>]+>/g, '').trim(),
       fans: cr?.data?.follower ?? 0,
-      likes: card.likes || 0,
+      // 获赞数在 data 顶层 like_num（card.likes 不存在，旧写法恒为 0）
+      likes: cr?.data?.like_num ?? 0,
       level: cr?.data?.level_info?.current_level || card.level_info?.current_level || 0,
-      vip: cr?.data?.vip?.status === 1,
+      // 硬核会员标识（card.is_senior_member）：LV6 硬核用户用 level_h.svg 加强版徽章
+      senior: Number(cr?.data?.is_senior_member ?? card.is_senior_member) === 1,
+      // VIP 信息在 card.vip（data.vip 不存在）：status=1 有效，vipType 2 年度 / 1 月度
+      vip: Number(card.vip?.vipStatus ?? card.vipStatus) === 1,
+      vipType: Number(card.vip?.vipType ?? card.vipType) || 0,
+      // 官方大会员标签图（如"十年大会员"动图/静态图），有则优先于通用图标
+      vipLabel: (card.vip?.label?.use_img_label && card.vip.label.img_label_uri_hans_static)
+        ? String(card.vip.label.img_label_uri_hans_static).replace(/^http:\/\//, 'https://')
+        : '',
       official: card.official?.title || card.Official?.title || ''
     }
   } catch (e) { /* card 失败不阻塞投稿列表 */ }
@@ -1026,5 +1067,74 @@ ipcMain.handle('bilibili:video-season-archives', async (_, params) => {
     return { success: true, data }
   } catch (e) {
     return { success: false, message: e.message }
+  }
+})
+
+
+
+// ============================================================
+// 设置页：B站登录态管理（Web Cookie 显示/复制/粘贴登录 + TV Token 读取）
+// ============================================================
+const BILI_TV_TOKEN_FILE_PATH = () => path.join(app.getPath('userData'), 'bilibili-tv-token.json')
+
+ipcMain.handle('bili:get-web-cookie', async () => {
+  try {
+    const raw = fs.readFileSync(BILI_COOKIE_FILE(), 'utf8')
+    const data = JSON.parse(raw)
+    const cookies = data.cookies || {}
+    const cookie = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ')
+    return { success: true, cookie, savedAt: data.savedAt || 0 }
+  } catch (e) {
+    return { success: true, cookie: '' }
+  }
+})
+
+ipcMain.handle('bili:set-web-cookie', async (_, cookieStr) => {
+  try {
+    const raw = String(cookieStr || '').trim()
+    if (!raw) return { success: false, message: 'Cookie 不能为空' }
+    let cookies = {}
+    if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw)
+      cookies = parsed.cookies || parsed
+    } else {
+      raw.split(';').forEach(pair => {
+        const i = pair.indexOf('=')
+        if (i > 0) cookies[pair.slice(0, i).trim()] = pair.slice(i + 1).trim()
+      })
+    }
+    if (!cookies.SESSDATA) return { success: false, message: 'Cookie 中缺少 SESSDATA，无法登录' }
+    fs.writeFileSync(BILI_COOKIE_FILE(), JSON.stringify({ cookies, savedAt: Date.now() }), 'utf8')
+    return { success: true }
+  } catch (e) {
+    return { success: false, message: e.message }
+  }
+})
+
+ipcMain.handle('bili:set-tv-token', async (_, raw) => {
+  try {
+    const str = String(raw || '').trim()
+    if (!str) return { success: false, message: 'Token 不能为空' }
+    let data = {}
+    if (str.startsWith('{')) {
+      data = JSON.parse(str)
+    } else {
+      data = { accessKey: str }
+    }
+    if (!data.accessKey) return { success: false, message: '缺少 accessKey（TV 端登录凭证）' }
+    fs.writeFileSync(BILI_TV_TOKEN_FILE_PATH(), JSON.stringify({ ...data, savedAt: Date.now() }), 'utf8')
+    return { success: true }
+  } catch (e) {
+    return { success: false, message: 'Token 格式错误：' + e.message }
+  }
+})
+
+ipcMain.handle('bili:get-tv-token', async () => {
+  try {
+    const raw = fs.readFileSync(BILI_TV_TOKEN_FILE_PATH(), 'utf8')
+    const data = JSON.parse(raw)
+    return { success: true, token: data.accessKey ? JSON.stringify(data, null, 2) : '' }
+  } catch (e) {
+    return { success: true, token: '' }
   }
 })

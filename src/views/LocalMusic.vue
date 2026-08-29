@@ -1,19 +1,22 @@
 <script setup>
 import { usePlayerStore } from '../store/player'
-import { FolderOpen, Play, Search, Download, Trash2, FolderPlus, Image, ImagePlay, Edit3, X, Camera, GripVertical, Wand2, Music, FileText, ChevronDown } from 'lucide-vue-next'
+import { FolderOpen, Play, Search, Download, Trash2, FolderPlus, Image, Edit3, X, Camera, GripVertical, Wand2, Music, FileText, ChevronDown, CheckSquare, Square } from 'lucide-vue-next'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { cloudSearch, getNewLyric } from '../api'
 import { useMessageStore } from '../store/message'
 import FormatConvert from './FormatConvert.vue'
 import LyricFetch from './LyricFetch.vue'
+import { useTabIndicator } from '../composables/useTabIndicator'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
 const loading = ref(false)
 const selectedPaths = ref([])
-const showGifCover = ref(localStorage.getItem('local_show_gif_cover') === 'true')
 // Tabs：本地音乐 / 格式转换（与本地视频页的分 Tab 结构一致）
 const activeTab = ref('local')
+// Tab 滑动指示条：药丸底色平滑滑动到激活 Tab
+const tabBarRef = ref(null)
+const { indicatorStyle: tabIndicatorStyle, indicatorVisible: tabIndicatorVisible, indicatorReady: tabIndicatorReady } = useTabIndicator(tabBarRef, activeTab, '.tab-btn')
 
 const getBridge = () => window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer || window.electron
 
@@ -164,11 +167,6 @@ const batchRemove = async () => {
     }
 }
 
-const toggleGifCover = () => {
-    showGifCover.value = !showGifCover.value
-    localStorage.setItem('local_show_gif_cover', showGifCover.value)
-}
-
 // 拖拽排序
 const dragFromIndex = ref(-1)
 const dragOverIndex = ref(-1)
@@ -207,9 +205,6 @@ const onDragEnd = () => resetDrag()
 
 const getCoverUrl = (song) => {
     if (!song.al?.picUrl) return ''
-    if (!showGifCover.value && song.al.picUrl.startsWith('song-cover:')) {
-        return song.al.picUrl + '?static=1'
-    }
     return song.al.picUrl
 }
 
@@ -311,7 +306,12 @@ const saveMetadata = async () => {
     <div class="view-header">
       <div class="header-left">
         <h1 class="title">本地音乐</h1>
-        <div class="tabs">
+        <div class="tabs" ref="tabBarRef">
+          <span
+            class="tab-indicator"
+            :class="{ ready: tabIndicatorReady, visible: tabIndicatorVisible }"
+            :style="tabIndicatorStyle"
+          ></span>
           <button class="tab-btn" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">
             <Music :size="14" /> 本地音乐 <span class="tab-count">{{ playerStore.localSongs.length }}</span>
           </button>
@@ -351,16 +351,6 @@ const saveMetadata = async () => {
           </Transition>
         </div>
         <button 
-          class="import-btn gif-toggle-btn" 
-          :class="{ active: showGifCover }"
-          @click="toggleGifCover"
-          :title="showGifCover ? '点击切换为静态封面' : '点击切换为GIF封面'"
-        >
-          <ImagePlay v-if="showGifCover" :size="16" />
-          <Image v-else :size="16" />
-          {{ showGifCover ? 'GIF封面' : '静态封面' }}
-        </button>
-        <button 
           v-if="selectedPaths.length > 0" 
           class="batch-delete-btn" 
           @click="batchRemove"
@@ -390,10 +380,8 @@ const saveMetadata = async () => {
       <div class="list-header">
         <div class="col-drag"></div>
         <div class="col-check" @click="toggleSelectAll">
-            <svg class="check-svg" :class="{ on: isAllSelected }" viewBox="0 0 16 16" fill="none">
-                <circle class="check-box" cx="8" cy="8" r="7" />
-                <path class="check-path" d="M4.5 8.1l2.3 2.4 4.6-5" />
-            </svg>
+            <CheckSquare v-if="isAllSelected" :size="16" class="check-icon active" />
+            <Square v-else :size="16" class="check-icon" />
         </div>
         <div class="col-index">#</div>
         <div class="col-title">标题</div>
@@ -416,10 +404,8 @@ const saveMetadata = async () => {
             <GripVertical :size="16" />
         </div>
         <div class="col-check" @click.stop="toggleSelect(song)">
-            <svg class="check-svg" :class="{ on: selectedPaths.includes(song.path) }" viewBox="0 0 16 16" fill="none">
-                <circle class="check-box" cx="8" cy="8" r="7" />
-                <path class="check-path" d="M4.5 8.1l2.3 2.4 4.6-5" />
-            </svg>
+            <CheckSquare v-if="selectedPaths.includes(song.path)" :size="16" class="check-icon active" />
+            <Square v-else :size="16" class="check-icon" />
         </div>
         <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
         <div class="col-title">
@@ -453,8 +439,9 @@ const saveMetadata = async () => {
     </div>
 
     <!-- 元数据编辑弹窗 -->
+    <Transition name="modal-pop">
     <div v-if="showEditModal" class="modal-overlay" @click="showEditModal = false">
-      <div class="edit-modal" @click.stop>
+      <div class="edit-modal modal-panel" @click.stop>
         <div class="modal-header">
           <h3>编辑元数据</h3>
           <span class="modal-format">{{ editingSong?.name }}</span>
@@ -511,6 +498,7 @@ const saveMetadata = async () => {
         </div>
       </div>
     </div>
+    </Transition>
     </template>
   </div>
 </template>
@@ -536,7 +524,25 @@ const saveMetadata = async () => {
     background: #f0f0f0;
     padding: 2px;
     border-radius: 8px;
+    position: relative; /* 滑动指示条定位基准 */
 }
+
+/* Tab 滑动指示条：白色药丸滑到激活 Tab 下方，文字按钮浮在其上 */
+.tab-indicator {
+    position: absolute;
+    left: 0;
+    top: 0;
+    background: #fff;
+    border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 0;
+}
+.tab-indicator.ready {
+    transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), width 0.25s cubic-bezier(0.4, 0, 0.2, 1), height 0.2s ease;
+}
+.tab-indicator.visible { opacity: 1; }
 
 .tab-btn {
     display: flex;
@@ -553,12 +559,15 @@ const saveMetadata = async () => {
     transition: all 0.15s;
     white-space: nowrap;
     flex-shrink: 0;
+    position: relative;
+    z-index: 1;
 }
 
+/* 激活底色交给滑动指示条，按钮本身只保留文字变色 */
 .tab-btn.active {
-    background: #fff;
+    background: transparent;
     color: var(--primary-color, #c20c0c);
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    box-shadow: none;
 }
 
 .tab-count {
@@ -832,36 +841,13 @@ const saveMetadata = async () => {
     width: 30px;
     display: flex;
     align-items: center;
+    justify-content: center;
     cursor: pointer;
 }
 
-.check-svg {
-    width: 16px;
-    height: 16px;
-    flex-shrink: 0;
-    display: block;
-}
-.check-box {
-    fill: none;
-    stroke: #ccc;
-    stroke-width: 1.5;
-    transition: stroke 0.2s, fill 0.2s;
-}
-.check-svg.on .check-box {
-    stroke: var(--primary-color, #c20c0c);
-    fill: var(--primary-color, #c20c0c);
-}
-.check-path {
-    fill: none;
-    stroke: #fff;
-    stroke-width: 1.8;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-dasharray: 12;
-    stroke-dashoffset: 12;
-    transition: stroke-dashoffset 0.25s ease 0.05s;
-}
-.check-svg.on .check-path { stroke-dashoffset: 0; }
+.check-icon { color: var(--text-light); vertical-align: middle; transition: color 0.15s; flex-shrink: 0; }
+.check-icon:hover { color: var(--text-secondary); }
+.check-icon.active { color: var(--primary-color); }
 
 .col-index { width: 40px; color: #bbb; text-align: center; font-size: 12px; }
 .col-title { flex: 3; display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 10px; }
@@ -882,11 +868,6 @@ const saveMetadata = async () => {
     flex-shrink: 0;
 }
 
-.gif-toggle-btn.active {
-    background-color: var(--primary-color);
-    color: white;
-    border-color: var(--primary-color);
-}
 .col-artist { flex: 2; min-width: 0; padding-right: 10px; color: #666; }
 .col-album { flex: 1; min-width: 0; color: #999; }
 .col-actions { width: 120px; display: flex; gap: 8px; justify-content: flex-end; }

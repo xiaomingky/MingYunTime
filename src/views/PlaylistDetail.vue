@@ -8,7 +8,7 @@ import { useMessageStore } from '../store/message'
 
 const userStore = useUserStore()
 const messageStore = useMessageStore()
-import { Play, Heart, Share2, Download, Search, Clock, Edit, Trash2, Camera, X } from 'lucide-vue-next'
+import { Play, Heart, Share2, Download, Search, Clock, Edit, Trash2, Camera, X, CheckSquare, Square } from 'lucide-vue-next'
 
 const route = useRoute()
 const router = useRouter()
@@ -291,7 +291,10 @@ const handleCoverChange = async (e) => {
                 <tr v-for="(track, index) in tracks" :key="track.id" @dblclick="playerStore.playSong(track, tracks)" class="track-row">
                     <td class="index-cell">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</td>
                     <td class="operation-cell">
-                        <input v-if="selectMode" type="checkbox" :checked="selectedIds.includes(track.id)" @click.stop="toggleSelect(track)" class="track-checkbox" />
+                        <span v-if="selectMode" class="track-check" @click.stop="toggleSelect(track)">
+                            <CheckSquare v-if="selectedIds.includes(track.id)" :size="16" class="check-icon active" />
+                            <Square v-else :size="16" class="check-icon" />
+                        </span>
                         <Heart
                           :size="14"
                           class="icon clickable"
@@ -339,17 +342,27 @@ const handleCoverChange = async (e) => {
             </div>
         </div>
     </template>
+    <!-- 加载骨架屏：按歌曲行形状占位 -->
+    <div v-else-if="loading" class="track-skeleton">
+        <div v-for="i in 9" :key="i" class="track-skeleton-row">
+            <div class="skeleton-block ts-cell idx"></div>
+            <div class="skeleton-block ts-cell title"></div>
+            <div class="skeleton-block ts-cell artist"></div>
+            <div class="skeleton-block ts-cell duration"></div>
+        </div>
+    </div>
     <div v-else class="empty-state">
         <div class="empty-content">
             <Heart :size="64" color="#eee" />
-            <p>{{ loading ? '努力加载中...' : '该歌单暂无内容或加载失败' }}</p>
-            <button v-if="!loading" class="retry-btn" @click="fetchDetail">重新加载</button>
+            <p>该歌单暂无内容或加载失败</p>
+            <button class="retry-btn" @click="fetchDetail">重新加载</button>
         </div>
     </div>
 
     <!-- Edit Modal -->
+    <Transition name="modal-pop">
     <div v-if="showEditModal" class="modal-overlay" @click="showEditModal = false">
-        <div class="custom-modal edit-modal" @click.stop>
+        <div class="custom-modal edit-modal modal-panel" @click.stop>
             <div class="modal-header">
                 <h3>编辑歌单信息</h3>
                 <X :size="20" class="clickable" @click="showEditModal = false" />
@@ -370,10 +383,26 @@ const handleCoverChange = async (e) => {
             </div>
         </div>
     </div>
+    </Transition>
   </div>
 </template>
 
 <style scoped>
+/* 歌曲行骨架屏：与歌曲表格行同节奏（序号/标题/歌手/时长） */
+.track-skeleton { padding: 6px 0; }
+.track-skeleton-row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 14px 10px;
+    border-bottom: 1px solid rgba(0,0,0,0.04);
+}
+.ts-cell { height: 13px; }
+.ts-cell.idx { width: 26px; }
+.ts-cell.title { flex: 4; }
+.ts-cell.artist { flex: 2.5; }
+.ts-cell.duration { width: 48px; }
+
 .playlist-detail {
   padding: 30px;
   background-color: var(--bg-main);
@@ -597,7 +626,7 @@ const handleCoverChange = async (e) => {
     gap: 6px;
 }
 
-.track-checkbox { width: 16px; height: 16px; cursor: pointer; accent-color: var(--primary-color); }
+.track-check { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; cursor: pointer; }
 .vip-tag-mini {
     font-size: 10px;
     color: var(--primary-color);

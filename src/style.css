@@ -336,13 +336,27 @@ footer.footer {
     color: #333;
 }
 
-.menu-item.active::before {
+/* 侧边栏竖条指示器：常驻伪元素，hover 半伸出、激活时平滑长出（避免瞬间闪现） */
+.menu-item::before {
     content: '';
     position: absolute;
     left: 0;
     width: 4px;
     height: 20px;
+    border-radius: 0 3px 3px 0;
     background-color: var(--primary-color);
+    transform: scaleY(0);
+    opacity: 0;
+    transition: transform 0.22s cubic-bezier(0.34, 1.2, 0.64, 1), opacity 0.18s ease;
+}
+.menu-item:hover::before {
+    transform: scaleY(0.45);
+    opacity: 0.4;
+}
+/* 激活态竖条由侧边栏滑动指示条统一呈现（平滑滑动到激活项），静态竖条保持隐藏避免双条 */
+.menu-item.active::before {
+    transform: scaleY(0);
+    opacity: 0;
 }
 
 /* Responsive sidebar */
@@ -706,4 +720,122 @@ select.compact {
     padding: 4px 28px 4px 10px;
     font-size: 12px;
     border-radius: 6px;
+}
+
+/* ===== 全局复选框（统一为格式转换页同款 CheckSquare/Square 方形图标）=====
+   用法：勾选时用 <CheckSquare class="check-icon active" />，未勾选用 <Square class="check-icon" />
+   勾选动画（正式风格）：外框即时呈现，内部对勾以标准缓动平滑画出，无弹跳。
+   注意：lucide 的 CheckSquare 由两个 path 组成（外框 + 勾），这里用 :last-child 只命中“勾”，
+   避免外框也参与描边动画导致拼接感 */
+.check-icon { color: var(--text-light); vertical-align: middle; transition: color 0.18s ease; }
+.check-icon:hover { color: var(--text-secondary); }
+.check-icon.active { color: var(--primary-color); transition: color 0.3s ease; }
+/* 注意：.check-icon 类直接挂在 <svg> 根元素上，选择器不要再加 svg 中间层 */
+.check-icon.active path:last-child,
+.kugou-check-icon.active path:last-child {
+    stroke-width: 2.2;
+    stroke-dasharray: 20;
+    stroke-dashoffset: 20;
+    animation: check-draw 0.3s cubic-bezier(0.65, 0, 0.35, 1) 0.02s forwards;
+}
+@keyframes check-draw {
+    to { stroke-dashoffset: 0; }
+}
+/* 无障碍：用户系统启用“减少动态效果”时，跳过勾选动画 */
+@media (prefers-reduced-motion: reduce) {
+    .check-icon.active svg path:last-child,
+    .kugou-check-icon.active svg path:last-child {
+        animation: none;
+        stroke-dashoffset: 0;
+    }
+}
+
+/* ===== 通用折叠展开（高度自适应动画，无 max-height 硬编码） =====
+   用法：外层 .collapse-wrap（加 .collapsed 切换），内层 .collapse-inner 包裹任意内容。
+   grid-template-rows 0fr→1fr 过渡，内容高度自适应，Chromium 107+ 支持 */
+.collapse-wrap {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.22s ease, visibility 0s linear 0s;
+}
+.collapse-wrap.collapsed {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: grid-template-rows 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.16s ease, visibility 0s linear 0.28s;
+}
+.collapse-inner {
+    overflow: hidden;
+    min-height: 0;
+}
+
+/* ===== 通用弹窗过渡 =====
+   用法：<Transition name=”modal-pop”> 包裹遮罩根节点，面板元素加 class=”modal-panel”。
+   遮罩淡入淡出；面板缩放 + 上浮进场，离场更快 */
+.modal-pop-enter-active { transition: opacity 0.18s ease; }
+.modal-pop-leave-active { transition: opacity 0.14s ease; }
+.modal-pop-enter-from,
+.modal-pop-leave-to { opacity: 0; }
+.modal-pop-enter-active .modal-panel {
+    animation: modal-panel-in 0.22s cubic-bezier(0.34, 1.25, 0.64, 1) both;
+}
+.modal-pop-leave-active .modal-panel {
+    animation: modal-panel-out 0.13s ease both;
+}
+@keyframes modal-panel-in {
+    from { opacity: 0; transform: translateY(12px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes modal-panel-out {
+    from { opacity: 1; transform: translateY(0) scale(1); }
+    to { opacity: 0; transform: translateY(6px) scale(0.985); }
+}
+
+/* ===== 路由切换过渡：新旧页并行——旧页绝对定位浮在上方快速淡出，新页原位淡入上移。
+   不用 mode=”out-in”：它对”退场完成才进场”的强时序依赖，在懒加载路由 + keep-alive
+   组合下存在进场被丢弃 → 整页白屏的陷阱 */
+.page-fade-enter-active { transition: opacity 0.16s ease, transform 0.16s ease; }
+.page-fade-leave-active { transition: opacity 0.09s ease; position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.page-fade-enter-from { opacity: 0; transform: translateY(6px); }
+.page-fade-leave-to { opacity: 0; }
+
+/* ===== 小型浮层菜单（速度/画质/关闭选项等下拉） ===== */
+.menu-fade-enter-active { transition: opacity 0.14s ease, transform 0.14s ease; }
+.menu-fade-leave-active { transition: opacity 0.1s ease; }
+.menu-fade-enter-from { opacity: 0; transform: translateY(-4px); }
+.menu-fade-leave-to { opacity: 0; }
+
+/* ===== 滚动渐入（v-reveal 指令）：封面卡片进入视口时淡入上移，只触发一次 ===== */
+.reveal {
+    opacity: 0;
+    transform: translateY(14px);
+    transition: opacity 0.4s ease, transform 0.45s cubic-bezier(0.25, 0.8, 0.35, 1);
+}
+.reveal-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* ===== 骨架屏（加载占位）：灰色渐变闪烁块，各页面用 .skeleton-block + 尺寸类拼出内容形状 ===== */
+.skeleton-block {
+    background: linear-gradient(90deg, #eee 25%, #f5f5f5 50%, #eee 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s infinite;
+    border-radius: 6px;
+}
+@keyframes skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* 无障碍：全局兜底——减少动态效果时压平所有过渡/动画 */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }

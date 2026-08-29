@@ -25,7 +25,9 @@ const props = defineProps({
     hasPrev: { type: Boolean, default: false },
     hasNext: { type: Boolean, default: false },
     episodes: { type: Array, default: () => [] },
-    currentEpisode: { type: Object, default: null }
+    currentEpisode: { type: Object, default: null },
+    // 续播记忆 key（如 bili:BVxx:cid）：5 秒节流记录播放位置，重新打开时自动跳转
+    resumeKey: { type: String, default: '' }
 })
 const emit = defineEmits(['ended', 'retry', 'ready', 'error', 'prev', 'next', 'selectEpisode', 'playing', 'qualityChange'])
 
@@ -35,6 +37,7 @@ const playerEl = ref(null)
 
 let art = null
 const playerError = ref('')
+
 const showEpPanel = ref(false)
 // 真直播标识（duration=Infinity 时显示）
 const liveBadge = ref(false)
@@ -88,6 +91,19 @@ const danmakuOn = ref(true)
 
 // ===== 音量增强（Web Audio API 增益节点，可超过系统 100%）=====
 const boostSteps = [1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
+
+// ===== 音量增强面板（与选集/画质面板同款弹出样式） =====
+const showGainPanel = ref(false)
+function selectGain(s) {
+    gainBoost.value = s
+    localStorage.setItem('art_gain_boost', String(s))
+    // 无条件同步：切回 100% 也要把增益写回音频图（旧实现只在 >100% 时同步，导致回不到正常音量）
+    ensureAudioGraph()
+    showGainPanel.value = false
+}
+
+// 面板锚定：用 art.controls[name]（即控件 DOM）实测按钮位置，把面板对准按钮正上方。
+// 全屏/缩放导致尺寸变化时自动重锚
 const gainBoost = ref(parseFloat(localStorage.getItem('art_gain_boost') || localStorage.getItem('bili_gain_boost')) || 1.0)
 const gainLabel = computed(() => {
     const pct = Math.round(gainBoost.value * 100)
@@ -121,9 +137,10 @@ function ensureAudioGraph() {
             const AudioCtx = window.AudioContext || window.webkitAudioContext
             audioCtx = new AudioCtx()
             gainNode = audioCtx.createGain()
-            gainNode.gain.value = gainBoost.value
             gainNode.connect(audioCtx.destination)
         }
+        // 增益值每次调用都同步（旧实现只在创建时设置一次，切低档不生效）
+        gainNode.gain.value = gainBoost.value
         // video 元素随播放器实例重建，需重新接线
         if (graphVideoEl !== video) {
             if (videoSourceNode) { try { videoSourceNode.disconnect() } catch (e) {} }
@@ -145,21 +162,6 @@ function ensureAudioGraph() {
 }
 
 // 切换增益倍数：100% → 150% → 200% → 300% → 500% → 1000% → 100%
-function cycleGainBoost() {
-    const idx = boostSteps.findIndex(s => Math.abs(s - gainBoost.value) < 0.01)
-    gainBoost.value = boostSteps[(idx + 1) % boostSteps.length] || 1.0
-    localStorage.setItem('art_gain_boost', String(gainBoost.value))
-    if (gainBoost.value > 1.0) ensureAudioGraph()
-    if (gainNode) gainNode.gain.value = gainBoost.value
-    if (art) {
-        art.notice.show = `音量增强：${gainLabel.value}`
-        // 更新控制条按钮文字
-        const dom = art.controls.gainBoost
-        if (dom) {
-            dom.innerHTML = `<span class="avp-text-btn${gainBoost.value > 1.0 ? ' boost-active' : ''}">${gainLabel.value}</span>`
-        }
-    }
-}
 
 // ===== ArtPlayer 控制按钮 =====
 function buildControls() {
@@ -171,7 +173,7 @@ function buildControls() {
         index: 7,
         html: '<span class="avp-text-btn">选集</span>',
         tooltip: '选集',
-        click: () => { showEpPanel.value = !showEpPanel.value; showQualityPanel.value = false }
+        click: () => { showEpPanel.value = !showEpPanel.value; showGainPanel.value = false; showQualityPanel.value = false }
     })
     // 音量增强
     list.push({
@@ -180,7 +182,7 @@ function buildControls() {
         index: 8,
         html: `<span class="avp-text-btn${gainBoost.value > 1.0 ? ' boost-active' : ''}">${gainLabel.value}</span>`,
         tooltip: '音量增强（点击切换）',
-        click: () => cycleGainBoost()
+        click: () => { showGainPanel.value = !showGainPanel.value; showEpPanel.value = false; showQualityPanel.value = false }
     })
     // 画质切换（B站TV 多档位 DASH，多于 1 档时显示）
     if (props.qualities.length > 1) {
@@ -190,7 +192,7 @@ function buildControls() {
             index: 9,
             html: `<span class="avp-text-btn quality-active">${activeQualityLabel.value}</span>`,
             tooltip: '画质切换',
-            click: () => { showQualityPanel.value = !showQualityPanel.value; showEpPanel.value = false }
+            click: () => { showQualityPanel.value = !showQualityPanel.value; showGainPanel.value = false; showEpPanel.value = false }
         })
     }
     return list
@@ -471,7 +473,14 @@ function initDashAudio() {
     // === 同步策略：以视频为准，音频跟随（直播和视频统一逻辑）===
     const syncPlay = () => { if (dashAudioEl) dashAudioEl.play().catch(() => {}) }
     const syncPause = () => { if (dashAudioEl) dashAudioEl.pause() }
-    const syncSeek = () => { if (dashAudioEl) { try { dashAudioEl.currentTime = v.currentTime } catch (e) {} } }
+    const syncSeek = () => {
+        if (!dashAudioEl) return
+        try {
+            dashAudioEl.currentTime = v.currentTime
+            // 大跳转后音频需要重新缓冲：确保音频跟随播放状态，避免"画面追上音频没跟上"
+            if (!v.paused) dashAudioEl.play().catch(() => {})
+        } catch (e) {}
+    }
     const syncVolume = () => { if (dashAudioEl) { dashAudioEl.volume = v.volume; dashAudioEl.muted = v.muted } }
     const syncRate = () => { if (dashAudioEl) dashAudioEl.playbackRate = v.playbackRate }
     // 漂移阈值：0.5s 兼顾直播和视频，避免过松或过紧
@@ -486,7 +495,7 @@ function initDashAudio() {
     v.addEventListener('play', syncPlay)
     v.addEventListener('pause', syncPause)
     v.addEventListener('seeked', syncSeek)
-    v.addEventListener('seeking', syncSeek)
+    // 只在 seeked（跳转完成）时同步一次：seeking+seeked 双次设置会让音频重复重启缓冲，拉长等待
     v.addEventListener('volumechange', syncVolume)
     v.addEventListener('ratechange', syncRate)
     v.addEventListener('timeupdate', syncDrift)
@@ -600,12 +609,46 @@ async function createPlayer(src) {
         emit('ready')
         // 增益已激活时为新 video 元素重新接线
         if (audioCtx) ensureAudioGraph()
+        // 续播：有记忆位置且未接近结尾时自动跳转
+        if (props.resumeKey) {
+            try {
+                const saved = Number(localStorage.getItem('art-resume:' + props.resumeKey) || 0)
+                const dur = art.video?.duration || 0
+                if (saved > 20 && dur && saved < dur - 15) {
+                    art.seek(saved)
+                    const m = Math.floor(saved / 60), s = Math.floor(saved % 60)
+                    art.notice.show = `已从 ${m}:${String(s).padStart(2, '0')} 续播`
+                }
+            } catch (e) {}
+        }
     })
-    art.on('video:playing', () => emit('playing'))
-    art.on('video:ended', () => emit('ended'))
+    art.on('video:volumechange', () => { artVol.value = art.volume || 0 })
+    // 点击播放器空白处时收起各面板
+
+    art.on('video:ended', () => {
+        // 播完清除续播记忆
+        try { if (props.resumeKey) localStorage.removeItem('art-resume:' + props.resumeKey) } catch (e) {}
+        emit('ended')
+    })
+    // 续播位置记录：5 秒节流（片头 20s 内/片尾 15s 内不记）
+    let resumeSaveTimer = 0
+    art.on('video:timeupdate', () => {
+        if (!props.resumeKey || resumeSaveTimer) return
+        resumeSaveTimer = setTimeout(() => {
+            resumeSaveTimer = 0
+            try {
+                const v = art?.video
+                if (!v || !v.duration || v.duration === Infinity) return
+                const cur = v.currentTime || 0
+                if (cur > 20 && cur < v.duration - 15) localStorage.setItem('art-resume:' + props.resumeKey, String(Math.floor(cur)))
+                else localStorage.removeItem('art-resume:' + props.resumeKey)
+            } catch (e) {}
+        }, 5000)
+    })
     art.on('video:error', () => {
         if (!playerError.value) showError('视频加载失败，请重试或更换线路')
     })
+    art.on('video:playing', () => emit('playing'))
 
     // DASH 音视频分离同步
     initDashAudio()
@@ -627,6 +670,12 @@ watch(() => props.audioUrl, () => {
 
 // 弹幕数据后到（异步拉取完成）或更新：load() 换弹幕源，无需重建播放器
 // 显隐交给插件自带设置面板（"显示弹幕"开关），此处只负责喂数据
+// 音量增强档位变化：同步控制条按钮标签
+watch(gainBoost, (v) => {
+    const dom = art?.controls?.gainBoost
+    if (dom) dom.innerHTML = `<span class="avp-text-btn${v > 1.0 ? ' boost-active' : ''}">${gainLabel.value}</span>`
+})
+
 watch(() => props.danmaku, (list) => {
     const dk = art?.plugins?.artplayerPluginDanmuku
     if (!dk || !art) return
@@ -639,7 +688,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-    destroyPlayer()
+
     // 清理 Web Audio API
     if (videoSourceNode) { try { videoSourceNode.disconnect() } catch (e) {} videoSourceNode = null }
     if (dashSourceNode) { try { dashSourceNode.disconnect() } catch (e) {} dashSourceNode = null }
@@ -703,6 +752,25 @@ defineExpose({ art })
                             @click="switchQuality(q)"
                         >{{ q.label }}</button>
                     </transition-group>
+                </div>
+            </transition>
+
+            <!-- 音量增强面板（与选集/画质同款弹出样式，档位 100%~1000%） -->
+            <transition name="avp-slide">
+                <div v-if="showGainPanel && !playerError" class="avp-ep-panel avp-quality-panel avp-gain-panel" @click.stop>
+                    <div class="avp-ep-header">
+                        <span>音量增强</span>
+                        <button class="avp-ep-close" @click="showGainPanel = false"><X :size="14" /></button>
+                    </div>
+                    <div class="avp-ep-list avp-quality-list">
+                        <button
+                            v-for="s in boostSteps"
+                            :key="s"
+                            class="avp-ep-item"
+                            :class="{ active: Math.abs(gainBoost - s) < 0.01 }"
+                            @click="selectGain(s)"
+                        >{{ Math.round(s * 100) }}%</button>
+                    </div>
                 </div>
             </transition>
 
@@ -937,7 +1005,29 @@ defineExpose({ art })
     color: #ff9f9f;
 }
 /* 画质面板：单列较窄，贴右侧控制条上方 */
+/* 音量增强滑条（控制栏内联，100%~1000%） */
+.avp-gain-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.avp-gain-slider {
+    width: 84px;
+    accent-color: #fb7299;
+    cursor: pointer;
+}
+.avp-gain-label {
+    font-size: 12px;
+    color: #ddd;
+    min-width: 34px;
+    text-align: right;
+}
+.avp-gain-label.boost-active { color: #fb7299; font-weight: 600; }
+
 .avp-quality-panel {
+    width: 150px;
+}
+.avp-gain-panel {
     width: 150px;
 }
 .avp-quality-list {

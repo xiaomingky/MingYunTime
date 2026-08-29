@@ -2,16 +2,17 @@
 // 下载专区 —— 统一管理所有下载任务（音乐/影视/动漫/MV/视频）
 // 显示：速度、进度、详情信息（名称/类型/链接/保存路径/时间）、状态
 // 操作：取消、重试、移除、清空
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import {
     downloadStart, downloadList, downloadCancel, downloadRemove, downloadClear, downloadRetry,
     onDownloadStarted, onDownloadProgress, onDownloadDone, onDownloadError
-} from '../api'
+, downloadProbeName , downloadPause, downloadResume, onDownloadPaused } from '../api'
+import CustomSelect from '../components/CustomSelect.vue'
 import { useMessageStore } from '../store/message'
 import {
     Download, Music, Film, MonitorPlay, Video, X, RefreshCw, Trash2,
-    CheckCircle2, AlertCircle, Loader2, Clock, FolderOpen, Link2, Copy
-} from 'lucide-vue-next'
+    CheckCircle2, AlertCircle, Loader2, Clock, FolderOpen, Link2, Copy, FileText, Settings as SettingsIcon
+, Pause, Play } from 'lucide-vue-next'
 
 const messageStore = useMessageStore()
 
@@ -29,12 +30,14 @@ const categoryConfig = {
     movie:  { label: '影视', icon: Film, color: '#8b5cf6' },
     anime:  { label: '动漫', icon: MonitorPlay, color: '#3b82f6' },
     mv:     { label: 'MV',   icon: Video, color: '#f59e0b' },
-    video:  { label: '视频', icon: Video, color: '#10b981' }
+    video:  { label: '视频', icon: Video, color: '#10b981' },
+    document: { label: '文档', icon: FileText, color: '#6366f1' }
 }
 
 // 状态配置
 const statusConfig = {
     pending:     { label: '等待中', color: '#888' },
+    paused:      { label: '已暂停', color: '#f59e0b' },
     downloading: { label: '下载中', color: '#3b82f6' },
     done:        { label: '已完成', color: '#22c55e' },
     error:       { label: '失败',   color: '#ef4444' },
@@ -42,7 +45,7 @@ const statusConfig = {
     interrupted: { label: '已中断', color: '#f59e0b' }
 }
 
-let unsubStarted = null, unsubProgress = null, unsubDone = null, unsubError = null
+let unsubStarted = null, unsubProgress = null, unsubDone = null, unsubError = null, unsubPaused = null
 
 // 过滤后的列表
 const filteredTasks = computed(() => {
@@ -118,6 +121,12 @@ const eta = (t) => {
 }
 
 // 操作
+const onPause = async (id) => {
+    try { await downloadPause(id) } catch (e) { messageStore.error(e.message || '暂停失败', 2000) }
+}
+const onResume = async (id) => {
+    try { await downloadResume(id) } catch (e) { messageStore.error(e.message || '恢复失败', 2000) }
+}
 const onCancel = async (id) => {
     try { await downloadCancel(id) } catch (e) {}
 }
@@ -196,19 +205,60 @@ const toggleExpand = (id) => {
 }
 
 // 从 URL 自动提取文件名
-const deriveNameFromUrl = (url) => {
+// 自定义链接下载
+// ===== 自定义下载请求头设置（仅作用于自定义链接下载；持久化） =====
+const showDlSettings = ref(false)
+const dlHeaders = ref(JSON.parse(localStorage.getItem('download_headers') || '{"ua":"","referer":"","extra":""}'))
+const dlThreads = ref(Number(localStorage.getItem('download_threads')) || 32)
+watch(dlThreads, (v) => localStorage.setItem('download_threads', String(v)))
+watch(dlHeaders, (v) => localStorage.setItem('download_headers', JSON.stringify(v)), { deep: true })
+async function probeNameNow() {
+    const url = customUrl.value.trim()
+    if (!url || !/^https?:\/\//i.test(url)) return messageStore.warning('请先粘贴下载链接')
+    nameManuallyEdited = false
+    customName.value = ''
+    customName.placeholder = '识别文件名中...'
     try {
-        const u = new URL(url)
-        const pathname = u.pathname
-        const last = pathname.split('/').filter(Boolean).pop() || ''
-        // 去掉扩展名后的文件名
-        const name = last.replace(/\.\w+$/, '')
-        if (name && name.length > 0 && name.length <= 100) return decodeURIComponent(name)
-    } catch (e) {}
-    return ''
+        const res = await downloadProbeName(url)
+        if (res?.success && res.name) customName.value = res.name
+        else messageStore.warning('未能识别文件名，可手动填写')
+    } catch (e) {
+        messageStore.error('识别失败：' + (e.message || '未知错误'))
+    }
 }
 
-// 自定义链接下载
+const THREAD_OPTIONS = [
+    { value: 8, label: '8 线程（最稳）' },
+    { value: 16, label: '16 线程' },
+    { value: 32, label: '32 线程' },
+    { value: 64, label: '64 线程' },
+    { value: 128, label: '128 线程（最快）' }
+]
+function setDlThreads(v) {
+    dlThreads.value = Number(v)
+    localStorage.setItem('download_threads', String(v))
+}
+
+function resetDlHeaders() {
+    dlHeaders.value = { ua: '', referer: '', extra: '' }
+    localStorage.setItem('download_headers', JSON.stringify(dlHeaders.value))
+}
+
+function buildCustomHeaders() {
+    const h = {}
+    if (dlHeaders.value.ua.trim()) h['User-Agent'] = dlHeaders.value.ua.trim()
+    if (dlHeaders.value.referer.trim()) h['Referer'] = dlHeaders.value.referer.trim()
+    dlHeaders.value.extra.split('\n').forEach(line => {
+        const i = line.indexOf(':')
+        if (i > 0) {
+            const k = line.slice(0, i).trim()
+            const v = line.slice(i + 1).trim()
+            if (k) h[k] = v
+        }
+    })
+    return Object.keys(h).length ? h : undefined
+}
+
 const startCustomDownload = async () => {
     const url = customUrl.value.trim()
     if (!url) return
@@ -216,12 +266,23 @@ const startCustomDownload = async () => {
         messageStore.error('请输入有效的 http/https 链接', 3000)
         return
     }
-    const name = customName.value.trim() || deriveNameFromUrl(url) || undefined
+    let name = customName.value.trim() || ''
+    if (!nameManuallyEdited) {
+        // 未手动改名：以深层探测的实际文件名为准
+        try {
+            const res = await downloadProbeName(url)
+            if (res?.success && res.name) name = res.name
+        } catch (e) {}
+    }
+    name = name || undefined
     try {
         const result = await downloadStart({
             url,
             name,
-            category: 'video'
+            category: 'video',
+            autoName: !nameManuallyEdited,
+            threads: dlThreads.value,
+            headers: buildCustomHeaders()
         })
         if (result?.success) {
             messageStore.success('已添加到下载队列', 2000)
@@ -236,12 +297,31 @@ const startCustomDownload = async () => {
 }
 
 // URL 变化时自动填充文件名
+let probeTimer = 0
+let probeSeq = 0
+let nameManuallyEdited = false
 const onCustomUrlInput = () => {
-    // 仅当用户未手动输入文件名时自动填充
-    if (!customName.value.trim()) {
-        const derived = deriveNameFromUrl(customUrl.value.trim())
-        if (derived) customName.value = derived
-    }
+    nameManuallyEdited = false
+    const url = customUrl.value.trim()
+    clearTimeout(probeTimer)
+    const seq = ++probeSeq
+    if (!url || !/^https?:\/\//i.test(url)) return
+    // 只取深层真实文件名（Content-Disposition / 最终 URL / Content-Type），不用链接表面路径名
+    customName.value = ''
+    customName.placeholder = '识别文件名中...'
+    probeTimer = setTimeout(async () => {
+        if (seq !== probeSeq || nameManuallyEdited) return
+        try {
+            const res = await downloadProbeName(url)
+            if (seq === probeSeq && !nameManuallyEdited && res?.success && res.name) {
+                customName.value = res.name
+            } else if (seq === probeSeq && !nameManuallyEdited) {
+                customName.placeholder = '未能识别文件名，可手动填写'
+            }
+        } catch (e) {
+            customName.placeholder = '未能识别文件名，可手动填写'
+        }
+    }, 600)
 }
 
 // 加载列表
@@ -264,6 +344,12 @@ onMounted(() => {
     loadList()
     unsubStarted = onDownloadStarted((data) => {
         if (data?.id) tasks.value[data.id] = { ...tasks.value[data.id], ...data }
+        if (!unsubPaused) {
+        unsubPaused = onDownloadPaused(({ id }) => {
+            const t = tasks.value[id]
+            if (t) { t.status = 'paused'; t.speed = 0 }
+        })
+        }
     })
     unsubProgress = onDownloadProgress((data) => {
         const id = data?.id
@@ -299,6 +385,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+    unsubPaused?.()
     unsubStarted?.()
     unsubProgress?.()
     unsubDone?.()
@@ -356,13 +443,56 @@ onUnmounted(() => {
                 v-model="customName"
                 type="text"
                 class="custom-name-input"
-                placeholder="文件名（可选）"
+                placeholder="文件名（可选，自动识别）"
+                @input="nameManuallyEdited = customName.trim() ? true : false"
                 @keyup.enter="startCustomDownload"
             />
+            <button class="custom-name-btn" title="识别真实文件名" @click="probeNameNow">识别</button>
             <button class="custom-download-btn" @click="startCustomDownload" :disabled="!customUrl.trim()">
                 <Download :size="14" />
                 开始下载
             </button>
+            <button
+                class="action-btn"
+                :class="{ active: showDlSettings }"
+                title="下载设置（自定义请求头）"
+                @click="showDlSettings = !showDlSettings"
+            >
+                <SettingsIcon :size="14" />
+            </button>
+        </div>
+
+        <!-- 下载设置：自定义 UA / Referer / 附加请求头（仅作用于自定义链接下载） -->
+        <div class="collapse-wrap" :class="{ collapsed: !showDlSettings }">
+        <div class="collapse-inner">
+        <div class="dl-settings-panel">
+            <div class="dl-setting-row">
+                <label>下载线程</label>
+                <CustomSelect
+                    :model-value="dlThreads"
+                    :options="THREAD_OPTIONS"
+                    :width="220"
+                    @change="setDlThreads"
+                />
+            </div>
+            <div class="dl-setting-row">
+                <label>User-Agent</label>
+                <input v-model="dlHeaders.ua" placeholder="留空使用默认 UA" />
+            </div>
+            <div class="dl-setting-row">
+                <label>Referer</label>
+                <input v-model="dlHeaders.referer" placeholder="留空时按 CDN 自动注入" />
+            </div>
+            <div class="dl-setting-row">
+                <label>附加请求头</label>
+                <textarea v-model="dlHeaders.extra" placeholder="每行一条，格式：Key: Value"></textarea>
+            </div>
+            <div class="dl-setting-foot">
+                <span class="dl-setting-tip">仅对上方"自定义下载"生效；修改自动保存，各平台 CDN 必要请求头仍会自动注入。</span>
+                <button class="mini-btn" @click="resetDlHeaders">重置</button>
+            </div>
+        </div>
+        </div>
         </div>
 
         <!-- 分类筛选 -->
@@ -376,8 +506,8 @@ onUnmounted(() => {
             </span>
         </div>
 
-        <!-- 下载列表 -->
-        <div class="download-list" v-if="filteredTasks.length > 0">
+        <!-- 下载列表（TransitionGroup：新任务滑入、移除时收起淡出、排序/状态变化平滑位移动画） -->
+        <TransitionGroup tag="div" name="task" class="download-list" v-if="filteredTasks.length > 0">
             <div v-for="t in filteredTasks" :key="t.id"
                  class="download-card"
                  :class="[t.status, { expanded: expandedId === t.id }]">
@@ -459,7 +589,13 @@ onUnmounted(() => {
 
                     <!-- 操作按钮 -->
                     <div class="card-actions" @click.stop>
-                        <button v-if="t.status === 'downloading' || t.status === 'pending'" class="action-icon-btn" title="取消" @click="onCancel(t.id)">
+                        <button v-if="t.engine === 'multi' && t.status === 'downloading'" class="action-icon-btn" title="暂停" @click="onPause(t.id)">
+                            <Pause :size="14" />
+                        </button>
+                        <button v-if="t.status === 'paused'" class="action-icon-btn" title="继续" @click="onResume(t.id)">
+                            <Play :size="14" />
+                        </button>
+                        <button v-if="t.status === 'downloading' || t.status === 'pending' || t.status === 'paused'" class="action-icon-btn" title="取消" @click="onCancel(t.id)">
                             <X :size="14" />
                         </button>
                         <button v-if="t.status === 'error' || t.status === 'canceled' || t.status === 'interrupted'" class="action-icon-btn retry" title="重试" @click="onRetry(t.id)">
@@ -471,8 +607,10 @@ onUnmounted(() => {
                     </div>
                 </div>
 
-                <!-- 展开详情 -->
-                <div v-if="expandedId === t.id" class="card-details">
+                <!-- 展开详情（高度自适应折叠动画，常驻 DOM 仅切换 collapsed） -->
+                <div class="collapse-wrap" :class="{ collapsed: expandedId !== t.id }">
+                    <div class="collapse-inner">
+                        <div class="card-details">
                     <div class="detail-row">
                         <span class="detail-label">下载链接</span>
                         <span class="detail-value link" :title="t.urlMasked || t.url">{{ t.urlMasked || t.url || '-' }}</span>
@@ -498,9 +636,11 @@ onUnmounted(() => {
                         <span class="detail-label">错误信息</span>
                         <span class="detail-value error">{{ t.error }}</span>
                     </div>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </TransitionGroup>
 
         <!-- 空状态 -->
         <div v-else class="empty-state">
@@ -691,6 +831,7 @@ onUnmounted(() => {
     flex-direction: column;
     gap: 8px;
     max-width: 1000px;
+    position: relative; /* 离场卡片 absolute 定位的基准 */
 }
 
 .download-card {
@@ -698,7 +839,22 @@ onUnmounted(() => {
     border: 1px solid #eee;
     border-radius: 10px;
     overflow: hidden;
-    transition: all 0.15s;
+    /* 只过渡视觉属性：all 会把布局属性也纳入过渡，配合列表增删动画时造成掉帧 */
+    transition: box-shadow 0.15s, border-color 0.15s;
+    /* 绘制隔离：下载中进度条频繁重绘只影响卡片自身；视口外卡片跳过布局/绘制（长列表流畅关键） */
+    contain: paint;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 72px;
+}
+
+/* 详情展开：只做高度裁切动画（visibility 延迟翻转保持收起过程中内容仍被裁切呈现）。
+   去掉全局 collapse-wrap 的 opacity 过渡——高度动画本身逐帧重排，
+   再叠加图层升降会明显掉帧 */
+.collapse-wrap {
+    transition: grid-template-rows 0.25s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0s;
+}
+.collapse-wrap.collapsed {
+    transition: grid-template-rows 0.25s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.25s;
 }
 
 .download-card:hover { box-shadow: 0 2px 10px rgba(0,0,0,0.05); border-color: #e0e0e0; }
@@ -707,6 +863,91 @@ onUnmounted(() => {
 .download-card.error { border-left: 3px solid #ef4444; }
 .download-card.canceled { border-left: 3px solid #999; }
 .download-card.interrupted { border-left: 3px solid #f59e0b; }
+
+/* 下载设置面板（自定义请求头） */
+.dl-settings-panel {
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    max-width: 1000px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.dl-setting-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.dl-setting-row label {
+    width: 110px;
+    flex-shrink: 0;
+    font-size: 12px;
+    color: #666;
+}
+.dl-setting-row input,
+.dl-setting-row textarea {
+    flex: 1;
+    padding: 7px 10px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    font-size: 12px;
+    outline: none;
+    box-sizing: border-box;
+}
+.dl-setting-row input:focus,
+.dl-setting-row textarea:focus { border-color: #3b82f6; }
+.dl-setting-row textarea {
+    min-height: 56px;
+    resize: vertical;
+    font-family: Consolas, monospace;
+}
+.dl-setting-tip { margin: 0; font-size: 11px; color: #aaa; }
+.custom-name-btn {
+    flex-shrink: 0;
+    padding: 7px 12px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    background: #fff;
+    color: #555;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.custom-name-btn:hover { border-color: #3b82f6; color: #3b82f6; }
+.dl-setting-row :deep(.custom-select) { flex: 1; }
+.dl-setting-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.mini-btn {
+    padding: 5px 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+    color: #666;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.mini-btn:hover { border-color: #3b82f6; color: #3b82f6; }
+
+/* 列表任务增删/移动动画（定义在 .download-card 之后，避免 transition 声明被覆盖；
+   只过渡 opacity/transform 合成层属性，避开布局重排掉帧） */
+.task-enter-active,
+.task-leave-active,
+.task-move {
+    will-change: transform;
+}
+.task-enter-active { transition: opacity 0.2s ease, transform 0.2s ease; }
+.task-leave-active { transition: opacity 0.18s ease, transform 0.18s ease; position: absolute; width: 100%; }
+.task-enter-from { opacity: 0; transform: translateY(8px); }
+.task-leave-to { opacity: 0; transform: translateY(-6px); }
+.task-move { transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1); }
 
 .card-main {
     display: flex;
@@ -807,7 +1048,8 @@ onUnmounted(() => {
     left: 0;
     bottom: 0;
     border-radius: 2px;
-    transition: width 0.3s ease;
+    /* 不做 width 过渡：进度事件频繁，过渡会让卡片逐帧重排（与展开动画叠加时掉帧），
+       事件间隔内直接跳变肉眼无感 */
     max-width: 100%;
 }
 

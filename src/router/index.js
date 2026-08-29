@@ -45,6 +45,9 @@ const BilibiliVideo = () => import('../views/BilibiliVideo.vue')
 const BilibiliVideoDetail = () => import('../views/BilibiliVideoDetail.vue')
 const BiliUserSpace = () => import('../views/BiliUserSpace.vue')
 
+// 智慧教育教材专区（国家中小学智慧教育平台，懒加载）
+const SmartEduTextbook = () => import('../views/SmartEduTextbook.vue')
+
 const routes = [
     // ========== 网易云平台路由（默认） ==========
     {
@@ -151,6 +154,12 @@ const routes = [
         path: '/bilibili/user/:mid',
         name: 'BiliUserSpace',
         component: BiliUserSpace
+    },
+    // 智慧教育教材专区（国家中小学智慧教育平台）
+    {
+        path: '/smart-edu',
+        name: 'SmartEduTextbook',
+        component: SmartEduTextbook
     },
 
     // ========== QQ 音乐平台路由（独立路径前缀 /qq/） ==========

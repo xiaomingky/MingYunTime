@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed, onUnmounted, watch, provide, h } from 'vue'
+import { ref, onMounted, computed, onUnmounted, watch, provide, h, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getPendingLockTarget } from './router'
 import { usePlayerStore } from './store/player'
@@ -53,7 +53,8 @@ import {
   Sparkles,
   Zap,
   CheckSquare,
-  Trash2
+  Trash2,
+  GraduationCap
 } from 'lucide-vue-next'
 import SearchSuggest from './components/SearchSuggest.vue'
 import { useSearchHistoryStore } from './store/searchHistory'
@@ -343,10 +344,6 @@ const updateInfo = ref({ available: false, version: '', notes: '', downloadUrl: 
 const getFooterCoverUrl = () => {
     const picUrl = playerStore.currentSong.al?.picUrl || ''
     if (!picUrl) return ''
-    const showGif = localStorage.getItem('song_detail_show_gif_cover') !== 'false'
-    if (picUrl.startsWith('song-cover:') && !showGif) {
-        return picUrl + '?static=1'
-    }
     return picUrl
 }
 
@@ -466,6 +463,51 @@ const isVideoRoute = computed(() => route.path.startsWith('/anime') || route.pat
 watch(() => route.path, () => {
     if (isVideoRoute.value) videoGroupOpen.value = true
 }, { immediate: true })
+
+// ===== 侧边栏滑动指示条：单条竖线在菜单项间平滑滑动到当前激活项 =====
+const sidebarContainerRef = ref(null)
+const indicatorY = ref(0)
+const indicatorH = ref(0)
+const indicatorVisible = ref(false)
+// 首次定位前禁用过渡，避免初始加载时竖条从顶部"滑"下来
+const indicatorReady = ref(false)
+
+const updateSidebarIndicator = () => {
+    const container = sidebarContainerRef.value
+    if (!container) return
+    // 视频分组与其子项可能同时 active，取 DOM 靠后的（子项）作为指示目标
+    const items = container.querySelectorAll('.menu-item.active')
+    const el = items[items.length - 1]
+    if (!el) {
+        indicatorVisible.value = false
+        return
+    }
+    indicatorY.value = el.offsetTop
+    indicatorH.value = el.offsetHeight
+    indicatorVisible.value = true
+    if (!indicatorReady.value) {
+        requestAnimationFrame(() => requestAnimationFrame(() => { indicatorReady.value = true }))
+    }
+}
+// 折叠/展开有 0.28s 高度动画，动画结束后再校准一次最终位置
+const scheduleIndicatorUpdate = () => {
+    nextTick(updateSidebarIndicator)
+    setTimeout(updateSidebarIndicator, 320)
+}
+watch(() => route.path, scheduleIndicatorUpdate)
+watch(videoGroupOpen, scheduleIndicatorUpdate)
+watch(() => userStore.playlists.length, scheduleIndicatorUpdate)
+watch(kugouCreatedCollapsed, scheduleIndicatorUpdate)
+watch(kugouCollectedCollapsed, scheduleIndicatorUpdate)
+watch(kugouPlaylistBatchMode, scheduleIndicatorUpdate)
+watch(() => kugouUserStore.playlists.length, scheduleIndicatorUpdate)
+onMounted(() => {
+    scheduleIndicatorUpdate()
+    window.addEventListener('resize', scheduleIndicatorUpdate)
+})
+onUnmounted(() => {
+    window.removeEventListener('resize', scheduleIndicatorUpdate)
+})
 // 本地资源导航（两平台共用，保留我们的自有功能）
 const libraryNavItems = [
     { id: '/local', label: '本地音乐', icon: HardDrive },
@@ -473,8 +515,23 @@ const libraryNavItems = [
     { id: '/recent', label: '最近播放', icon: Clock },
     { id: '/netease-cloud', label: '官方云盘', icon: Database },
     { id: '/downloads', label: '下载', icon: Download },
+    { id: '/smart-edu', label: '智慧教材', icon: GraduationCap },
     { id: '/settings', label: '设置', icon: Settings },
 ]
+
+// ===== 隐藏分区（设置页勾选，事件即时生效；"设置"不可隐藏） =====
+const hiddenSections = ref(JSON.parse(localStorage.getItem('hidden_sections') || '[]'))
+const sectionVisible = (id) => !hiddenSections.value.includes(id)
+window.addEventListener('sections-changed', () => {
+    hiddenSections.value = JSON.parse(localStorage.getItem('hidden_sections') || '[]')
+})
+const visibleNavItems = computed(() =>
+    (platformStore.isQQ ? qqNavItems : platformStore.isKugou ? kugouNavItems : neteaseNavItems).filter(i => sectionVisible(i.id))
+)
+const visibleVideoChildren = computed(() => videoChildren.filter(i => sectionVisible(i.id)))
+const visibleLibraryItems = computed(() =>
+    libraryNavItems.filter(i => (i.id !== '/netease-cloud' || platformStore.isNetease) && sectionVisible(i.id))
+)
 
 const toggleSongDetailOverlay = () => {
   if (playerStore.currentSong.id) {
@@ -789,6 +846,14 @@ const requireLockForPlaylist = async (id) => {
     if (userStore.lockStatus.checked && userStore.lockStatus.locked && !userStore.lockStatus.unlocked) {
         pendingProtectedPath.value = `/playlist/${id}`
         showLockModal.value = true
+        // 后台复核最新锁状态：云端密码锁可能已被移除（如云音乐账号被删），
+        // 若服务端已无锁，自动关掉弹窗直接进入歌单，避免永远卡在"上锁"
+        userStore.checkLockStatus().then(() => {
+            if (showLockModal.value && (!userStore.lockStatus.locked || userStore.lockStatus.unlocked)) {
+                showLockModal.value = false
+                onLockVerified()
+            }
+        }).catch(() => {})
         return
     }
 
@@ -1038,8 +1103,9 @@ const openGithub = () => {
       <MvPlayer />
 
       <!-- Custom Create Playlist Modal -->
+    <Transition name="modal-pop">
     <div class="modal-overlay" v-if="showCreatePlaylist" @click="showCreatePlaylist = false">
-        <div class="custom-modal" @click.stop>
+        <div class="custom-modal modal-panel" @click.stop>
             <div class="modal-header">
                 <h3>新建歌单</h3>
                 <X class="clickable" :size="20" @click="showCreatePlaylist = false" />
@@ -1063,10 +1129,12 @@ const openGithub = () => {
             </div>
         </div>
 </div>
+    </Transition>
 
     <!-- QQ Cookie 查看弹窗(可复制) -->
+    <Transition name="modal-pop">
     <div v-if="showCookieModal" class="modal-overlay" @click.self="showCookieModal = false">
-        <div class="custom-modal" @click.stop>
+        <div class="custom-modal modal-panel" @click.stop>
             <div class="modal-header">
                 <h3>{{ platformStore.isKugou ? '酷狗 Token' : 'QQ 音乐 Cookie' }}</h3>
                 <X class="clickable" :size="20" @click="showCookieModal = false" />
@@ -1087,10 +1155,12 @@ const openGithub = () => {
             </div>
         </div>
     </div>
+    </Transition>
 
     <!-- 酷狗概念版领取 VIP 弹窗 -->
+    <Transition name="modal-pop">
     <div v-if="showYouthVipModal" class="modal-overlay" @click.self="showYouthVipModal = false">
-        <div class="custom-modal youth-vip-modal" @click.stop>
+        <div class="custom-modal youth-vip-modal modal-panel" @click.stop>
             <div class="modal-header">
                 <h3>领取酷狗概念版 VIP</h3>
                 <X class="clickable" :size="20" @click="showYouthVipModal = false" />
@@ -1127,6 +1197,7 @@ const openGithub = () => {
             </div>
         </div>
     </div>
+    </Transition>
 
 <header class="header" v-show="!playerStore.showSongDetail && !playerStore.showMvPlayer">
         <div class="header-left no-drag">
@@ -1303,11 +1374,17 @@ const openGithub = () => {
 
     <div class="main-layout">
       <aside class="sidebar">
-        <div class="sidebar-scroll-container">
+        <div class="sidebar-scroll-container" ref="sidebarContainerRef">
+            <!-- 滑动指示条：单条竖线平滑滑动到当前激活菜单项 -->
+            <div
+                class="sidebar-indicator"
+                :class="{ ready: indicatorReady, visible: indicatorVisible }"
+                :style="{ transform: `translateY(${indicatorY}px)`, height: indicatorH + 'px' }"
+            ></div>
             <!-- Navigation：根据平台动态显示 -->
             <div class="sidebar-section">
               <div
-                v-for="item in (platformStore.isQQ ? qqNavItems : platformStore.isKugou ? kugouNavItems : neteaseNavItems)"
+                v-for="item in visibleNavItems"
                 :key="item.id"
                 class="menu-item"
                 :class="{ active: (item.id === '/qq' || item.id === '/kugou' || item.id === '/') ? route.path === item.id : route.path.startsWith(item.id) }"
@@ -1319,6 +1396,7 @@ const openGithub = () => {
 
               <!-- 视频：下拉分组（动漫区/影视区），默认折叠 -->
               <div
+                v-if="visibleVideoChildren.length"
                 class="menu-item video-group-item"
                 :class="{ active: isVideoRoute }"
                 @click="videoGroupOpen = !videoGroupOpen"
@@ -1330,7 +1408,7 @@ const openGithub = () => {
               <Transition name="video-sub">
                 <div v-if="videoGroupOpen" class="video-sub-group">
                   <div
-                    v-for="child in videoChildren"
+                    v-for="child in visibleVideoChildren"
                     :key="child.id"
                     class="menu-item video-sub-item"
                     :class="{ active: route.path.startsWith(child.id) }"
@@ -1347,7 +1425,7 @@ const openGithub = () => {
             <div class="sidebar-label">我的音乐</div>
             <div class="sidebar-section">
               <div
-                v-for="item in libraryNavItems.filter(i => !(i.id === '/netease-cloud' && !platformStore.isNetease))"
+                v-for="item in visibleLibraryItems"
                 :key="item.id"
                 class="menu-item"
                 :class="{ active: route.path === item.id }"
@@ -1410,28 +1488,30 @@ const openGithub = () => {
                 <template v-if="kugouUserStore.isLoggedIn">
                     <!-- 我创建的歌单（含"我喜欢"） -->
                     <div class="sidebar-label clickable" @click="kugouCreatedCollapsed = !kugouCreatedCollapsed">
-                        <ChevronRight v-if="kugouCreatedCollapsed" :size="12" />
-                        <ChevronDown v-else :size="12" />
+                        <ChevronDown :size="12" class="collapse-chevron" :class="{ collapsed: kugouCreatedCollapsed }" />
                         <span>我创建的歌单</span>
                         <Plus :size="14" class="sidebar-add-btn" title="新建歌单" @click.stop="kugouShowCreatePlaylist = true" />
                     </div>
-                    <div v-if="!kugouCreatedCollapsed" class="sidebar-section">
-                        <div
-                            v-for="p in kugouCreatedPlaylists"
-                            :key="p.id"
-                            class="menu-item playlist-item"
-                            :class="{ active: p.id === kugouUserStore.likedPlaylistId ? route.path === '/kugou/liked' : route.path === `/kugou/playlist/${p.id}` }"
-                            @click="navigateTo(p.id === kugouUserStore.likedPlaylistId ? '/kugou/liked' : `/kugou/playlist/${p.id}`)"
-                        >
-                            <Heart v-if="p.id === kugouUserStore.likedPlaylistId" :size="16" :fill="'#EC4141'" :color="'#EC4141'" />
-                            <ListMusic v-else :size="16" />
-                            <span class="menu-label truncate">{{ p.name }}</span>
+                    <div class="collapse-wrap" :class="{ collapsed: kugouCreatedCollapsed }">
+                        <div class="collapse-inner">
+                            <div class="sidebar-section">
+                                <div
+                                    v-for="p in kugouCreatedPlaylists"
+                                    :key="p.id"
+                                    class="menu-item playlist-item"
+                                    :class="{ active: p.id === kugouUserStore.likedPlaylistId ? route.path === '/kugou/liked' : route.path === `/kugou/playlist/${p.id}` }"
+                                    @click="navigateTo(p.id === kugouUserStore.likedPlaylistId ? '/kugou/liked' : `/kugou/playlist/${p.id}`)"
+                                >
+                                    <Heart v-if="p.id === kugouUserStore.likedPlaylistId" :size="16" :fill="'#EC4141'" :color="'#EC4141'" />
+                                    <ListMusic v-else :size="16" />
+                                    <span class="menu-label truncate">{{ p.name }}</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <!-- 我收藏的歌单 -->
                     <div v-if="kugouCollectedPlaylists.length" class="sidebar-label clickable" @click="kugouCollectedCollapsed = !kugouCollectedCollapsed">
-                        <ChevronRight v-if="kugouCollectedCollapsed" :size="12" />
-                        <ChevronDown v-else :size="12" />
+                        <ChevronDown :size="12" class="collapse-chevron" :class="{ collapsed: kugouCollectedCollapsed }" />
                         <span>我收藏的歌单</span>
                         <Trash2
                             v-if="!kugouCollectedCollapsed"
@@ -1442,34 +1522,42 @@ const openGithub = () => {
                         />
                     </div>
                     <!-- 批量操作栏 -->
-                    <div v-if="!kugouCollectedCollapsed && kugouPlaylistBatchMode && kugouCollectedPlaylists.length" class="kugou-sidebar-batch-bar">
-                        <div class="kugou-sidebar-batch-select-all" @click="kugouSelectAllPlaylists">
-                            <CheckSquare v-if="kugouIsAllPlaylistsSelected" :size="14" class="kugou-check-icon active" />
-                            <Square v-else :size="14" class="kugou-check-icon" />
-                            <span>全选</span>
+                    <div class="collapse-wrap" :class="{ collapsed: kugouCollectedCollapsed || !kugouPlaylistBatchMode || !kugouCollectedPlaylists.length }">
+                        <div class="collapse-inner">
+                            <div v-if="kugouPlaylistBatchMode && kugouCollectedPlaylists.length" class="kugou-sidebar-batch-bar">
+                                <div class="kugou-sidebar-batch-select-all" @click="kugouSelectAllPlaylists">
+                                    <CheckSquare v-if="kugouIsAllPlaylistsSelected" :size="14" class="kugou-check-icon active" />
+                                    <Square v-else :size="14" class="kugou-check-icon" />
+                                    <span>全选</span>
+                                </div>
+                                <button
+                                    class="kugou-sidebar-batch-delete-btn"
+                                    @click="kugouShowBatchConfirm = true"
+                                    :disabled="!kugouSelectedPlaylistIds.length || kugouBatchDeleting"
+                                >
+                                    {{ kugouBatchDeleting ? '删除中...' : `取消收藏(${kugouSelectedPlaylistIds.length})` }}
+                                </button>
+                            </div>
                         </div>
-                        <button
-                            class="kugou-sidebar-batch-delete-btn"
-                            @click="kugouShowBatchConfirm = true"
-                            :disabled="!kugouSelectedPlaylistIds.length || kugouBatchDeleting"
-                        >
-                            {{ kugouBatchDeleting ? '删除中...' : `取消收藏(${kugouSelectedPlaylistIds.length})` }}
-                        </button>
                     </div>
-                    <div v-if="!kugouCollectedCollapsed && kugouCollectedPlaylists.length" class="sidebar-section">
-                        <div
-                            v-for="p in kugouCollectedPlaylists"
-                            :key="p.id"
-                            class="menu-item playlist-item"
-                            :class="{ active: !kugouPlaylistBatchMode && route.path === `/kugou/playlist/${p.id}` }"
-                            @click="kugouPlaylistBatchMode ? kugouTogglePlaylistSelect(p.id) : navigateTo(`/kugou/playlist/${p.id}`)"
-                        >
-                            <template v-if="kugouPlaylistBatchMode">
-                                <CheckSquare v-if="kugouIsPlaylistSelected(p.id)" :size="16" class="kugou-check-icon active" />
-                                <Square v-else :size="16" class="kugou-check-icon" />
-                            </template>
-                            <ListMusic v-else :size="16" />
-                            <span class="menu-label truncate">{{ p.name }}</span>
+                    <div v-if="kugouCollectedPlaylists.length" class="collapse-wrap" :class="{ collapsed: kugouCollectedCollapsed }">
+                        <div class="collapse-inner">
+                            <div class="sidebar-section">
+                                <div
+                                    v-for="p in kugouCollectedPlaylists"
+                                    :key="p.id"
+                                    class="menu-item playlist-item"
+                                    :class="{ active: !kugouPlaylistBatchMode && route.path === `/kugou/playlist/${p.id}` }"
+                                    @click="kugouPlaylistBatchMode ? kugouTogglePlaylistSelect(p.id) : navigateTo(`/kugou/playlist/${p.id}`)"
+                                >
+                                    <template v-if="kugouPlaylistBatchMode">
+                                        <CheckSquare v-if="kugouIsPlaylistSelected(p.id)" :size="16" class="kugou-check-icon active" />
+                                        <Square v-else :size="16" class="kugou-check-icon" />
+                                    </template>
+                                    <ListMusic v-else :size="16" />
+                                    <span class="menu-label truncate">{{ p.name }}</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </template>
@@ -1482,9 +1570,14 @@ const openGithub = () => {
               key 必须放在 component 上（不能放 router-view 上）：key 放 router-view 会在每次
               路由切换时重建整个 RouterView 子树，keep-alive 的缓存随之销毁，列表页无法被缓存 -->
          <router-view v-slot="{ Component }">
-            <keep-alive include="BilibiliVideo">
-               <component :is="Component" :key="$route.name" />
-            </keep-alive>
+            <!-- 并行过渡（不用 out-in）：out-in 要求旧页退场完再进新页，
+                 与懒加载路由 + keep-alive 组合存在"进场被丢弃"的白屏陷阱；
+                 并行模式新页立即插入，旧页绝对定位浮在上方 90ms 淡出，无时序依赖 -->
+            <Transition name="page-fade" appear>
+               <keep-alive include="BilibiliVideo">
+                  <component :is="Component" :key="$route.name" />
+               </keep-alive>
+            </Transition>
          </router-view>
       </div>
     </div>
@@ -1563,6 +1656,7 @@ const openGithub = () => {
             <div class="quality-badge clickable" @click="showSpeedMenu = !showSpeedMenu">
                 {{ playerStore.playbackRate }}x
             </div>
+            <Transition name="menu-fade">
             <div v-if="showSpeedMenu" class="quality-menu no-drag">
                 <div v-for="s in [0.5,0.75,1,1.25,1.5,2]" :key="s"
                     class="quality-option" :class="{ active: playerStore.playbackRate === s }"
@@ -1571,6 +1665,7 @@ const openGithub = () => {
                     <Check v-if="playerStore.playbackRate === s" :size="14" />
                 </div>
             </div>
+            </Transition>
         </div>
 
         <div class="quality-selector-container">
@@ -1578,6 +1673,7 @@ const openGithub = () => {
                 {{ qualityBadgeLabel }}
             </div>
 
+            <Transition name="menu-fade">
             <div v-if="showQualityMenu" class="quality-menu no-drag">
                 <div
                     v-for="(label, key) in qualityLabels"
@@ -1590,6 +1686,7 @@ const openGithub = () => {
                     <Check v-if="playerStore.quality === key" :size="14" />
                 </div>
             </div>
+            </Transition>
         </div>
 
         <ListMusic :size="18" class="clickable hover-red" @click="playerStore.showPlaylist = !playerStore.showPlaylist" />
@@ -1861,6 +1958,7 @@ const openGithub = () => {
     min-height: 0;
     display: flex;
     flex-direction: column;
+    position: relative; /* 路由过渡时旧页绝对定位的基准 */
 }
 
 .user-dropdown {
@@ -1994,6 +2092,13 @@ const openGithub = () => {
 }
 .sidebar-label.clickable:hover { color: #666; }
 .sidebar-label.clickable svg { flex-shrink: 0; }
+/* 分组折叠箭头：展开/收起时平滑旋转（替代 ChevronRight/ChevronDown 硬切换） */
+.collapse-chevron {
+    transition: transform 0.25s ease;
+}
+.collapse-chevron.collapsed {
+    transform: rotate(-90deg);
+}
 .sidebar-add-btn {
     margin-left: auto;
     opacity: 0.5;
@@ -2025,10 +2130,11 @@ const openGithub = () => {
 .kugou-sidebar-batch-delete-btn:hover:not(:disabled) { opacity: 0.85; }
 .kugou-sidebar-batch-delete-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .kugou-check-icon {
-    color: #ccc;
-    transition: color 0.2s;
+    color: var(--text-light);
+    transition: color 0.15s;
     flex-shrink: 0;
 }
+.kugou-check-icon:hover { color: var(--text-secondary); }
 .kugou-check-icon.active {
     color: var(--primary-color, #2CA2F5);
 }
@@ -2294,7 +2400,26 @@ const openGithub = () => {
     flex: 1;
     overflow-y: auto;
     padding-bottom: 20px;
+    position: relative; /* 滑动指示条的定位基准 */
 }
+
+/* 滑动指示条：替代每个菜单项各自的 ::before 竖条，
+   切换菜单时平滑"滑"到新的激活项位置（transform/height 过渡） */
+.sidebar-indicator {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 4px;
+    border-radius: 0 3px 3px 0;
+    background-color: var(--primary-color);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 1;
+}
+.sidebar-indicator.ready {
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), height 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
+}
+.sidebar-indicator.visible { opacity: 1; }
 
 /* Sidebar item layout fix */
 .menu-item {

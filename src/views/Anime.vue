@@ -6,6 +6,7 @@ import { useMessageStore } from '../store/message'
 import { useAnimeStore } from '../store/anime'
 import { useSearchHistoryStore } from '../store/searchHistory'
 import SearchSuggest from '../components/SearchSuggest.vue'
+import BiliCookieLogin from '../components/BiliCookieLogin.vue'
 import { Search, Loader2, Film, Tv, ChevronLeft, ChevronRight, Sparkles, Flame, TrendingUp, Clock, RefreshCw, Heart, Trash2, X, MonitorPlay, Check, LogOut } from 'lucide-vue-next'
 import './anime-common.css'
 
@@ -663,9 +664,10 @@ onUnmounted(() => {
                     <div class="results-info">共 {{ searchResults.length }} 条结果，第 {{ currentPage }} / {{ totalPages }} 页</div>
                     <div class="anime-grid">
                         <div
-                            v-for="item in pagedSearchResults"
+                            v-for="(item, idx) in pagedSearchResults"
                             :key="`${item.source}-${item.id}`"
                             class="anime-card"
+                            v-reveal="(idx % 12) * 35"
                             @click="openDetail(item)"
                         >
                             <div class="cover-wrapper">
@@ -899,6 +901,7 @@ onUnmounted(() => {
                             <p v-if="biliTvQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码完成 TV 端登录</p>
                             <p v-else-if="biliTvQrStatus === 'scanned'">等待确认中...</p>
                             <p class="bili-qr-benefit">登录后解锁 1080P+/大会员档，未登录封顶 720P</p>
+                            <BiliCookieLogin mode="tv" @success="loadBiliTvStatus()" />
                         </div>
                     </div>
                 </div>

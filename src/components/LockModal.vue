@@ -31,26 +31,28 @@ const handleVerify = async () => {
 </script>
 
 <template>
-  <div class="lock-modal-overlay" v-if="show" @click.self="emit('close')">
-    <div class="lock-modal">
-      <div class="header">
-        <Shield :size="22" />
-        <span>访问受保护内容</span>
-        <X class="close-btn" :size="20" @click="emit('close')" />
-      </div>
-
-      <div class="body">
-        <p class="tip">该账号已开启密码保护，请输入密码后继续。<br>如未设置或忘记密码，请登录后端网站管理。</p>
-        <div class="input-item">
-          <Lock :size="16" />
-          <input type="password" v-model="password" placeholder="请输入密码" @keyup.enter="handleVerify" />
+  <Transition name="modal-pop">
+    <div class="lock-modal-overlay" v-if="show" @click.self="emit('close')">
+      <div class="lock-modal modal-panel">
+        <div class="header">
+          <Shield :size="22" />
+          <span>访问受保护内容</span>
+          <X class="close-btn" :size="20" @click="emit('close')" />
         </div>
-        <button class="primary-btn" :disabled="loading" @click="handleVerify">
-          {{ loading ? '验证中...' : '解锁' }}
-        </button>
+
+        <div class="body">
+          <p class="tip">该账号已开启密码保护，请输入密码后继续。<br>如未设置或忘记密码，请登录后端网站管理。</p>
+          <div class="input-item">
+            <Lock :size="16" />
+            <input type="password" v-model="password" placeholder="请输入密码" @keyup.enter="handleVerify" />
+          </div>
+          <button class="primary-btn" :disabled="loading" @click="handleVerify">
+            {{ loading ? '验证中...' : '解锁' }}
+          </button>
+        </div>
       </div>
     </div>
-  </div>
+  </Transition>
 </template>
 
 <style scoped>

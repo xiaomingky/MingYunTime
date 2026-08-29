@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch , nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { biliVideoUserSpace, biliVideoUserSeasons, biliVideoSeasonArchives } from '../api'
 import { useMessageStore } from '../store/message'
@@ -91,8 +91,10 @@ const SEASON_PAGE_SIZE = 12
 const seasons = ref([])
 const seasonLoading = ref(false)
 const seasonListPage = ref(1)
-const seasonTotalPages = computed(() => Math.max(1, Math.ceil(seasons.value.length / SEASON_PAGE_SIZE)))
-const pagedSeasons = computed(() => seasons.value.slice((seasonListPage.value - 1) * SEASON_PAGE_SIZE, seasonListPage.value * SEASON_PAGE_SIZE))
+// 每页数量 = 容器一行能放下的卡片数（动态测量），超过一行即翻页，无横向滚动条
+const seasonCols = ref(5)
+const seasonTotalPages = computed(() => Math.max(1, Math.ceil(seasons.value.length / seasonCols.value)))
+const pagedSeasons = computed(() => seasons.value.slice((seasonListPage.value - 1) * seasonCols.value, seasonListPage.value * seasonCols.value))
 // 页码条：页数多时只显示前几个 + 省略号 + 末尾页，保证一行不溢出（-1 为省略号标记）
 const SEASON_PAGE_HEAD = 3
 const seasonPageItems = computed(() => {
@@ -210,14 +212,26 @@ watch(mid, () => {
                 <div v-else class="us-avatar us-avatar-placeholder"><Users :size="36" /></div>
                 <div class="us-user-info">
                     <div class="us-name-row">
-                        <span class="us-name">{{ user.name }}</span>
-                        <span v-if="user.vip" class="us-vip-badge" title="大会员">
-                            <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor"><path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 14.4l-4.8 2.5.9-5.4L4.2 7.7l5.4-.8L12 2z"/></svg>
-                        </span>
+                        <span class="us-name" :class="{ vip: user.vip }">{{ user.name }}</span>
+                        <img
+                            v-if="user.vip"
+                            class="us-vip-badge"
+                            :class="{ gray: user.vipType === 1 }"
+                            :src="user.vipLabel || 'https://i0.hdslb.com/bfs/vip/3788b674c69072f1ee252b79a31ecc8c43af3039.png'"
+                            :title="user.vipType === 2 ? '年度大会员' : '大会员'"
+                            alt=""
+                            referrerpolicy="no-referrer"
+                        />
                         <span v-if="user.official" class="us-official" title="官方认证">
                             <BadgeCheck :size="14" /> {{ user.official }}
                         </span>
-                        <span class="us-level" :class="'lv' + Math.min(user.level || 0, 6)">LV{{ user.level || 0 }}</span>
+                        <!-- 官方等级徽章：B站 user-profile 官方 SVG（level_0~6.svg；LV6 硬核会员用 level_h.svg 加强版） -->
+                        <img
+                            class="us-level-badge"
+                            :src="`https://i0.hdslb.com/bfs/seed/jinkela/short/webui/user-profile/img/level_${user.senior && user.level >= 6 ? 'h' : Math.min(user.level || 0, 6)}.svg`"
+                            alt=""
+                            referrerpolicy="no-referrer"
+                        />
                     </div>
                     <div class="us-stats">
                         <span class="us-stat"><Users :size="13" /> {{ fmtCount(user.fans) }} 粉丝</span>
@@ -235,7 +249,7 @@ watch(mid, () => {
             <div v-if="seasonLoading && !seasons.length" class="empty" style="padding: 16px 0">
                 <Loader2 :size="22" class="spin" /><p style="font-size: 12px">正在加载合集...</p>
             </div>
-            <div v-else class="us-season-row">
+            <div v-else ref="seasonRowRef" class="us-season-row">
                 <div v-for="s in pagedSeasons" :key="s.seasonId" class="us-season-card"
                      :class="{ active: activeSeason?.seasonId === s.seasonId }" @click="toggleSeason(s)">
                     <div class="us-season-cover">
@@ -276,7 +290,7 @@ watch(mid, () => {
                             <img v-if="item.cover && !isCoverFailed(item.cover)" :src="item.cover" alt="" referrerpolicy="no-referrer" @error="onCoverError(item.cover)" />
                             <div v-else class="cover-placeholder"><Clapperboard :size="32" /></div>
                             <span class="bili-duration">{{ fmtDuration(item.duration) }}</span>
-                            <span class="bili-play-stat"><BiliIcon name="play" :size="11" /> {{ fmtCount(item.play) }} <BiliIcon name="danmaku" :size="11" /> {{ fmtCount(item.danmaku) }}</span>
+                            <span class="bili-play-stat"><BiliIcon name="playcount" :size="12" /> {{ fmtCount(item.play) }} <BiliIcon name="danmcount" :size="12" /> {{ fmtCount(item.danmaku) }}</span>
                         </div>
                         <div class="bili-info">
                             <p class="bili-title" :title="item.title">{{ item.title }}</p>
@@ -309,7 +323,7 @@ watch(mid, () => {
                         <img v-if="item.cover && !isCoverFailed(item.cover)" :src="item.cover" alt="" referrerpolicy="no-referrer" @error="onCoverError(item.cover)" />
                         <div v-else class="cover-placeholder"><Clapperboard :size="32" /></div>
                         <span class="bili-duration">{{ fmtDuration(item.duration) }}</span>
-                        <span class="bili-play-stat"><BiliIcon name="play" :size="11" /> {{ fmtCount(item.play) }} <BiliIcon name="danmaku" :size="11" /> {{ fmtCount(item.danmaku) }}</span>
+                        <span class="bili-play-stat"><BiliIcon name="playcount" :size="12" /> {{ fmtCount(item.play) }} <BiliIcon name="danmcount" :size="12" /> {{ fmtCount(item.danmaku) }}</span>
                     </div>
                     <div class="bili-info">
                         <p class="bili-title" :title="item.title">{{ item.title }}</p>
@@ -344,8 +358,10 @@ watch(mid, () => {
     max-width: 1100px;
     margin: 0 auto;
     flex: 1;
+    min-width: 0;
     min-height: 0;
     overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .us-topbar {
@@ -418,6 +434,14 @@ watch(mid, () => {
 
 .us-user-info { min-width: 0; flex: 1; }
 
+.us-name.vip { color: #fb7299; }
+
+.us-vip-badge {
+    height: 16px;
+    width: auto;
+    flex-shrink: 0;
+}
+
 .us-name-row {
     display: flex;
     align-items: center;
@@ -431,11 +455,6 @@ watch(mid, () => {
     color: #222;
 }
 
-.us-vip-badge {
-    color: #fb7299;
-    display: inline-flex;
-    align-items: center;
-}
 
 .us-official {
     display: inline-flex;
@@ -448,22 +467,12 @@ watch(mid, () => {
     border-radius: 3px;
 }
 
-.us-level {
-    font-size: 10px;
-    font-weight: 600;
-    color: #fff;
-    background: #e0e0e0;
-    padding: 1px 6px;
-    border-radius: 3px;
-    line-height: 1.6;
+/* 官方等级徽章 SVG（30x30 视框中徽章带居中），对齐用户名行 */
+.us-level-badge {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
 }
-
-.us-level.lv1 { background: #78c4d4; }
-.us-level.lv2 { background: #7ecf56; }
-.us-level.lv3 { background: #61b251; }
-.us-level.lv4 { background: #2782cd; }
-.us-level.lv5 { background: #b472e8; }
-.us-level.lv6 { background: #e27615; }
 
 .us-stats {
     display: flex;
@@ -506,16 +515,13 @@ watch(mid, () => {
 
 /* 合集卡片（横滑一行，仿B站空间合集入口） */
 .us-season-row {
-    display: flex;
-    gap: 12px;
-    overflow-x: auto;
-    padding-bottom: 6px;
-    scrollbar-width: thin;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(170px, 100%), 1fr));
+    gap: 14px;
 }
 
 .us-season-card {
-    flex-shrink: 0;
-    width: 176px;
+    width: auto;
     background: none;
     border: none;
     padding: 0;
@@ -615,7 +621,7 @@ watch(mid, () => {
 
 .us-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(180px, 100%), 1fr));
     gap: 14px;
 }
 

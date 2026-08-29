@@ -6,7 +6,9 @@ import { useMessageStore } from '../store/message'
 import { useSearchHistoryStore } from '../store/searchHistory'
 import { useBiliTvLogin } from '../composables/useBiliTvLogin'
 import { useBiliWebLogin } from '../composables/useBiliWebLogin'
+import { useTabIndicator } from '../composables/useTabIndicator'
 import SearchSuggest from '../components/SearchSuggest.vue'
+import BiliCookieLogin from '../components/BiliCookieLogin.vue'
 import BiliIcon from '../components/BiliIcon.vue'
 import { Search, Loader2, Tv, Music, Gamepad2, BookOpen, Smartphone, Coffee, Dog, Wand2, Shirt, PartyPopper, Clapperboard, MonitorPlay, RefreshCw, X, Check, LogOut, Flame, TrendingUp, Play, MessageSquare, ChevronLeft, ChevronRight, Sparkles, Folder, Heart, Film, Star } from 'lucide-vue-next'
 import './anime-common.css'
@@ -100,6 +102,18 @@ function switchCat(cat) {
         page.value = 1
         exitSearch(false)
         loadFavFolders()
+        return
+    }
+    // 番剧/国创：PGC 目录接口已全部下架（ranking/timeline/season-index 实测均 -400），
+    // 改为搜索直达——自动切到"番剧"搜索类型，输入名称即可搜索
+    if (cat === '番剧' || cat === '国创') {
+        currentCat.value = cat
+        page.value = 1
+        searchType.value = 'bangumi'
+        searchMode.value = true
+        searchResults.value = []
+        searchHasMore.value = false
+        messageStore.info('番剧目录接口已下架：请直接搜索番剧名称', 3000)
         return
     }
     currentCat.value = cat
@@ -229,6 +243,9 @@ const searchResults = ref([])
 const searchPage = ref(1)
 const searchHasMore = ref(false)
 const showSearchSuggest = ref(false)
+// 分区导航滑动指示条：粉色药丸平滑滑到当前分区（搜索模式下隐藏）
+const regionNavRef = ref(null)
+const { indicatorStyle: regionIndicatorStyle, indicatorVisible: regionIndicatorVisible, indicatorReady: regionIndicatorReady } = useTabIndicator(regionNavRef, [currentCat, searchMode], '.region-tab')
 // 搜索类型：video 视频 / bangumi 番剧 / movie 影视（电影/纪录片等）
 const searchType = ref('video')
 const SEARCH_TYPES = [
@@ -477,7 +494,12 @@ onUnmounted(() => {
         </div>
 
         <!-- 分区导航（仿B站官方分区栏，末位为收藏夹入口） -->
-        <div class="region-nav">
+        <div class="region-nav" ref="regionNavRef">
+            <span
+                class="region-indicator"
+                :class="{ ready: regionIndicatorReady, visible: regionIndicatorVisible }"
+                :style="regionIndicatorStyle"
+            ></span>
             <button
                 v-for="cat in categories"
                 :key="cat.id"
@@ -536,10 +558,13 @@ onUnmounted(() => {
             <button v-if="searchMode" class="back-btn" @click="exitSearch()">返回首页</button>
         </div>
 
-        <!-- 加载中 -->
-        <div v-if="loading || searchLoading || (isFavCat && favLoading)" class="loading">
-            <Loader2 :size="36" class="spin" />
-            <p>加载中...</p>
+        <!-- 加载骨架屏：按封面卡片形状占位（16:9 封面 + 两行文字） -->
+        <div v-if="loading || searchLoading || (isFavCat && favLoading)" class="bili-skeleton-grid">
+            <div v-for="i in 12" :key="i" class="bili-skeleton-card">
+                <div class="skeleton-block bili-sk-cover"></div>
+                <div class="skeleton-block bili-sk-line"></div>
+                <div class="skeleton-block bili-sk-line short"></div>
+            </div>
         </div>
 
         <!-- 搜索结果模式 -->
@@ -548,9 +573,10 @@ onUnmounted(() => {
             <!-- PGC（番剧/影视）搜索结果卡片 -->
             <div class="bili-grid" v-if="isPgcSearch && searchResults.length">
                 <div
-                    v-for="item in searchResults"
+                    v-for="(item, idx) in searchResults"
                     :key="item.seasonId"
                     class="bili-card pgc"
+                    v-reveal="(idx % 12) * 35"
                     @click="openDetail(item)"
                 >
                     <div class="bili-cover">
@@ -572,16 +598,17 @@ onUnmounted(() => {
             <!-- 普通视频搜索结果 -->
             <div class="bili-grid" v-if="!isPgcSearch && searchResults.length">
                 <div
-                    v-for="item in searchResults"
+                    v-for="(item, idx) in searchResults"
                     :key="item.bvid"
                     class="bili-card"
+                    v-reveal="(idx % 12) * 35"
                     @click="openDetail(item)"
                 >
                     <div class="bili-cover">
                         <img v-if="item.cover && !isCoverFailed(item.cover)" :src="item.cover" alt="" referrerpolicy="no-referrer" @error="onCoverError(item.cover)" />
                         <div v-else class="cover-placeholder"><Clapperboard :size="32" /></div>
                         <span class="bili-duration">{{ fmtDuration(item.duration) }}</span>
-                        <span class="bili-play-stat"><BiliIcon name="play" :size="11" /> {{ fmtCount(item.play) }} <BiliIcon name="danmaku" :size="11" /> {{ fmtCount(item.danmaku) }}</span>
+                        <span class="bili-play-stat"><BiliIcon name="playcount" :size="12" /> {{ fmtCount(item.play) }} <BiliIcon name="danmcount" :size="12" /> {{ fmtCount(item.danmaku) }}</span>
                     </div>
                     <div class="bili-info">
                         <p class="bili-title" :title="item.title">{{ item.title }}</p>
@@ -624,16 +651,17 @@ onUnmounted(() => {
                     </div>
                     <div class="bili-grid" v-if="favList.length">
                         <div
-                            v-for="item in favList"
+                            v-for="(item, idx) in favList"
                             :key="item.id"
                             class="bili-card"
+                            v-reveal="(idx % 12) * 35"
                             @click="openDetail(item)"
                         >
                             <div class="bili-cover">
                                 <img v-if="item.cover && !isCoverFailed(item.cover)" :src="item.cover" alt="" referrerpolicy="no-referrer" @error="onCoverError(item.cover)" />
                                 <div v-else class="cover-placeholder"><Clapperboard :size="32" /></div>
                                 <span class="bili-duration">{{ fmtDuration(item.duration) }}</span>
-                                <span class="bili-play-stat"><Play :size="11" /> {{ item.upper }}</span>
+                                <span class="bili-play-stat"><BiliIcon name="up" :size="12" /> {{ item.upper }}</span>
                             </div>
                             <div class="bili-info">
                                 <p class="bili-title" :title="item.title">{{ item.title }}</p>
@@ -703,16 +731,17 @@ onUnmounted(() => {
                     </div>
                     <div class="bili-grid" v-if="homeData.list.length">
                         <div
-                            v-for="item in homeData.list"
+                            v-for="(item, idx) in homeData.list"
                             :key="item.bvid"
                             class="bili-card"
+                            v-reveal="(idx % 12) * 35"
                             @click="openDetail(item)"
                         >
                             <div class="bili-cover">
                                 <img v-if="item.cover && !isCoverFailed(item.cover)" :src="item.cover" alt="" referrerpolicy="no-referrer" @error="onCoverError(item.cover)" />
                                 <div v-else class="cover-placeholder"><Clapperboard :size="32" /></div>
                                 <span class="bili-duration">{{ fmtDuration(item.duration) }}</span>
-                                <span class="bili-play-stat"><BiliIcon name="play" :size="11" /> {{ fmtCount(item.play) }} <BiliIcon name="danmaku" :size="11" /> {{ fmtCount(item.danmaku) }}</span>
+                                <span class="bili-play-stat"><BiliIcon name="playcount" :size="12" /> {{ fmtCount(item.play) }} <BiliIcon name="danmcount" :size="12" /> {{ fmtCount(item.danmaku) }}</span>
                             </div>
                             <div class="bili-info">
                                 <p class="bili-title" :title="item.title">{{ item.title }}</p>
@@ -753,7 +782,7 @@ onUnmounted(() => {
                             <div v-else class="ranking-cover-wide ranking-cover-placeholder"><Clapperboard :size="20" /></div>
                             <div class="ranking-info">
                                 <p class="ranking-title" :title="item.title">{{ item.title }}</p>
-                                <p class="ranking-desc"><BiliIcon name="play" :size="11" /> {{ fmtCount(item.play) }} · <span class="ranking-author" :class="{ link: item.mid }" @click.stop="goUserSpace(item.mid || 0)">{{ item.author }}</span></p>
+                                <p class="ranking-desc"><BiliIcon name="playcount" :size="12" /> {{ fmtCount(item.play) }} · <span class="ranking-author" :class="{ link: item.mid }" @click.stop="goUserSpace(item.mid || 0)">{{ item.author }}</span></p>
                             </div>
                         </div>
                     </div>
@@ -793,6 +822,7 @@ onUnmounted(() => {
                             <p v-if="webQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码登录</p>
                             <p v-else-if="webQrStatus === 'scanned'">等待确认中...</p>
                             <p class="bili-qr-benefit">登录后可浏览收藏夹，搜索更稳定（与网址解析共用登录）</p>
+                            <BiliCookieLogin mode="web" @success="loadWebStatus()" />
                         </div>
                     </div>
                 </div>
@@ -831,6 +861,7 @@ onUnmounted(() => {
                             <p v-if="biliTvQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码完成 TV 端登录</p>
                             <p v-else-if="biliTvQrStatus === 'scanned'">等待确认中...</p>
                             <p class="bili-qr-benefit">登录后解锁 1080P+/大会员档，未登录封顶 720P</p>
+                            <BiliCookieLogin mode="tv" @success="loadBiliTvStatus()" />
                         </div>
                     </div>
                 </div>
@@ -860,7 +891,24 @@ onUnmounted(() => {
     padding: 8px 10px;
     margin-bottom: 16px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+    position: relative; /* 滑动指示条定位基准 */
 }
+
+/* 分区滑动指示条：B站粉药丸平滑滑到当前分区 */
+.region-indicator {
+    position: absolute;
+    left: 0;
+    top: 0;
+    background: #fb7299;
+    border-radius: 16px;
+    opacity: 0;
+    pointer-events: none;
+    z-index: 0;
+}
+.region-indicator.ready {
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1), width 0.28s cubic-bezier(0.4, 0, 0.2, 1), height 0.2s ease;
+}
+.region-indicator.visible { opacity: 1; }
 
 .region-tab {
     display: inline-flex;
@@ -874,10 +922,13 @@ onUnmounted(() => {
     font-size: 13px;
     color: #666;
     transition: all 0.2s;
+    position: relative;
+    z-index: 1;
 }
 
 .region-tab:hover { color: #fb7299; background: rgba(251, 114, 153, 0.08); }
-.region-tab.active { background: #fb7299; color: #fff; }
+/* 激活底色交给滑动指示条，文字保持白色浮在粉药丸上 */
+.region-tab.active { background: transparent; color: #fff; }
 
 /* 搜索按钮 B站粉 */
 .search-btn.bili-accent { background: #fb7299; }
@@ -907,6 +958,24 @@ onUnmounted(() => {
     grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
     gap: 16px 14px;
 }
+
+/* 骨架屏网格：与 bili-grid 同列宽，卡片为封面块 + 两行文字 */
+.bili-skeleton-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 16px 14px;
+}
+.bili-sk-cover {
+    width: 100%;
+    aspect-ratio: 16/9;
+    border-radius: 8px;
+}
+.bili-sk-line {
+    height: 13px;
+    margin-top: 9px;
+    border-radius: 4px;
+}
+.bili-sk-line.short { width: 55%; }
 
 .bili-card {
     cursor: pointer;

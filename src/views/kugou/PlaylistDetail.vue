@@ -459,7 +459,16 @@ onMounted(fetchDetail)
 
 <template>
     <div class="kugou-playlist-page">
-        <div v-if="loading" class="kugou-loading">加载中...</div>
+        <!-- 加载骨架屏：按歌曲行形状占位（封面块 + 两行文字） -->
+        <div v-if="loading" class="kugou-track-skeleton">
+            <div v-for="i in 9" :key="i" class="kugou-ts-row">
+                <div class="skeleton-block kts-cover"></div>
+                <div class="kugou-ts-lines">
+                    <div class="skeleton-block kts-line"></div>
+                    <div class="skeleton-block kts-line short"></div>
+                </div>
+            </div>
+        </div>
         <template v-else>
         <div class="kugou-playlist-header" v-if="detail">
             <img :src="detail.coverImgUrl" class="kugou-playlist-cover" />
@@ -667,6 +676,25 @@ onMounted(fetchDetail)
     padding: 80px 0;
     font-size: 14px;
 }
+
+/* 歌曲行骨架屏：封面块 + 两行文字，与歌曲列表行同节奏 */
+.kugou-track-skeleton { padding: 8px 0; }
+.kugou-ts-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 9px 6px;
+    border-bottom: 1px solid rgba(0,0,0,0.04);
+}
+.kts-cover {
+    width: 44px;
+    height: 44px;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+.kugou-ts-lines { flex: 1; min-width: 0; }
+.kts-line { height: 13px; }
+.kts-line.short { width: 45%; margin-top: 8px; }
 .kugou-playlist-header {
     display: flex;
     gap: 24px;
@@ -793,9 +821,10 @@ onMounted(fetchDetail)
     flex-shrink: 0; cursor: pointer;
 }
 .kugou-check-icon {
-    color: #ccc;
-    transition: color 0.2s;
+    color: var(--text-light);
+    transition: color 0.15s;
 }
+.kugou-check-icon:hover { color: var(--text-secondary); }
 .kugou-check-icon.active {
     color: var(--primary-color);
 }

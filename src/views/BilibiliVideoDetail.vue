@@ -6,10 +6,11 @@ import { useMessageStore } from '../store/message'
 import { useBiliTvLogin } from '../composables/useBiliTvLogin'
 import { useBiliWebLogin } from '../composables/useBiliWebLogin'
 import ArtVideoPlayer from '../components/ArtVideoPlayer.vue'
+import BiliCookieLogin from '../components/BiliCookieLogin.vue'
 import BiliIcon from '../components/BiliIcon.vue'
 import {
-    ChevronLeft, Loader2, Tv, Clapperboard, RefreshCw, Play, MessageSquare,
-    Users, MonitorPlay, LogOut, X, Check, ChevronDown,
+    ChevronLeft, Loader2, Tv, Clapperboard, RefreshCw,
+    Users, MonitorPlay, LogOut, X, Check, ChevronDown, ChevronUp, CheckSquare, Square, ZoomIn, ZoomOut, RotateCcw,
     MessageCircle, CornerDownRight, Download, Folder
 } from 'lucide-vue-next'
 
@@ -147,8 +148,9 @@ async function loadDetail() {
     biliCurrentQn.value = 0
     biliDanmaku.value = []
     descExpanded.value = false
-    // 重置评论区
+    // 重置评论区（含加载标志：换视频时若上一次加载仍挂起，避免新视频永远卡在"加载中"）
     comments.value = []
+    commentsLoading.value = false
     commentsTotal.value = 0
     commentsPage.value = 1
     commentsHasMore.value = false
@@ -378,6 +380,48 @@ function playNextEpisode() {
     if (idx >= 0 && idx < episodes.value.length - 1) playPage(episodes.value[idx + 1])
 }
 
+// ===== 续播记忆 key：普通视频按 bvid+分P cid，PGC 按季+epId =====
+const resumeKey = computed(() => {
+    if (isPgcMode.value) {
+        const ep = currentPgcEp.value
+        return ep ? `pgc:${routeSeasonId.value || season.value?.id || ''}:${ep.epId || ep.bvid || ''}` : ''
+    }
+    if (!video.value) return ''
+    return `bili:${video.value.bvid}:${currentEpisode.value?.cid || 'p1'}`
+})
+
+// ===== 自动连播：合集(ugc_season) / PGC 季 / 多P 播完自动下一集（默认开，可关并记忆） =====
+const autoNext = ref(localStorage.getItem('bili_autonext') !== 'false')
+function toggleAutoNext() {
+    autoNext.value = !autoNext.value
+    localStorage.setItem('bili_autonext', autoNext.value ? 'true' : 'false')
+    messageStore.info(autoNext.value ? '已开启自动连播' : '已关闭自动连播')
+}
+function onPlayEnded() {
+    if (!autoNext.value) return
+    if (isPgcMode.value) {
+        if (currentPgcEpIdx.value >= 0 && currentPgcEpIdx.value < seasonEps.value.length - 1) {
+            const next = seasonEps.value[currentPgcEpIdx.value + 1]
+            messageStore.info(`自动连播：第${next.title}话 ${next.longTitle || ''}`)
+            setTimeout(() => playPgcEpisode(next), 1200)
+        }
+        return
+    }
+    // 合集下一集优先，其次多P下一P
+    const sIdx = ugcSeasonCurrentIdx.value
+    if (sIdx >= 0 && sIdx < ugcSeasonEpisodes.value.length - 1) {
+        const next = ugcSeasonEpisodes.value[sIdx + 1]
+        messageStore.info(`自动连播：${next.title || '下一集'}`)
+        setTimeout(() => openUgcSeasonEpisode(next), 1200)
+        return
+    }
+    if (hasNextEpisode.value) {
+        const next = episodes.value[currentEpisodeIdx.value + 1]
+        messageStore.info(`自动连播：${next.title || '下一P'}`)
+        setTimeout(() => playNextEpisode(), 1200)
+    }
+}
+
 // ===== 相关推荐 =====
 const failedCovers = ref(new Set())
 function onCoverError(url) {
@@ -391,6 +435,7 @@ function openRelated(item) {
     if (!item?.bvid) return
     router.push(`/bilibili/${item.bvid}`)
 }
+
 
 // 进入 UP 主主页
 function goUserSpace(mid) {
@@ -621,6 +666,121 @@ async function handleShare() {
     }
 }
 
+// ===== 装扮牌图片：canvas 按 alpha 包围盒裁掉透明画布（官方素材为带大片透明的宽幅横牌） =====
+const sailingCropCache = new Map()
+function onSailingImgLoad(e) {
+    const el = e.target
+    const original = el.src
+    if (!original || el.src.startsWith('data:')) return
+    const cached = sailingCropCache.get(original)
+    if (cached) { el.src = cached; return }
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+        try {
+            const c = document.createElement('canvas')
+            c.width = img.naturalWidth
+            c.height = img.naturalHeight
+            const ctx = c.getContext('2d')
+            ctx.drawImage(img, 0, 0)
+            const data = ctx.getImageData(0, 0, c.width, c.height).data
+            let minX = c.width, minY = c.height, maxX = -1, maxY = -1
+            for (let y = 0; y < c.height; y++) {
+                for (let x = 0; x < c.width; x++) {
+                    if (data[(y * c.width + x) * 4 + 3] > 8) {
+                        if (x < minX) minX = x
+                        if (x > maxX) maxX = x
+                        if (y < minY) minY = y
+                        if (y > maxY) maxY = y
+                    }
+                }
+            }
+            if (maxX < 0) return
+            const pad = 3
+            minX = Math.max(0, minX - pad)
+            minY = Math.max(0, minY - pad)
+            const w = Math.min(c.width - minX, maxX - minX + 1 + pad * 2)
+            const h = Math.min(c.height - minY, maxY - minY + 1 + pad * 2)
+            const c2 = document.createElement('canvas')
+            c2.width = w
+            c2.height = h
+            c2.getContext('2d').drawImage(img, minX, minY, w, h, 0, 0, w, h)
+            const out = c2.toDataURL('image/png')
+            sailingCropCache.set(original, out)
+            el.src = out
+        } catch (err) { /* 画布污染等失败时保留原图 */ }
+    }
+    img.src = original
+}
+
+// ===== 图片评论预览灯箱：滚轮/按钮缩放 + 左键拖动平移 + 下载 =====
+const imgPreview = ref({ show: false, url: '', scale: 1, x: 0, y: 0 })
+let previewDrag = null
+function openImgPreview(url) {
+    imgPreview.value = { show: true, url, scale: 1, x: 0, y: 0 }
+}
+function closeImgPreview() { imgPreview.value.show = false }
+function previewZoom(factor) {
+    imgPreview.value.scale = Math.min(8, Math.max(0.25, imgPreview.value.scale * factor))
+}
+function onPreviewWheel(e) { previewZoom(e.deltaY < 0 ? 1.15 : 0.87) }
+function resetImgPreview() {
+    imgPreview.value.scale = 1
+    imgPreview.value.x = 0
+    imgPreview.value.y = 0
+}
+function onPreviewDragStart(e) {
+    previewDrag = { sx: e.clientX, sy: e.clientY, ox: imgPreview.value.x, oy: imgPreview.value.y }
+    window.addEventListener('mousemove', onPreviewDragMove)
+    window.addEventListener('mouseup', onPreviewDragEnd)
+}
+function onPreviewDragMove(e) {
+    if (!previewDrag) return
+    imgPreview.value.x = previewDrag.ox + (e.clientX - previewDrag.sx)
+    imgPreview.value.y = previewDrag.oy + (e.clientY - previewDrag.sy)
+}
+function onPreviewDragEnd() {
+    previewDrag = null
+    window.removeEventListener('mousemove', onPreviewDragMove)
+    window.removeEventListener('mouseup', onPreviewDragEnd)
+}
+function onPreviewKeydown(e) { if (e.key === 'Escape') closeImgPreview() }
+// 下载原图：直接走应用统一下载管理器（下载页"文档"分类，不弹位置选择）
+async function downloadCommentImage(url) {
+    try {
+        const { downloadStart } = await import('../api')
+        await downloadStart({
+            url,
+            name: 'bilibili评论图片_' + Date.now() + '.png',
+            category: 'document'
+        })
+        messageStore.success('图片已加入下载列表')
+    } catch (e) {
+        messageStore.error('图片下载失败：' + (e.message || '未知错误'))
+    }
+}
+
+// ===== 回到评论区顶部（滚过评论区后出现，sticky 悬浮右下角） =====
+const detailViewRef = ref(null)
+const commentsPanelRef = ref(null)
+const showCommentBackTop = ref(false)
+function onDetailScroll() {
+    const el = detailViewRef.value
+    const cp = commentsPanelRef.value
+    showCommentBackTop.value = !!(el && cp && el.scrollTop > cp.offsetTop + 240)
+}
+function backToCommentsTop() {
+    const el = detailViewRef.value
+    const cp = commentsPanelRef.value
+    if (el && cp) el.scrollTo({ top: Math.max(cp.offsetTop - 8, 0), behavior: 'smooth' })
+}
+
+// 打开评论图片原图（走 open-external 通道交给系统浏览器/看图工具）
+function openCommentPicture(url) {
+    const b = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
+    if (b?.send) b.send('open-external', url)
+}
+
 // ===== 评论区（游客可读，加载不阻塞播放）=====
 const comments = ref([])
 const commentsTotal = ref(0)
@@ -653,8 +813,12 @@ async function loadComments(aid, reset = true) {
         } else if (reset) {
             comments.value = []
             commentsTotal.value = 0
+            // 首屏失败给出原因（风控/登录态等），不再静默成"永远加载中"
+            if (res && res.message) messageStore.warning(`评论加载失败：${res.message}`)
         }
-    } catch (e) { /* 评论加载失败不影响播放 */ }
+    } catch (e) {
+        if (reset) messageStore.warning(`评论加载失败：${e.message || '网络错误'}`)
+    }
     finally { commentsLoading.value = false }
 }
 
@@ -773,6 +937,7 @@ onMounted(() => {
     loadDetail()
     loadBiliTvStatus()
     loadWebStatus()
+    window.addEventListener('keydown', onPreviewKeydown)
 })
 
 // 路由参数变化时重新加载（相关推荐跳转 / 季详情跳季）
@@ -782,7 +947,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
 </script>
 
 <template>
-    <div class="bili-detail-view">
+    <div ref="detailViewRef" class="bili-detail-view" @scroll="onDetailScroll">
         <!-- 顶部栏 -->
         <div class="top-bar">
             <button class="icon-btn" @click="goBack" title="返回">
@@ -874,7 +1039,9 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                         :current-episode="isPgcMode ? currentPgcEpisodeForPlayer : currentEpisode"
                         :has-prev="isPgcMode ? currentPgcEpIdx > 0 : hasPrevEpisode"
                         :has-next="isPgcMode ? currentPgcEpIdx >= 0 && currentPgcEpIdx < seasonEps.length - 1 : hasNextEpisode"
+                        :resume-key="resumeKey"
                         @retry="replayCurrent"
+                        @ended="onPlayEnded"
                         @prev="isPgcMode ? playPrevPgcEp() : playPrevEpisode()"
                         @next="isPgcMode ? playNextPgcEp() : playNextEpisode()"
                         @selectEpisode="onSelectEpisode"
@@ -905,8 +1072,8 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                     </div>
                     <!-- 数据行（B站官方：播放/弹幕/追番/评分，右侧下载/分享） -->
                     <div class="stat-row">
-                        <span class="stat-item"><BiliIcon name="play" :size="16" /> {{ fmtCount(season.stat.view) }}</span>
-                        <span class="stat-item"><BiliIcon name="danmaku" :size="16" /> {{ fmtCount(season.stat.danmaku) }}</span>
+                        <span class="stat-item"><BiliIcon name="playcount" :size="16" /> {{ fmtCount(season.stat.view) }}</span>
+                        <span class="stat-item"><BiliIcon name="danmcount" :size="16" /> {{ fmtCount(season.stat.danmaku) }}</span>
                         <span class="stat-item time">{{ season.newEpDesc }}</span>
                         <span v-if="season.rating" class="stat-item rating" title="B站评分">评分 {{ season.rating.toFixed(1) }}</span>
                         <span class="stat-actions">
@@ -973,8 +1140,8 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                     <h1 class="video-title">{{ video.title }}</h1>
                     <!-- 数据行（B站官方：播放/弹幕 + 时间，右侧下载/分享） -->
                     <div class="stat-row">
-                        <span class="stat-item"><BiliIcon name="play" :size="16" /> {{ fmtCount(video.stat.view) }}</span>
-                        <span class="stat-item"><BiliIcon name="danmaku" :size="16" /> {{ fmtCount(video.stat.danmaku) }}</span>
+                        <span class="stat-item"><BiliIcon name="playcount" :size="16" /> {{ fmtCount(video.stat.view) }}</span>
+                        <span class="stat-item"><BiliIcon name="danmcount" :size="16" /> {{ fmtCount(video.stat.danmaku) }}</span>
                         <span class="stat-item time">{{ fmtDate(video.pubdate) }}</span>
                         <span class="stat-item time">时长 {{ fmtDuration(video.duration) }}</span>
                         <span class="stat-actions">
@@ -1049,6 +1216,11 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                             <Folder :size="14" style="vertical-align: -2px; margin-right: 4px" />
                             合集 {{ ugcSeason.title ? `「${ugcSeason.title}」` : '' }}（{{ ugcSeasonEpisodes.length }} 集，当前第 {{ ugcSeasonCurrentIdx >= 0 ? ugcSeasonCurrentIdx + 1 : '?' }} 集）
                         </span>
+                        <label class="autonext-toggle" title="播完自动播放下一集" @click.prevent="toggleAutoNext">
+                            <CheckSquare v-if="autoNext" :size="15" class="check-icon active" />
+                            <Square v-else :size="15" class="check-icon" />
+                            <span>自动连播</span>
+                        </label>
                     </div>
                     <div class="pages-grid season-grid">
                         <button
@@ -1072,6 +1244,11 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                             <Folder :size="14" style="vertical-align: -2px; margin-right: 4px" />
                             选集（{{ seasonEps.length }} 集，当前第 {{ currentPgcEpIdx >= 0 ? currentPgcEpIdx + 1 : '?' }} 集）
                         </span>
+                        <label class="autonext-toggle" title="播完自动播放下一话" @click.prevent="toggleAutoNext">
+                            <CheckSquare v-if="autoNext" :size="15" class="check-icon active" />
+                            <Square v-else :size="15" class="check-icon" />
+                            <span>自动连播</span>
+                        </label>
                     </div>
                     <div class="pgc-eps-grid">
                         <button
@@ -1097,6 +1274,11 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                 <div class="pages-panel" v-if="!isPgcMode && episodes.length > 1">
                     <div class="pages-header">
                         <span class="pages-title">分P列表 ({{ episodes.length }})</span>
+                        <label class="autonext-toggle" title="播完自动播放下一P" @click.prevent="toggleAutoNext">
+                            <CheckSquare v-if="autoNext" :size="15" class="check-icon active" />
+                            <Square v-else :size="15" class="check-icon" />
+                            <span>自动连播</span>
+                        </label>
                     </div>
                     <div class="pages-grid">
                         <button
@@ -1113,7 +1295,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                     </div>
                 </div>
                 <!-- 评论区 -->
-                <div class="comments-panel">
+                <div ref="commentsPanelRef" class="comments-panel">
                     <div class="pages-header">
                         <span class="pages-title">评论 <span class="comments-count">{{ commentsTotal ? fmtCount(commentsTotal) : comments.length }}</span></span>
                         <button
@@ -1141,26 +1323,53 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                                 <img
                                     v-if="c.avatar && !isAvatarFailed(c.avatar)"
                                     :src="c.avatar"
-                                    class="comment-avatar"
+                                    class="comment-avatar clickable-avatar"
                                     alt=""
+                                    title="进入主页"
                                     referrerpolicy="no-referrer"
+                                    @click="goUserSpace(c.mid)"
                                     @error="onAvatarError(c.avatar)"
                                 />
-                                <div v-else class="comment-avatar comment-avatar-placeholder"><Users :size="16" /></div>
-                                <div class="comment-main">
+                                <div v-else class="comment-avatar comment-avatar-placeholder clickable-avatar" title="进入主页" @click="goUserSpace(c.mid)"><Users :size="16" /></div>
+                                <div class="comment-main" :class="{ decorated: c.decorate }" :style="c.decorate ? { backgroundImage: `url(${c.decorate.bgUrl})` } : null">
                                     <div class="comment-head">
                                         <span class="comment-uname" :class="{ vip: c.vip }" :title="c.vip === 2 ? '年度大会员' : (c.vip === 1 ? '大会员' : '')">{{ c.uname }}</span>
+                                        <img
+                                            v-if="c.vip"
+                                            class="comment-vip-badge"
+                                            :class="{ gray: c.vip === 1 }"
+                                            src="https://i0.hdslb.com/bfs/vip/3788b674c69072f1ee252b79a31ecc8c43af3039.png"
+                                            :title="c.vip === 2 ? '年度大会员' : '大会员'"
+                                            alt=""
+                                            referrerpolicy="no-referrer"
+                                        />
                                         <span v-if="c.isUp" class="comment-up-badge">UP主</span>
-                                        <span v-if="c.vip" class="comment-vip-badge" :title="c.vip === 2 ? '年度大会员' : '大会员'">
-                                            <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 14.4l-4.8 2.5.9-5.4L4.2 7.7l5.4-.8L12 2z"/></svg>
-                                        </span>
                                         <span v-if="c.fan" class="comment-fan-badge">
                                             <span class="fan-name">{{ c.fan.name }}</span>
                                             <span class="fan-level">{{ c.fan.level }}</span>
                                         </span>
-                                        <span v-if="c.level" class="comment-level" :class="'lv' + Math.min(c.level, 6)">LV{{ c.level }}</span>
+                                        <img
+                                            v-if="c.level"
+                                            class="comment-level-badge"
+                                            :src="`https://i0.hdslb.com/bfs/seed/jinkela/short/webui/user-profile/img/level_${c.senior && c.level >= 6 ? 'h' : Math.min(c.level, 6)}.svg`"
+                                            :title="c.senior && c.level >= 6 ? '硬核会员 LV6' : `LV${c.level}`"
+                                            alt=""
+                                            referrerpolicy="no-referrer"
+                                        />
                                     </div>
                                     <p class="comment-text" v-html="renderCommentHtml(c.message, c.emote)"></p>
+                                    <div v-if="c.pictures && c.pictures.length" class="comment-pictures">
+                                        <img
+                                            v-for="(pc, pi) in c.pictures"
+                                            :key="pi"
+                                            :src="pc.url"
+                                            class="comment-picture"
+                                            alt=""
+                                            loading="lazy"
+                                            referrerpolicy="no-referrer"
+                                            @click="openImgPreview(pc.url)"
+                                        />
+                                    </div>
                                     <div class="comment-actions">
                                         <span class="comment-time">{{ fmtTime(c.ctime) }}</span>
                                         <span class="comment-like"><BiliIcon name="like" :size="13" /> {{ fmtCount(c.like) }}</span>
@@ -1173,6 +1382,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                                             {{ expandedReplies[String(c.rpid)] ? '收起回复' : `共 ${c.rcount} 条回复` }}
                                         </button>
                                     </div>
+
 
                                     <!-- 子楼（预览：未展开时显示主楼自带的前几条） -->
                                     <div v-if="!expandedReplies[String(c.rpid)] && c.replies.length" class="sub-comments">
@@ -1195,24 +1405,39 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                                                 <img
                                                     v-if="sc.avatar && !isAvatarFailed(sc.avatar)"
                                                     :src="sc.avatar"
-                                                    class="sub-avatar"
+                                                    class="sub-avatar clickable-avatar"
                                                     alt=""
+                                                    title="进入主页"
                                                     referrerpolicy="no-referrer"
+                                                    @click="goUserSpace(sc.mid)"
                                                     @error="onAvatarError(sc.avatar)"
                                                 />
                                                 <div v-else class="sub-avatar sub-avatar-placeholder"><Users :size="12" /></div>
                                                 <div class="sub-main">
                                                     <div class="comment-head">
                                                         <span class="comment-uname" :class="{ vip: sc.vip }" :title="sc.vip === 2 ? '年度大会员' : (sc.vip === 1 ? '大会员' : '')">{{ sc.uname }}</span>
+                                                        <img
+                                                            v-if="sc.vip"
+                                                            class="comment-vip-badge"
+                                                            :class="{ gray: sc.vip === 1 }"
+                                                            src="https://i0.hdslb.com/bfs/vip/3788b674c69072f1ee252b79a31ecc8c43af3039.png"
+                                                            :title="sc.vip === 2 ? '年度大会员' : '大会员'"
+                                                            alt=""
+                                                            referrerpolicy="no-referrer"
+                                                        />
                                                         <span v-if="sc.isUp" class="comment-up-badge">UP主</span>
-                                                        <span v-if="sc.vip" class="comment-vip-badge" :title="sc.vip === 2 ? '年度大会员' : '大会员'">
-                                                            <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M12 2l2.4 4.9 5.4.8-3.9 3.8.9 5.4L12 14.4l-4.8 2.5.9-5.4L4.2 7.7l5.4-.8L12 2z"/></svg>
-                                                        </span>
                                                         <span v-if="sc.fan" class="comment-fan-badge">
                                                             <span class="fan-name">{{ sc.fan.name }}</span>
                                                             <span class="fan-level">{{ sc.fan.level }}</span>
                                                         </span>
-                                                        <span v-if="sc.level" class="comment-level" :class="'lv' + Math.min(sc.level, 6)">LV{{ sc.level }}</span>
+                                                        <img
+                                                            v-if="sc.level"
+                                                            class="sub-level-badge"
+                                                            :src="`https://i0.hdslb.com/bfs/seed/jinkela/short/webui/user-profile/img/level_${sc.senior && sc.level >= 6 ? 'h' : Math.min(sc.level, 6)}.svg`"
+                                                            :title="sc.senior && sc.level >= 6 ? '硬核会员 LV6' : `LV${sc.level}`"
+                                                            alt=""
+                                                            referrerpolicy="no-referrer"
+                                                        />
                                                     </div>
                                                     <p class="comment-text" v-html="renderCommentHtml(sc.message, sc.emote)"></p>
                                                     <div class="comment-actions">
@@ -1232,6 +1457,12 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                                             </button>
                                         </template>
                                     </div>
+                                </div>
+
+                                <!-- 个性装扮牌：佩戴的装扮商城评论卡装饰（官方样式：评论右上角） -->
+                                <div v-if="c.sailing" class="comment-sailing" :title="c.sailing.name">
+                                    <img :src="c.sailing.image" alt="" referrerpolicy="no-referrer" @load="onSailingImgLoad" />
+                                    <span v-if="c.sailing.numDesc" class="cs-no" :style="{ color: c.sailing.color || '#61666d' }">{{ c.sailing.numPrefix || 'No.' }}<b>{{ c.sailing.numDesc }}</b></span>
                                 </div>
                             </div>
                         </div>
@@ -1275,8 +1506,8 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                         <div class="related-info">
                             <p class="related-name" :title="item.title">{{ item.title }}</p>
                             <p class="related-meta">
-                                <Play :size="11" /> {{ fmtCount(item.play) }}
-                                <MessageSquare :size="11" /> {{ fmtCount(item.danmaku) }}
+                                <BiliIcon name="playcount" :size="12" /> {{ fmtCount(item.play) }}
+                                <BiliIcon name="danmcount" :size="12" /> {{ fmtCount(item.danmaku) }}
                             </p>
                             <p class="related-author"><Tv :size="11" /> {{ item.author }}</p>
                         </div>
@@ -1317,6 +1548,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                             <p v-if="webQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫码登录</p>
                             <p v-else-if="webQrStatus === 'scanned'">等待确认中...</p>
                             <p class="bili-qr-benefit">登录后解锁点赞/投币/收藏与搜索稳定访问</p>
+                            <BiliCookieLogin mode="web" @success="loadWebStatus()" />
                         </div>
                     </div>
                 </div>
@@ -1355,10 +1587,39 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                             <p v-if="biliTvQrStatus === 'waiting'">请使用 <strong>B站手机 App</strong> 扫描二维码完成 TV 端登录</p>
                             <p v-else-if="biliTvQrStatus === 'scanned'">等待确认中...</p>
                             <p class="bili-qr-benefit">登录后解锁 1080P+/大会员档，未登录封顶 720P</p>
+                            <BiliCookieLogin mode="tv" @success="loadBiliTvStatus()" />
                         </div>
                     </div>
                 </div>
             </div>
+        </transition>
+
+        <!-- 图片评论预览灯箱：缩放/拖动/下载 -->
+        <transition name="menu-fade">
+            <div v-if="imgPreview.show" class="img-preview-mask" @click.self="closeImgPreview" @wheel.prevent="onPreviewWheel">
+                <div class="img-preview-toolbar" @click.stop>
+                    <button title="放大" @click="previewZoom(1.25)"><ZoomIn :size="16" /></button>
+                    <button title="缩小" @click="previewZoom(0.8)"><ZoomOut :size="16" /></button>
+                    <button title="重置" @click="resetImgPreview"><RotateCcw :size="16" /></button>
+                    <button title="下载原图" @click="downloadCommentImage(imgPreview.url)"><Download :size="16" /></button>
+                    <button title="关闭" @click="closeImgPreview"><X :size="16" /></button>
+                </div>
+                <img
+                    class="img-preview-img"
+                    :src="imgPreview.url"
+                    :style="{ transform: 'translate(' + imgPreview.x + 'px, ' + imgPreview.y + 'px) scale(' + imgPreview.scale + ')' }"
+                    draggable="false"
+                    @mousedown.prevent="onPreviewDragStart"
+                    @dblclick="resetImgPreview"
+                />
+            </div>
+        </transition>
+
+        <!-- 回到评论区顶部：滚过评论区后出现，sticky 悬浮在详情页右下角 -->
+        <transition name="menu-fade">
+            <button v-if="showCommentBackTop" class="comment-backtop" title="回到评论区顶部" @click="backToCommentsTop">
+                <ChevronUp :size="20" />
+            </button>
         </transition>
     </div>
 </template>
@@ -1371,7 +1632,80 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
     background: #f5f5f5;
     display: flex;
     flex-direction: column;
+    position: relative; /* 评论区 offsetTop 计算基准 */
 }
+
+/* 回到评论区顶部：sticky 悬浮在滚动区右下角 */
+.comment-backtop {
+    position: sticky;
+    bottom: 18px;
+    flex-shrink: 0;
+    min-height: 40px;
+    margin-left: auto;
+    margin-right: 6px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: none;
+    background: #fff;
+    color: #fb7299;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 5;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.comment-backtop:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.2);
+}
+
+/* 图片评论预览灯箱 */
+.img-preview-mask {
+    position: fixed;
+    inset: 0;
+    z-index: 4000;
+    background: rgba(0, 0, 0, 0.82);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.img-preview-toolbar {
+    position: absolute;
+    top: 110px; /* 应用标题栏（约 90px，z-index 更高）会盖住 fixed 层顶部，工具栏下移避开 */
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 10px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+.img-preview-toolbar button {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: #444;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+.img-preview-toolbar button:hover { background: #f0f0f0; color: #fb7299; }
+.img-preview-img {
+    max-width: 64vw;
+    max-height: 68vh;
+    border-radius: 6px;
+    cursor: grab;
+    user-select: none;
+    transition: transform 0.08s linear;
+}
+.img-preview-img:active { cursor: grabbing; }
 
 /* 顶部栏 */
 .top-bar {
@@ -1517,6 +1851,12 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
     gap: 4px;
     font-size: 12px;
     color: #888;
+    white-space: nowrap;
+    min-width: max-content; /* 统计项永不收缩：容器再窄也整项换行，杜绝互相叠压 */
+}
+/* 官方统计字形（playcount/danmcount）图案在 24 视框内偏下，上移使图案与文字视觉居中 */
+.stat-item :deep(svg) {
+    transform: translateY(-2.5px);
 }
 
 .stat-item.time { color: #bbb; }
@@ -1765,16 +2105,15 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
     line-height: 1.7;
     white-space: pre-wrap;
     word-break: break-word;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
+    /* 折叠动画用纯 max-height 实现：-webkit-line-clamp 会把内容锁死在 3 行导致过渡失效 */
     overflow: hidden;
+    max-height: calc(1.7em * 3);
+    transition: max-height 0.35s ease;
 }
 
 .desc-text.expanded {
-    display: block;
-    -webkit-line-clamp: unset;
-    overflow: visible;
+    max-height: 1200px;
+    transition: max-height 0.45s ease;
 }
 
 .desc-toggle {
@@ -1800,7 +2139,27 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
 }
 
-.pages-header { margin-bottom: 10px; }
+.pages-header {
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+/* 自动连播开关（合集/选集/分P面板头部右侧） */
+.autonext-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: #888;
+    cursor: pointer;
+    user-select: none;
+    padding-right: 10px;
+}
+.autonext-toggle .check-icon { cursor: pointer; }
+.autonext-toggle span { line-height: 1; }
+.autonext-toggle:hover { color: #fb7299; }
 
 .pages-title {
     font-size: 14px;
@@ -1892,6 +2251,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
     background: #f1f2f3;
     padding: 2px 8px;
     border-radius: 4px;
+    white-space: nowrap; /* 日期标签不在连字符处竖向折行 */
 }
 
 .pgc-tag.area { color: #23ade5; background: rgba(35, 173, 229, 0.1); }
@@ -1988,15 +2348,22 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
 .pgc-ep-card.active .pgc-ep-title { color: #fb7299; font-weight: 600; }
 
 /* ===== 评论官方徽章：大会员/UP主/粉丝牌 ===== */
+.comment-avatar.clickable-avatar, .sub-avatar.clickable-avatar { cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.comment-avatar.clickable-avatar:hover, .sub-avatar.clickable-avatar:hover { transform: scale(1.08); box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+
 .comment-uname.vip { color: #fb7299; }
 
+/* 大会员徽章：B站官方图标（i0.hdslb.com/bfs/vip）；月度大会员官方惯例为灰色 */
 .comment-vip-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: #ffb027;
+    height: 14px;
+    width: auto;
     flex-shrink: 0;
 }
+.comment-vip-badge.gray {
+    filter: grayscale(1);
+    opacity: 0.65;
+}
+
 
 .comment-up-badge {
     flex-shrink: 0;
@@ -2133,21 +2500,66 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
 }
 
 /* 等级徽章（仿B站：低级灰绿→高级橙） */
-.comment-level {
+/* 官方等级徽章 SVG（30x30 视框中徽章带居中），与用户名行垂直居中对齐 */
+.comment-level-badge { flex-shrink: 0; width: 30px; height: 30px; }
+
+/* 楼中楼等级徽章（官方 SVG，略小一号） */
+.sub-level-badge { flex-shrink: 0; width: 26px; height: 26px; margin-top: -1px; }
+
+/* 个性装扮牌：装扮图 + 编号（官方布局：评论右上角，编号在图右侧竖排） */
+.comment-sailing {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
     flex-shrink: 0;
+}
+.comment-sailing img {
+    height: 46px;
+    width: auto;
+    object-fit: contain;
+}
+.comment-sailing .cs-no {
     font-size: 10px;
     font-weight: 600;
-    color: #fff;
-    padding: 0 5px;
-    border-radius: 3px;
-    line-height: 1.6;
+    line-height: 1.3;
+    white-space: nowrap;
+}
+.comment-sailing .cs-no b {
+    display: block;
+    font-size: 12px;
+    letter-spacing: 0.5px;
 }
 
-.comment-level.lv1, .comment-level.lv2 { background: #95d2b4; color: #4a7c59; }
-.comment-level.lv3 { background: #92d5c8; color: #3d8a80; }
-.comment-level.lv4 { background: #f7ba4c; color: #8a5b00; }
-.comment-level.lv5 { background: #ff9c5b; color: #8a4100; }
-.comment-level.lv6 { background: #fb7299; }
+/* 图片评论缩略图 */
+.comment-pictures {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 2px 0 6px;
+}
+.comment-picture {
+    max-height: 140px;
+    max-width: 220px;
+    border-radius: 8px;
+    cursor: zoom-in;
+    object-fit: cover;
+}
+
+/* 个性装扮评论卡：官方装扮卡背景整卡铺底，白字+阴影保证可读 */
+.comment-main.decorated {
+    background-size: 100% 100%;
+    background-repeat: no-repeat;
+    border-radius: 10px;
+    padding: 10px 12px;
+    min-height: 96px;
+}
+.comment-main.decorated .comment-uname { color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.4); }
+.comment-main.decorated .comment-text { color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.4); }
+.comment-main.decorated .comment-text :deep(img) { text-shadow: none; }
+.comment-main.decorated .comment-time,
+.comment-main.decorated .comment-like { color: rgba(255,255,255,0.9); text-shadow: 0 1px 2px rgba(0,0,0,0.4); }
+.comment-main.decorated .comment-reply-toggle { color: rgba(255,255,255,0.9); }
 
 .comment-text {
     margin: 4px 0 6px;

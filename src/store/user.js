@@ -287,17 +287,31 @@ export const useUserStore = defineStore('user', {
                 return { locked: false }
             }
             if (!this.lockStatus.token) {
+                // 无令牌视为未上锁：必须同时复位 locked，
+                // 否则云端账号被删除后（clearLockSession 只清 token）歌单会永远残留锁图标
                 this.lockStatus.checked = true
+                this.lockStatus.locked = false
+                this.lockStatus.unlocked = false
                 return { locked: false }
             }
             try {
                 const res = await checkLockStatus()
-                const locked = !!res.locked
+                // 令牌无效（云端账号已删除/后端重置）：清空整个锁会话并复位上锁状态
+                if (res && res.success === false && res.__status === 401) {
+                    this.clearLockSession()
+                    return { locked: false }
+                }
+                if (res && res.success !== false) {
+                    const locked = !!res.locked
+                    this.lockStatus.checked = true
+                    this.lockStatus.locked = locked
+                    // 保留 token：未上锁时直接获得访问权限；上锁时用于后续验证密码
+                    this.lockStatus.unlocked = !locked
+                    return { locked }
+                }
+                // 其它错误（网络异常/服务 500 等）：保持现状，避免服务暂不可用时误解锁
                 this.lockStatus.checked = true
-                this.lockStatus.locked = locked
-                // 保留 token：未上锁时直接获得访问权限；上锁时用于后续验证密码
-                this.lockStatus.unlocked = !locked
-                return { locked }
+                return { locked: this.lockStatus.locked }
             } catch (e) {
                 console.error('Check lock status error:', e)
                 this.lockStatus.checked = true
@@ -317,6 +331,17 @@ export const useUserStore = defineStore('user', {
                     localStorage.setItem('music_cloud_token', res.token)
                     return { success: true }
                 }
+                // 云端密码锁已被移除（管理端解除/账号数据被删）：本地同步解除上锁，避免歌单永远卡在弹窗
+                if (res && res.success === false && (res.__status === 404 || (res.message || '').includes('未设置密码锁'))) {
+                    this.lockStatus.locked = false
+                    this.lockStatus.unlocked = true
+                    return { success: true }
+                }
+                // 令牌失效：清空会话，让下次点击歌单时重新同步账号
+                if (res && res.success === false && res.__status === 401) {
+                    this.clearLockSession()
+                    return { success: false, message: '登录状态已失效，请重试' }
+                }
                 return { success: false, message: res.message || '密码错误' }
             } catch (e) {
                 console.error('Verify lock password error:', e)
@@ -324,6 +349,9 @@ export const useUserStore = defineStore('user', {
             }
         },
         clearLockSession() {
+            // 完整复位：locked/checked 也要清，否则云端账号删除后侧边栏会一直显示"上锁"
+            this.lockStatus.checked = true
+            this.lockStatus.locked = false
             this.lockStatus.unlocked = false
             this.lockStatus.token = ''
             localStorage.removeItem('music_cloud_token')
