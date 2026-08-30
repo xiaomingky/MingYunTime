@@ -143,6 +143,26 @@ function biliCleanTitle(t) {
   return String(t || '').replace(/^(\s*【[^】]*】\s*)+/, '').replace(/\s+/g, ' ').trim()
 }
 
+// 封面/头像 URL 归一化：兼容协议相对地址（//host/path）与 http:// 两种形式，统一为 https
+// （协议相对地址在 file:// 渲染进程会被解析成本地文件路径，导致 ERR_FILE_NOT_FOUND）
+function biliCoverUrl(u) {
+  return String(u || '').replace(/^\/\//, 'https://').replace(/^http:\/\//, 'https://')
+}
+
+// 时长统一转秒：
+// - 搜索/空间/合集接口返回 "MM:SS"/"H:MM:SS" 字符串（如 "15:32"）
+// - 排行/详情等接口直接返回秒数
+function biliDurationToSec(v) {
+  if (v == null || v === '') return 0
+  const s = String(v).trim()
+  if (/^\d+$/.test(s)) return Number(s)
+  const p = s.split(':').map(Number)
+  if (p.some(Number.isNaN)) return 0
+  if (p.length === 3) return p[0] * 3600 + p[1] * 60 + p[2]
+  if (p.length === 2) return p[0] * 60 + p[1]
+  return p[0] || 0
+}
+
 // B站稿件 → 卡片结构（首页/搜索/相关推荐通用）
 // 兼容三种数据源字段：分区/热门/排行(owner.stat) 、搜索(author/play/video_review) 、related(owner.stat)
 function biliCard(v) {
@@ -152,13 +172,13 @@ function biliCard(v) {
     bvid: v.bvid || '',
     aid: v.aid || 0,
     title: biliCleanTitle(String(v.title || '').replace(/<[^>]+>/g, '')),
-    cover: String(v.pic || v.cover || '').replace(/^http:\/\//, 'https://'),
+    cover: biliCoverUrl(v.pic || v.cover),
     author: owner.name || v.author || '',
-    authorFace: String(owner.face || '').replace(/^http:\/\//, 'https://'),
+    authorFace: biliCoverUrl(owner.face),
     mid: Number(v.mid) || Number(owner.mid) || 0,   // UP 主 mid（点击进主页）
     play: stat.view ?? v.play ?? 0,
     danmaku: stat.danmaku ?? v.video_review ?? 0,
-    duration: v.duration || 0,   // 秒
+    duration: biliDurationToSec(v.duration),   // 统一为秒（搜索接口是 "MM:SS" 字符串）
     pubdate: v.pubdate || 0      // 秒级时间戳
   }
 }
@@ -229,7 +249,7 @@ function biliPgcSearchCard(v) {
     pgc: true,
     seasonId: v.season_id || 0,
     title: biliCleanTitle(String(v.title || '').replace(/<[^>]+>/g, '')),
-    cover: String(v.cover || '').replace(/^http:\/\//, 'https://'),
+    cover: biliCoverUrl(v.cover),
     styles: String(v.styles || '').split('/').map(s => s.trim()).filter(Boolean),
     areas,
     indexShow: v.index_show || '',           // 如 "已完结, 全13话" / "付费"
@@ -284,7 +304,7 @@ async function biliPgcDetail({ seasonId, epId }) {
     cid: ep.cid || 0,
     title: `${i + 1}`,
     longTitle: ep.long_title || '',
-    cover: String(ep.cover || '').replace(/^http:\/\//, 'https://'),
+    cover: biliCoverUrl(ep.cover),
     duration: biliToSec(ep.duration),
     badge: ep.badge || '',            // "会员"/"付费"/"预告"
     badgeType: ep.badge_type || 0
@@ -296,7 +316,7 @@ async function biliPgcDetail({ seasonId, epId }) {
     season: {
       seasonId: d.season_id,
       title: biliCleanTitle(d.title || ''),
-      cover: String(d.cover || '').replace(/^http:\/\//, 'https://'),
+      cover: biliCoverUrl(d.cover),
       desc: String(d.evaluate || '').trim(),
       type: d.type || 0,               // 1番剧 2电影
       typeName: d.type === 2 ? '电影' : '番剧',
@@ -375,7 +395,7 @@ async function biliDetail({ bvid }) {
           aid: ep.aid || 0,
           cid: ep.cid || (ep.page?.cid) || 0,
           title: biliCleanTitle(ep.page?.part || ep.title || ''),
-          cover: String(ep.cover || '').replace(/^http:\/\//, 'https://'),
+          cover: biliCoverUrl(ep.cover),
           duration: biliToSec(ep.page?.duration || ep.arc?.duration || 0)
         })
       }
@@ -402,7 +422,7 @@ async function biliDetail({ bvid }) {
       owner: {
         mid: d.owner?.mid || 0,
         name: d.owner?.name || '',
-        face: String(d.owner?.face || '').replace(/^http:\/\//, 'https://')
+        face: biliCoverUrl(d.owner?.face)
       },
       stat: {
         view: stat.view || 0,
@@ -441,7 +461,7 @@ function biliCommentItem(r, upMid = 0) {
     rpid: r.rpid,
     mid: member.mid || r.mid || 0,
     uname: member.uname || '',
-    avatar: String(member.avatar || '').replace(/^http:\/\//, 'https://'),
+    avatar: biliCoverUrl(member.avatar),
     level: member.level_info?.current_level || 0,
     // 大会员：vipType 1 月度 / 2 年度，vipStatus 1 有效（官方显示粉色昵称+皇冠）
     vip: (Number(vip.vipStatus) === 1 && Number(vip.vipType) > 0) ? Number(vip.vipType) : 0,
@@ -455,7 +475,7 @@ function biliCommentItem(r, upMid = 0) {
     message: String(r.content?.message || ''),
     // 图片评论：content.pictures（九图以内），前端缩略图渲染
     pictures: (r.content?.pictures || []).map(pc => ({
-      url: String(pc.img_src || '').replace(/^http:\/\//, 'https://'),
+      url: biliCoverUrl(pc.img_src),
       w: pc.img_width || 0,
       h: pc.img_height || 0
     })),
@@ -466,7 +486,7 @@ function biliCommentItem(r, upMid = 0) {
     // 个性装扮：佩戴的评论卡装扮牌（装扮商城 user_sailing.cardbg，如番剧联动勋章牌，显示在评论右侧）
     sailing: (member.user_sailing?.cardbg?.image) ? {
       name: member.user_sailing.cardbg.name || '',
-      image: String(member.user_sailing.cardbg.image || '').replace(/^http:\/\//, 'https://'),
+      image: biliCoverUrl(member.user_sailing.cardbg.image),
       // 装扮收藏编号（官方字段：num_prefix 前缀如 "CD." + num_desc 六位序号 + color 文字色）
       numPrefix: member.user_sailing.cardbg.fan?.num_prefix || '',
       numDesc: member.user_sailing.cardbg.fan?.num_desc || '',
@@ -820,7 +840,7 @@ async function biliUserSpace({ mid = 0, page = 1 }) {
     user = {
       mid: Number(card.mid) || Number(mid),
       name: card.name || '',
-      face: String(card.face || '').replace(/^http:\/\//, 'https://'),
+      face: biliCoverUrl(card.face),
       sign: String(card.sign || '').replace(/<[^>]+>/g, '').trim(),
       fans: cr?.data?.follower ?? 0,
       // 获赞数在 data 顶层 like_num（card.likes 不存在，旧写法恒为 0）
@@ -833,7 +853,7 @@ async function biliUserSpace({ mid = 0, page = 1 }) {
       vipType: Number(card.vip?.vipType ?? card.vipType) || 0,
       // 官方大会员标签图（如"十年大会员"动图/静态图），有则优先于通用图标
       vipLabel: (card.vip?.label?.use_img_label && card.vip.label.img_label_uri_hans_static)
-        ? String(card.vip.label.img_label_uri_hans_static).replace(/^http:\/\//, 'https://')
+        ? biliCoverUrl(card.vip.label.img_label_uri_hans_static)
         : '',
       official: card.official?.title || card.Official?.title || ''
     }
@@ -854,7 +874,7 @@ async function biliUserSpace({ mid = 0, page = 1 }) {
     bvid: v.bvid || '',
     aid: v.aid || 0,
     title: biliCleanTitle(String(v.title || '').replace(/<[^>]+>/g, '')),
-    cover: String(v.pic || '').replace(/^http:\/\//, 'https://'),
+    cover: biliCoverUrl(v.pic),
     play: v.play || 0,
     danmaku: v.video_review || 0,
     duration: toSec(v.length),
@@ -886,7 +906,7 @@ async function biliUserSeasons({ mid = 0, pageNum = 1, pageSize = 20 }) {
     return {
       seasonId: m.season_id || m.series_id || m.id || 0,
       title: biliCleanTitle(m.title || m.name || ''),
-      cover: String(m.cover || '').replace(/^http:\/\//, 'https://'),
+      cover: biliCoverUrl(m.cover),
       total: m.total || 0,
       latest
     }
@@ -910,7 +930,7 @@ async function biliSeasonArchives({ mid = 0, seasonId = 0, pageNum = 1 }) {
     bvid: v.bvid || '',
     aid: v.aid || 0,
     title: biliCleanTitle(String(v.title || '').replace(/<[^>]+>/g, '')),
-    cover: String(v.pic || '').replace(/^http:\/\//, 'https://'),
+    cover: biliCoverUrl(v.pic),
     play: v.stat?.view || 0,
     danmaku: v.stat?.danmaku || v.video_review || 0,
     duration: toSec(v.duration),
