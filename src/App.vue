@@ -504,6 +504,10 @@ watch(() => kugouUserStore.playlists.length, scheduleIndicatorUpdate)
 onMounted(() => {
     scheduleIndicatorUpdate()
     window.addEventListener('resize', scheduleIndicatorUpdate)
+    // 长按选择复制开关（设置页控制）：启动即应用到 <html> 根节点
+    if (localStorage.getItem('app_longpress_select') === '0') {
+        document.documentElement.classList.add('longpress-off')
+    }
 })
 onUnmounted(() => {
     window.removeEventListener('resize', scheduleIndicatorUpdate)

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { usePlatformStore } from '../store/platform'
 import { useMessageStore } from '../store/message'
@@ -33,6 +33,25 @@ const SIDEBAR_SECTIONS = [
 ]
 const hiddenSections = ref(JSON.parse(localStorage.getItem('hidden_sections') || '[]'))
 const isSectionHidden = (id) => hiddenSections.value.includes(id)
+
+// ===== 设置二级导航（上方吸顶，点击滚动到对应卡片） =====
+const sectionNav = ref([])
+const activeSection = ref('')
+function gotoSection(s) {
+    activeSection.value = s.label
+    s.el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+// ===== 长按选择复制开关（关闭后全局禁止长按/拖动选中文本） =====
+const longPressSelect = ref(localStorage.getItem('app_longpress_select') !== '0')
+function applyLongPressSelect() {
+    document.documentElement.classList.toggle('longpress-off', !longPressSelect.value)
+}
+function toggleLongPressSelect() {
+    longPressSelect.value = !longPressSelect.value
+    localStorage.setItem('app_longpress_select', longPressSelect.value ? '1' : '0')
+    applyLongPressSelect()
+}
 function toggleSection(id) {
     hiddenSections.value = isSectionHidden(id)
         ? hiddenSections.value.filter(i => i !== id)
@@ -527,6 +546,16 @@ loadMusicNaming()
 onMounted(() => {
     window.addEventListener('keydown', onShortcutKeydown)
     loadBiliAuth()
+    // 二级导航：从各设置卡片标题自动收集
+    nextTick(() => {
+        const cards = [...document.querySelectorAll('.settings-page .settings-card')]
+        sectionNav.value = cards.map((c, i) => ({
+            el: c,
+            label: (c.querySelector('.card-title span:last-of-type')?.textContent || `分区 ${i + 1}`).trim()
+        }))
+    })
+    // 长按选择复制开关：启动即应用
+    applyLongPressSelect()
     if (platformStore.isKugou && kugouUserStore.isLoggedIn) {
         refreshYouthVipInfo()
     }
@@ -543,6 +572,17 @@ onUnmounted(() => {
       <div class="page-head">
         <h1 class="page-title"><Keyboard :size="20" /> 设置</h1>
         <p class="page-sub">自定义播放器行为与全局快捷键</p>
+      </div>
+
+      <!-- 二级导航（吸顶，点击滚动到对应设置卡片） -->
+      <div class="settings-nav">
+        <button
+            v-for="s in sectionNav"
+            :key="s.label"
+            class="nav-chip"
+            :class="{ active: activeSection === s.label }"
+            @click="gotoSection(s)"
+        >{{ s.label }}</button>
       </div>
 
       <!-- 账号与登录信息 -->
@@ -826,6 +866,20 @@ onUnmounted(() => {
             <span>{{ sec.label }}</span>
           </label>
         </div>
+      </section>
+
+      <!-- 长按选择复制 -->
+      <section class="settings-card">
+        <div class="card-title">
+          <Check :size="16" />
+          <span>长按选择复制</span>
+        </div>
+        <p class="card-tip">开启后长按/拖动可选中界面文字进行复制；关闭后全局禁用选中（输入框不受影响）。</p>
+        <label class="section-check" @click.prevent="toggleLongPressSelect">
+          <CheckSquare v-if="longPressSelect" :size="15" class="check-icon active" />
+          <Square v-else :size="15" class="check-icon" />
+          <span>{{ longPressSelect ? '已开启（可长按选择复制）' : '已关闭（禁止选中）' }}</span>
+        </label>
       </section>
 
       <!-- B站登录态 -->
@@ -1459,6 +1513,31 @@ onUnmounted(() => {
 </style>
 <style scoped>
 /* 侧边栏分区勾选 */
+/* 二级导航（吸顶） */
+.settings-nav {
+    position: sticky;
+    top: -24px; /* 抵消 settings-page 顶部内边距，贴住滚动容器顶端 */
+    z-index: 20;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 4px;
+    background: var(--bg-main, #fff);
+}
+.nav-chip {
+    padding: 6px 14px;
+    border: 1px solid #e5e5e5;
+    border-radius: 999px;
+    background: #fff;
+    color: #555;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.nav-chip:hover { border-color: #fb7299; color: #fb7299; }
+.nav-chip.active { background: #fb7299; border-color: #fb7299; color: #fff; }
+.settings-card { scroll-margin-top: 52px; }
+
 .section-checks {
     display: flex;
     flex-wrap: wrap;

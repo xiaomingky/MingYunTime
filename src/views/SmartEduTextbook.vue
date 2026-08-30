@@ -276,6 +276,32 @@ function closeBook() {
 }
 
 // ===== 预览图翻页 =====
+
+// ===== 预览工具栏：可拖动悬浮（默认钉在顶部，按住空白处拖动，双击复位） =====
+const toolbarPos = ref({ x: null, y: null })
+let toolbarDrag = null
+function onToolbarDragStart(e) {
+    if (e.button !== 0) return
+    if (e.target.closest('button, input, select')) return // 按钮等交互元素不触发拖动
+    const el = e.currentTarget
+    const r = el.getBoundingClientRect()
+    toolbarPos.value = { x: r.left, y: r.top }
+    toolbarDrag = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, w: r.width }
+    window.addEventListener('mousemove', onToolbarDragMove)
+    window.addEventListener('mouseup', onToolbarDragEnd)
+}
+function onToolbarDragMove(e) {
+    if (!toolbarDrag) return
+    const x = Math.max(4, Math.min(window.innerWidth - toolbarDrag.w - 4, toolbarDrag.ox + (e.clientX - toolbarDrag.sx)))
+    const y = Math.max(4, Math.min(window.innerHeight - 44, toolbarDrag.oy + (e.clientY - toolbarDrag.sy)))
+    toolbarPos.value = { x, y }
+}
+function onToolbarDragEnd() {
+    toolbarDrag = null
+    window.removeEventListener('mousemove', onToolbarDragMove)
+    window.removeEventListener('mouseup', onToolbarDragEnd)
+}
+function resetToolbarPos() { toolbarPos.value = { x: null, y: null } }
 const currentPage = computed(() => {
     const idx = previewImages.value.indexOf(currentImage.value)
     return idx >= 0 ? idx + 1 : 0
@@ -537,9 +563,14 @@ function clearAnnotations() {
 
 // ===== 音频播放 =====
 let audioEl = null
+// 暂停状态独立记录：playingIdx 只表示"当前是第几个音频"，暂停后图标要切回播放
+const audioPaused = ref(false)
 const playingIdx = ref(-1)
 function ensureAudio() {
     if (!audioEl) audioEl = new Audio()
+    // 播放/暂停事件反向同步图标状态（含切集、加载失败等所有路径）
+    audioEl.onplay = () => { audioPaused.value = false }
+    audioEl.onpause = () => { audioPaused.value = true }
 }
 function stopAudio() {
     if (audioEl) { audioEl.pause(); audioEl.src = '' }
@@ -561,6 +592,7 @@ async function togglePlay(a, i) {
     audioEl.onended = () => { playingIdx.value = -1 }
     if (playingIdx.value !== i) { audioEl.pause(); audioEl.currentTime = 0; audioEl.src = url }
     playingIdx.value = i
+    audioPaused.value = false
     try { audioEl.play().catch(() => {}) } catch (e) {}
 }
 
@@ -666,7 +698,13 @@ function fmtCount(n) {
 
         <!-- 阅读视图 -->
         <template v-if="selectedBook">
-            <div class="reader-toolbar">
+            <div
+                class="reader-toolbar"
+                :class="{ floating: toolbarPos.x !== null }"
+                :style="toolbarPos.x !== null ? { left: toolbarPos.x + 'px', top: toolbarPos.y + 'px', right: 'auto' } : {}"
+                @mousedown="onToolbarDragStart"
+                @dblclick="resetToolbarPos"
+            >
                 <button class="back-btn" @click="closeBook"><ChevronLeft :size="16" /> 返回教材库</button>
                 <div class="reader-title">{{ selectedBook.title }}</div>
                 <div class="reader-tools">
@@ -761,8 +799,8 @@ function fmtCount(n) {
                                         class="check-icon audio-check"
                                         @click.stop="toggleAudioSelect(i)"
                                     />
-                                    <button class="audio-play" :title="playingIdx === i ? '暂停' : '播放'" @click="togglePlay(a, i)">
-                                        <Play v-if="playingIdx !== i" :size="14" />
+                                    <button class="audio-play" :title="playingIdx === i && !audioPaused ? '暂停' : '播放'" @click="togglePlay(a, i)">
+                                        <Play v-if="playingIdx !== i || audioPaused" :size="14" />
                                         <Pause v-else :size="14" />
                                     </button>
                                     <span class="audio-title" :title="a.title || ('音频 ' + (i + 1))">{{ a.title || ('音频 ' + (i + 1)) }}</span>
@@ -1059,7 +1097,21 @@ function fmtCount(n) {
     display: flex;
     align-items: center;
     gap: 12px;
+    /* 默认钉在页首整行；拖动后经 floating 类改为定点悬浮 */
+    position: relative;
+    z-index: 30;
 }
+.reader-toolbar.floating {
+    position: fixed;
+    width: fit-content;
+    background: rgba(20, 24, 34, .92);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 10px;
+    padding: 8px 14px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.45);
+    cursor: grab;
+}
+.reader-toolbar.floating:active { cursor: grabbing; }
 .back-btn {
     display: inline-flex;
     align-items: center;

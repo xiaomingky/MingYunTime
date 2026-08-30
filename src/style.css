@@ -839,3 +839,15 @@ select.compact {
         scroll-behavior: auto !important;
     }
 }
+/* ===== 长按选择复制开关（设置页控制）：关闭时全局禁止选中，输入类除外 ===== */
+.longpress-off,
+.longpress-off * {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+.longpress-off input,
+.longpress-off textarea,
+.longpress-off [contenteditable="true"] {
+    user-select: text !important;
+    -webkit-user-select: text !important;
+}
