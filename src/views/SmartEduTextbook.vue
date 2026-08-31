@@ -1,9 +1,9 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { smartEduCatalog, smartEduDetail, smartEduPreview, smartEduAudios, smartEduLoginOpen, smartEduLoginStatus, smartEduLoginManual, smartEduTestToken, smartEduLogout, smartEduDownloadPdf, smartEduDownloadAudio, smartEduProbeAudio, onSmartEduLoginDone } from '../api'
+import { smartEduCatalog, smartEduDetail, smartEduPreview, smartEduAudios, smartEduLoginOpen, smartEduLoginStatus, smartEduLoginManual, smartEduTestToken, smartEduLogout, smartEduDownloadPdf, smartEduDownloadAudio, smartEduProbeAudio, smartEduFetchImage, onSmartEduLoginDone } from '../api'
 import { useMessageStore } from '../store/message'
 import CustomSelect from '../components/CustomSelect.vue'
-import { ChevronLeft, BookOpen, Download, LogOut, Search, Loader2, FileText, Headphones, RefreshCw, KeyRound, X, ZoomIn, Highlighter, Eraser, Play, Pause, Trash2, Maximize, Minimize, CheckSquare, Square } from 'lucide-vue-next'
+import { ChevronLeft, BookOpen, Download, LogOut, Search, Loader2, FileText, Headphones, RefreshCw, KeyRound, X, ZoomIn, Highlighter, Eraser, Play, Pause, Trash2, Maximize, Minimize, CheckSquare, Square, GripVertical, Move } from 'lucide-vue-next'
 
 defineOptions({ name: 'SmartEduTextbook' })
 
@@ -215,11 +215,14 @@ const loadingDetail = ref(false)
 const previewImages = ref([])
 const pageCount = ref(0)
 const currentImage = ref('')
+const pageLoading = ref(false)   // 当前页图片正在载入（占位态，不再直出 CDN URL 避免 403）
+const pageFail = ref(false)      // 当前页加载失败（展示重试）
 const imagesLoading = ref(false)
 const audios = ref([])
 const audiosLoading = ref(false)
 
 function openBook(book) {
+    imgGen++ // 使旧教材仍在途的取图任务失效，防止串用缓存
     selectedBook.value = book
     detail.value = null
     previewImages.value = []
@@ -241,8 +244,11 @@ async function loadDetail(book) {
                 const pv = await smartEduPreview(book.id)
                 if (pv?.success && pv.data?.images?.length) {
                     previewImages.value = pv.data.images
-                    currentImage.value = pv.data.images[0]
                     curPageIdx.value = 1
+                    currentImage.value = ''
+                    // 后台就近预热整本 + 首屏取图（IPC 主进程下载转 dataURL，杜绝渲染进程直连 CDN 的 403）
+                    startWarmup()
+                    loadPageFor(0)
                 }
                 imagesLoading.value = false
             }
@@ -273,27 +279,46 @@ function closeBook() {
     selectedBook.value = null
     annotations.clear()
     resetView()
+    currentImage.value = ''
+    pageLoading.value = false
+    pageFail.value = false
+    clearTimeout(pageLoadTimer)
+    imgGen++ // 使在途取图任务失效 → 不再写入本教材缓存，避免跨教材串用
+    pageCache.clear()
+    inflight.clear()
 }
 
 // ===== 预览图翻页 =====
 
-// ===== 预览工具栏：可拖动悬浮（默认钉在顶部，按住空白处拖动，双击复位） =====
+// ===== 预览工具栏：可拖动悬浮（默认钉在顶部，按住手柄拖动，双击复位） =====
+// 浮动定位相对预览容器（.page-preview）而非视口：全屏预览时坐标基准统一，
+// 避免 position:fixed 在全屏元素内定位/事件异常导致「全屏后拖不动工具栏」。
 const toolbarPos = ref({ x: null, y: null })
 let toolbarDrag = null
 function onToolbarDragStart(e) {
     if (e.button !== 0) return
-    if (e.target.closest('button, input, select')) return // 按钮等交互元素不触发拖动
-    const el = e.currentTarget
-    const r = el.getBoundingClientRect()
-    toolbarPos.value = { x: r.left, y: r.top }
-    toolbarDrag = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, w: r.width }
+    // 拖动手柄或工具栏空白处可拖动；其余按钮（工具/缩放/全屏等）保持点击行为
+    const handle = e.target.closest('.drag-handle')
+    if (!handle && e.target.closest('button, input, select')) return
+    e.preventDefault()
+    const box = previewBoxRef.value
+    if (!box) return
+    const br = box.getBoundingClientRect()
+    const r = e.currentTarget.getBoundingClientRect()
+    toolbarPos.value = { x: r.left - br.left, y: r.top - br.top }
+    toolbarDrag = {
+        sx: e.clientX, sy: e.clientY,
+        ox: r.left - br.left, oy: r.top - br.top,
+        w: r.width, boxW: br.width, boxH: br.height
+    }
     window.addEventListener('mousemove', onToolbarDragMove)
     window.addEventListener('mouseup', onToolbarDragEnd)
 }
 function onToolbarDragMove(e) {
     if (!toolbarDrag) return
-    const x = Math.max(4, Math.min(window.innerWidth - toolbarDrag.w - 4, toolbarDrag.ox + (e.clientX - toolbarDrag.sx)))
-    const y = Math.max(4, Math.min(window.innerHeight - 44, toolbarDrag.oy + (e.clientY - toolbarDrag.sy)))
+    const { ox, oy, w, sx, sy, boxW, boxH } = toolbarDrag
+    const x = Math.max(4, Math.min(boxW - w - 4, ox + (e.clientX - sx)))
+    const y = Math.max(4, Math.min(boxH - 44, oy + (e.clientY - sy)))
     toolbarPos.value = { x, y }
 }
 function onToolbarDragEnd() {
@@ -302,24 +327,94 @@ function onToolbarDragEnd() {
     window.removeEventListener('mouseup', onToolbarDragEnd)
 }
 function resetToolbarPos() { toolbarPos.value = { x: null, y: null } }
-const currentPage = computed(() => {
-    const idx = previewImages.value.indexOf(currentImage.value)
-    return idx >= 0 ? idx + 1 : 0
-})
-function setImage(n) {
+// 当前页码：curPageIdx 为 1-based 唯一真相源（currentImage 可能是内存缓存的 dataURL，不能再用 indexOf 定位）
+const currentPage = computed(() => curPageIdx.value)
+function setImage(n, animate = true) {
     if (n < 1 || n > previewImages.value.length || n === currentPage.value) return
-    currentImage.value = previewImages.value[n - 1]
+    const dir = n > currentPage.value ? 1 : -1
     curPageIdx.value = n
     showLens.value = false
     resetView()
-    // 新图载入后 onImgLoaded 会重设画布并重绘本页笔记
+    // 显示源：内存缓存 dataURL 秒显；未命中则进入占位载入态（不再直出 CDN URL，避免 403 破图），
+    // 取图完成后仍在本页时无缝替换。跳页期间后台就近预热会先把目标页「攒」进内存/磁盘，连续翻页基本全命中。
+    const idx = n - 1
+    const cached = pageCache.get(idx)
+    if (cached) {
+        currentImage.value = cached
+        pageLoading.value = false
+        pageFail.value = false
+    } else {
+        currentImage.value = ''
+        loadPageFor(idx)
+    }
+    if (animate) {
+        // 翻页滑入动画：新页先从对侧进入起点，下一帧再滑到 0
+        slideX.value = -dir * 60
+        setPaneTransition('transform .18s ease')
+        nextTick(() => requestAnimationFrame(() => { slideX.value = 0 }))
+    } else {
+        // 滑块拖动/数字键盘定位：即时切换，不做位移动画，保证跟手
+        slideX.value = 0
+        setPaneTransition('none')
+        nextTick(() => { setPaneTransition('transform .18s ease') })
+    }
+}
+
+// 底部滑块：拖动自由跳转到任意页（即时切换，无动画延迟）
+function onSliderInput(e) {
+    setImage(Number(e.target.value), false)
+}
+
+// 页码指示器 → 小数字键盘精准跳转
+const showNumpad = ref(false)
+const numpadValue = ref('')
+let numpadDirty = false
+function openNumpad() {
+    if (showNumpad.value) { showNumpad.value = false; return } // 再点一次关闭
+    numpadValue.value = String(currentPage.value)
+    numpadDirty = false
+    showNumpad.value = true
+}
+function numpadKey(k) {
+    if (k === 'go') { numpadGo(); return }
+    if (k === 'back') {
+        if (numpadDirty) {
+            numpadValue.value = numpadValue.value.slice(0, -1)
+            if (!numpadValue.value) numpadDirty = false
+        }
+        return
+    }
+    if (!numpadDirty) {
+        if (k === '0') return // 首位 0 无意义
+        numpadValue.value = k
+        numpadDirty = true
+        return
+    }
+    if (numpadValue.value.length < 4) numpadValue.value += k
+}
+function numpadGo() {
+    if (!showNumpad.value) return
+    showNumpad.value = false
+    const n = parseInt(numpadValue.value, 10)
+    if (!Number.isNaN(n) && n >= 1 && n <= previewImages.value.length) setImage(n)
 }
 
 // ===== 预览工具：放大镜 / 笔记 / 橡皮擦 / 长按拖动 =====
 const activeTool = ref('') // '' | 'mag' | 'pen' | 'eraser'
 const zoom = ref(1)
-const panX = ref(0)
-const panY = ref(0)
+// 平移画布「始终最新」偏移：拖动期间直接写 DOM style（不经 Vue 响应式渲染 → 逐帧 0 重渲染，彻底消除拖动卡顿），
+// paneTransform() 同步读取 —— 拖动中即使其他状态变化触发重渲染，也不会用旧值覆盖当前手势位置
+const livePan = { x: 0, y: 0 }
+let panStartX = 0, panStartY = 0 // 本次手势平移起点快照（基于 down 坐标算总量，避免逐帧累计漂移）
+function applyPaneStyle() {
+    const el = paneRef.value
+    if (el) el.style.transform = `translate(${livePan.x + slideX.value}px, ${livePan.y}px) scale(${zoom.value})`
+}
+function setPaneTransition(t) {
+    paneTransition.value = t
+    const el = paneRef.value
+    if (el) el.style.transition = t // 同步写 DOM：Vue 的 ref 写入要等微任务才落 DOM，慢半拍会被 .18s 过度动画拖成粘滞
+}
 const showLens = ref(false)
 const lensStyle = ref({})
 const stageRef = ref(null)
@@ -335,13 +430,113 @@ const annotations = new Map()
 
 const toolHint = computed(() => {
     if (activeTool.value === 'mag') return '放大镜：悬停查看细节 · 按住拖动查看图片位置'
+    if (activeTool.value === 'drag') return '拖动：按住左键拖动页面位置（放大后浏览细节）'
     if (activeTool.value === 'pen') return '笔记：按住拖动书写标注'
     if (activeTool.value === 'eraser') return '橡皮擦：按住拖动擦除笔记'
-    return zoom.value > 1 ? '已放大：按住左键拖动查看图片位置 · 滚轮缩放' : ''
+    return zoom.value > 1 ? '已放大：按住左键拖动查看图片位置 · 滚轮缩放' : '拖动底部滑块自由跳页 · 点击右上角页码用数字键盘精确跳转'
 })
 
+// —— 翻页位移动画状态 ——
+// slideX：翻页滑入动画的起点位移（新页从对侧滑入）
+// paneTransition：缩放/平移拖动时禁过渡（跟手），松手恢复 ease 让滑入/回弹平滑
+const slideX = ref(0)
+const paneTransition = ref('transform .18s ease')
+
 function paneTransform() {
-    return `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`
+    return `translate(${livePan.x + slideX.value}px, ${livePan.y}px) scale(${zoom.value})`
+}
+
+// —— 预览图缓存体系（内存 dataURL LRU + 主进程磁盘缓存）——
+// 智教 CDN 对渲染进程的 `new Image()` 请求返回 403（且坏响应会污染 HTTP 缓存，实测 Node 层同 URL 全 200），
+// 因此所有图片一律经主进程 IPC 下载（主进程还带磁盘缓存，二次命中原生读盘）转 dataURL。
+// 命中内存/磁盘即秒显 → 翻页秒级；配合后台就近预热整本，任意跳页基本一触即达。
+// 内存控制：LRU 上限 16 张（约 1MB/张 ≈ 16MB），其余页全落在磁盘缓存，极致压缩内存。
+const pageCache = new Map()     // 页码 idx(0-based) -> dataURL（LRU）
+const inflight = new Map()      // idx -> Promise（并发去重：同一页只发起一次 IPC 取图）
+const WARM_POOL = 2             // 后台预热并发数：并发过多会触发 CDN 防护，串行又太慢，取 2 平衡
+let imgGen = 0                  // 教材代次：切书/关书后使在途取图任务失效，防止缓存串用
+let warmSeq = 0                 // 预热代次
+let warmRunning = 0
+let pageLoadTimer = null
+
+// 由主进程下载一页图片 → 缓存为 dataURL；同一 idx 并发去重（返回同一个 Promise）
+function fetchPageData(idx) {
+    const u = previewImages.value[idx]
+    if (!u || /^data:/i.test(u) || pageCache.has(idx)) return Promise.resolve(pageCache.has(idx) ? idx : null)
+    if (inflight.has(idx)) return inflight.get(idx)
+    const gen = imgGen
+    const p = smartEduFetchImage(u).then((res) => {
+        inflight.delete(idx)
+        if (gen !== imgGen) return null // 已切换/关闭教材，丢弃结果
+        if (res?.ok && res.b64) {
+            pageCache.set(idx, `data:${res.mime || 'image/jpeg'};base64,${res.b64}`)
+            trimPageCache()
+            return idx
+        }
+        return null
+    }).catch(() => { inflight.delete(idx); return null })
+    inflight.set(idx, p)
+    return p
+}
+function trimPageCache() {
+    while (pageCache.size > 16) {
+        const first = pageCache.keys().next().value
+        if (first == null) break
+        pageCache.delete(first)
+    }
+}
+
+// 当前页取图（带 120ms 防抖：滑块快速拖动时只对最终落点发请求，避免一次拖拽并发十几张触发 CDN 防护）
+// 取图完成后若仍在本页则无缝替换；失败则保持占位态并提供重试
+function loadPageFor(idx, immediate = false) {
+    if (idx < 0 || idx >= previewImages.value.length) return
+    pageFail.value = false
+    pageLoading.value = true
+    const doFetch = () => {
+        fetchPageData(idx).then((fidx) => {
+            if (currentPage.value - 1 !== idx) return // 已跳去其他页，等缓存命中时再秒显
+            if (fidx !== null && pageCache.has(idx)) {
+                currentImage.value = pageCache.get(idx)
+                pageLoading.value = false
+            } else {
+                pageFail.value = true // 保持 pageLoading=true，展示失败重试而非「无预览图」
+            }
+        })
+    }
+    clearTimeout(pageLoadTimer)
+    if (immediate) doFetch()
+    else pageLoadTimer = setTimeout(doFetch, 120)
+}
+
+// 后台就近预热整本：WARM_POOL 个工人持续取「距当前页最近且未加载」的页。
+// 用户无论跳到哪，目标页大概率已被预热 → 命中内存/磁盘缓存，跳转无感。
+function startWarmup() {
+    warmSeq++
+    const seq = warmSeq
+    const needed = WARM_POOL - warmRunning
+    for (let i = 0; i < needed; i++) {
+        warmRunning++
+        warmWorker(seq).finally(() => warmRunning--)
+    }
+}
+function nextWarmIdx() {
+    const list = previewImages.value
+    if (!list.length) return -1
+    const cur = currentPage.value - 1
+    let best = -1, bestD = Infinity
+    for (let i = 0; i < list.length; i++) {
+        if (pageCache.has(i) || inflight.has(i)) continue
+        const d = Math.abs(i - cur)
+        if (d < bestD) { bestD = d; best = i }
+    }
+    return best
+}
+async function warmWorker(seq) {
+    while (warmSeq === seq) {
+        const i = nextWarmIdx()
+        if (i < 0) break
+        await fetchPageData(i)
+    }
 }
 
 function setTool(t) {
@@ -352,10 +547,10 @@ function setTool(t) {
 
 function applyZoom(d) {
     zoom.value = Math.min(4, Math.max(0.6, Math.round((zoom.value + d) * 10) / 10))
-    if (zoom.value === 1) { panX.value = 0; panY.value = 0 }
+    if (zoom.value === 1) { livePan.x = 0; livePan.y = 0 }
 }
 function resetView() {
-    zoom.value = 1; panX.value = 0; panY.value = 0
+    zoom.value = 1; livePan.x = 0; livePan.y = 0
 }
 function onStageWheel(e) {
     applyZoom(e.deltaY < 0 ? 0.2 : -0.2)
@@ -394,7 +589,6 @@ const panning = ref(false)
 let pressed = false
 let longPressTimer = null
 let activeStroke = null
-let lastPX = 0, lastPY = 0
 let downX = 0, downY = 0
 let downMoved = false
 
@@ -438,6 +632,8 @@ function onStageDown(e) {
     try { e.currentTarget?.setPointerCapture?.(e.pointerId) } catch (err) {}
     downX = e.clientX; downY = e.clientY; downMoved = false
     pressed = true
+    // 拖动过程禁过渡，保证图片跟手无粘滞（同步写 DOM，避免微任务延迟被 .18s 过渡拖慢）
+    setPaneTransition('none')
     if (activeTool.value === 'pen' || activeTool.value === 'eraser') {
         drawing = true
         activeStroke = {
@@ -452,30 +648,26 @@ function onStageDown(e) {
         annotations.set(curPageIdx.value, strokes)
         return
     }
+    if (activeTool.value === 'drag') {
+        // 拖动工具：按住立即平移页面位置（不做画笔、不受长按等待，放大后浏览位置专用）
+        panning.value = true
+        panStartX = livePan.x; panStartY = livePan.y
+        showLens.value = false
+        return
+    }
     // 放大镜/默认模式：长按（350ms 不移动）进入拖动位置
     longPressTimer = setTimeout(() => {
         if (zoom.value > 1 && pressed) {
             panning.value = true
-            lastPX = downX; lastPY = downY
+            panStartX = livePan.x; panStartY = livePan.y
         }
     }, 350)
 }
 
 function onStageMove(e) {
     if (Math.abs(e.clientX - downX) + Math.abs(e.clientY - downY) > 5) downMoved = true
-    if (panning.value) {
-        panX.value += e.clientX - lastPX
-        panY.value += e.clientY - lastPY
-        lastPX = e.clientX; lastPY = e.clientY
-        return
-    }
-    // 放大/缩小后，按下左键拖动即时生效（无需等 350ms，且不受 5px 阈值干扰）
-    if (pressed && zoom.value > 1 && downMoved && activeTool.value !== 'mag') {
-        panning.value = true
-        lastPX = e.clientX; lastPY = e.clientY
-        showLens.value = false
-        return
-    }
+    // 画笔/橡皮擦绘制必须优先于「放大后拖动平移」：
+    // 否则缩放超过 100% 时按住画笔，移动会被下方的平移分支抢走（panning → return），画不出线
     if (drawing && activeStroke) {
         const pos = eventPos(e)
         if (pos) {
@@ -486,21 +678,38 @@ function onStageMove(e) {
         }
         return
     }
+    if (panning.value) {
+        livePan.x = panStartX + (e.clientX - downX)
+        livePan.y = panStartY + (e.clientY - downY)
+        applyPaneStyle() // 直接写 DOM style：逐帧 0 次 Vue 重渲染，跟手不卡
+        return
+    }
+    // 放大/缩小后，按下左键拖动即时生效（无需等 350ms，且不受 5px 阈值干扰）
+    if (pressed && !drawing && zoom.value > 1 && downMoved && activeTool.value !== 'mag') {
+        panning.value = true
+        panStartX = livePan.x; panStartY = livePan.y
+        showLens.value = false
+        return
+    }
     if (activeTool.value === 'mag') updateLens(e)
     else showLens.value = false
 }
 
-function onStageUp() {
+function onStageUp(e) {
     clearTimeout(longPressTimer)
     panning.value = false
     drawing = false
     pressed = false
     activeStroke = null
+    // 恢复过渡：翻页滑入动画 / 未翻页回弹
+    setPaneTransition('transform .18s ease')
+    if (slideX.value !== 0) slideX.value = 0
 }
 
 function onStageLeave(e) {
     showLens.value = false
-    onStageUp()
+    // 拖动中（指针已被捕获到 pane）不在此中断，等 pointerup 统一收尾；仅空闲时复位
+    if (!pressed) onStageUp()
 }
 
 function updateLens(e) {
@@ -700,10 +909,6 @@ function fmtCount(n) {
         <template v-if="selectedBook">
             <div
                 class="reader-toolbar"
-                :class="{ floating: toolbarPos.x !== null }"
-                :style="toolbarPos.x !== null ? { left: toolbarPos.x + 'px', top: toolbarPos.y + 'px', right: 'auto' } : {}"
-                @mousedown="onToolbarDragStart"
-                @dblclick="resetToolbarPos"
             >
                 <button class="back-btn" @click="closeBook"><ChevronLeft :size="16" /> 返回教材库</button>
                 <div class="reader-title">{{ selectedBook.title }}</div>
@@ -718,8 +923,18 @@ function fmtCount(n) {
             <template v-else>
                 <div class="reader-layout">
                     <div class="page-preview" ref="previewBoxRef">
-                        <!-- 预览工具条 -->
-                        <div v-if="currentImage" class="tool-strip">
+                        <!-- 预览工具条：可拖动悬浮（按住左侧手柄拖动，双击复位） -->
+                        <div
+                            v-if="currentImage || pageLoading"
+                            class="tool-strip"
+                            :class="{ floating: toolbarPos.x !== null }"
+                            :style="toolbarPos.x !== null ? { left: toolbarPos.x + 'px', top: toolbarPos.y + 'px' } : {}"
+                            @mousedown="onToolbarDragStart"
+                            @dblclick="resetToolbarPos"
+                        >
+                            <button class="drag-handle" title="拖动工具栏（双击复位）"><GripVertical :size="13" /></button>
+                            <span class="tool-sep"></span>
+                            <button class="tool-btn" :class="{ on: activeTool === 'drag' }" :title="activeTool === 'drag' ? '退出拖动' : '拖动（浏览页面位置）'" @click="setTool('drag')"><Move :size="15" /></button>
                             <button class="tool-btn" :class="{ on: activeTool === 'mag' }" :title="activeTool === 'mag' ? '关闭放大镜' : '放大镜'" @click="setTool('mag')"><ZoomIn :size="15" /></button>
                             <button class="tool-btn" :class="{ on: activeTool === 'pen' }" :title="activeTool === 'pen' ? '关闭画笔' : '笔记（画笔）'" @click="setTool('pen')"><Highlighter :size="15" /></button>
                             <button class="tool-btn" :class="{ on: activeTool === 'eraser' }" :title="activeTool === 'eraser' ? '关闭橡皮擦' : '橡皮擦'" @click="setTool('eraser')"><Eraser :size="15" /></button>
@@ -737,11 +952,11 @@ function fmtCount(n) {
                         </div>
 
                         <template v-if="currentImage">
-                            <div class="img-stage" ref="stageRef" :class="{ penning: activeTool === 'pen' || activeTool === 'eraser', magging: activeTool === 'mag', 'panning-cursor': panning }">
+                            <div class="img-stage" ref="stageRef" :class="{ penning: activeTool === 'pen' || activeTool === 'eraser', magging: activeTool === 'mag', dragging: activeTool === 'drag', 'panning-cursor': panning }">
                                 <div
                                     class="pane"
                                     ref="paneRef"
-                                    :style="{ transform: paneTransform() }"
+                                    :style="{ transform: paneTransform(), transition: paneTransition }"
                                     @pointerdown="onStageDown"
                                     @pointermove="onStageMove"
                                     @pointerup="onStageUp"
@@ -757,12 +972,44 @@ function fmtCount(n) {
                             <p v-if="toolHint" class="tool-hint">{{ toolHint }}</p>
                             <div class="page-nav">
                                 <button class="page-arrow" @click="setImage(currentPage - 1)" :disabled="currentPage <= 1"><ChevronLeft :size="20" /></button>
+                                <div class="nav-slider-wrap">
+                                    <input
+                                        type="range"
+                                        class="page-slider"
+                                        min="1"
+                                        :max="previewImages.length"
+                                        :value="currentPage"
+                                        :style="{ '--fill': (previewImages.length > 1 ? (currentPage - 1) / (previewImages.length - 1) * 100 : 100) + '%' }"
+                                        @input="onSliderInput"
+                                    />
+                                </div>
                                 <button class="page-arrow" @click="setImage(currentPage + 1)" :disabled="currentPage >= previewImages.length"><ChevronLeft :size="20" style="transform:rotate(180deg)" /></button>
                             </div>
                         </template>
+                        <!-- 当前页正在取图（主进程 IPC 下载，占位载入态） -->
+                        <div v-else-if="pageLoading" class="detail-loading page-loading">
+                            <Loader2 :size="24" class="spin" />
+                            <span v-if="pageFail" class="page-fail-tip">第 {{ currentPage }} 页加载失败
+                                <button class="page-retry" @click="loadPageFor(currentPage - 1, true)">重试</button>
+                            </span>
+                            <span v-else class="page-fail-tip">第 {{ currentPage }} 页加载中…</span>
+                        </div>
                         <div v-else-if="imagesLoading" class="detail-loading"><Loader2 :size="24" class="spin" /></div>
                         <div v-else class="detail-empty">无预览图</div>
-                        <span class="page-ind" v-if="previewImages.length">{{ currentPage }} / {{ previewImages.length }}</span>
+                        <span class="page-ind" v-if="previewImages.length" title="点击用数字键盘跳转">
+                            <button class="page-jump" @click="openNumpad">{{ currentPage }}</button>
+                            / {{ previewImages.length }}
+                        </span>
+                        <!-- 小数字键盘：精准跳转 -->
+                        <div v-if="showNumpad" class="page-numpad">
+                            <div class="np-val">{{ numpadValue || '—' }}</div>
+                            <div class="np-grid">
+                                <button v-for="k in [7, 8, 9, 4, 5, 6, 1, 2, 3]" :key="k" class="np-key" @click="numpadKey(String(k))">{{ k }}</button>
+                                <button class="np-key" @click="numpadKey('0')">0</button>
+                                <button class="np-key back" title="删除" @click="numpadKey('back')"><Trash2 :size="13" /></button>
+                                <button class="np-key go" @click="numpadKey('go')">跳转</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="reader-side">
                         <div class="side-card">
@@ -1097,21 +1344,9 @@ function fmtCount(n) {
     display: flex;
     align-items: center;
     gap: 12px;
-    /* 默认钉在页首整行；拖动后经 floating 类改为定点悬浮 */
     position: relative;
     z-index: 30;
 }
-.reader-toolbar.floating {
-    position: fixed;
-    width: fit-content;
-    background: rgba(20, 24, 34, .92);
-    border: 1px solid rgba(255,255,255,.12);
-    border-radius: 10px;
-    padding: 8px 14px;
-    box-shadow: 0 8px 28px rgba(0,0,0,.45);
-    cursor: grab;
-}
-.reader-toolbar.floating:active { cursor: grabbing; }
 .back-btn {
     display: inline-flex;
     align-items: center;
@@ -1194,6 +1429,43 @@ function fmtCount(n) {
     box-shadow: 0 2px 10px rgba(0,0,0,.08);
     z-index: 6;
 }
+/* 拖动后定点悬浮（按住左侧手柄拖动，双击复位）——相对 .page-preview 定位（absolute），
+   全屏预览时容器坐标与视口一致，避免 fixed 在全屏元素内的定位异常导致全屏后拖不动 */
+.tool-strip.floating {
+    position: absolute;
+    transform: none;
+    background: rgba(20,24,34,.92);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.45);
+    cursor: grab;
+    z-index: 40;
+}
+.tool-strip.floating:active { cursor: grabbing; }
+.tool-strip.floating .drag-handle { color: #d8d8e0; }
+.tool-strip.floating .drag-handle:hover { background: rgba(255,255,255,.1); color: #EC4141; }
+.tool-strip.floating .tool-btn { color: #d8d8e0; }
+.tool-strip.floating .tool-btn:hover { background: rgba(255,255,255,.1); color: #EC4141; }
+.tool-strip.floating .tool-btn.on { background: rgba(236,65,65,.18); color: #EC4141; }
+.tool-strip.floating .tool-btn:disabled { opacity: .35; }
+.tool-strip.floating .tool-sep { background: rgba(255,255,255,.15); }
+.tool-strip.floating .zoom-val { color: #a8a8b5; }
+/* 工具栏拖动手柄 */
+.drag-handle {
+    min-width: 18px;
+    height: 26px;
+    border: none;
+    background: transparent;
+    border-radius: 6px;
+    color: #aaa;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: grab;
+    padding: 0 3px;
+    transition: all .15s;
+}
+.drag-handle:hover { background: #f0f0f0; color: #EC4141; }
 .tool-btn {
     min-width: 26px;
     height: 26px;
@@ -1226,12 +1498,18 @@ function fmtCount(n) {
 }
 .img-stage.penning { cursor: crosshair; }
 .img-stage.magging { cursor: crosshair; }
+.img-stage.dragging { cursor: grab; }
 .img-stage.panning-cursor { cursor: grabbing; }
+.img-stage.dragging.panning-cursor { cursor: grabbing; }
 
 .pane {
     position: relative;
     display: inline-block;
     transform-origin: center center;
+    /* 提升到合成层：拖动平移时只走 GPU 合成，不触发布局/绘制，消除卡顿 */
+    will-change: transform;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
     box-shadow: 0 2px 12px rgba(0,0,0,.12);
     border-radius: 2px;
 }
@@ -1278,7 +1556,8 @@ function fmtCount(n) {
     left: 0; right: 0; bottom: 10px;
     display: flex;
     justify-content: center;
-    gap: 40px;
+    align-items: center;
+    gap: 14px;
     z-index: 5;
 }
 .page-arrow {
@@ -1292,11 +1571,43 @@ function fmtCount(n) {
     justify-content: center;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(0,0,0,.1);
+    flex: none;
 }
 .page-arrow:disabled { opacity: .35; cursor: not-allowed; }
+/* 页码滑条：拖动自由跳页 */
+.nav-slider-wrap {
+    flex: 1;
+    max-width: 360px;
+    display: flex;
+    align-items: center;
+}
+.page-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(to right, #EC4141, #EC4141 var(--fill, 50%), #e5e6e7 var(--fill, 50%));
+    outline: none;
+    cursor: pointer;
+}
+.page-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid #EC4141;
+    box-shadow: 0 1px 4px rgba(0,0,0,.22);
+    transition: transform .12s;
+}
+.page-slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
 .page-ind {
     position: absolute;
     top: 12px; right: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
     background: rgba(0,0,0,.45);
     color: #fff;
     font-size: 11px;
@@ -1304,6 +1615,77 @@ function fmtCount(n) {
     padding: 2px 9px;
     z-index: 6;
 }
+/* 页码跳转：点击页码打开数字键盘 */
+.page-jump {
+    border: none;
+    background: transparent;
+    color: #fff;
+    font-size: 11px;
+    line-height: 1;
+    padding: 0 2px;
+    min-width: 20px;
+    text-align: center;
+    cursor: pointer;
+    border-bottom: 1px dashed rgba(255,255,255,.55);
+    transition: color .15s;
+}
+.page-jump:hover { color: #ff9d9d; }
+/* 小数字键盘：输入页码精准跳转 */
+.page-numpad {
+    position: absolute;
+    top: 34px; right: 12px;
+    width: 168px;
+    background: #fff;
+    border: 1px solid #eef0f2;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.16);
+    padding: 10px;
+    z-index: 40;
+    animation: np-in .16s ease;
+}
+@keyframes np-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: none; }
+}
+.np-val {
+    text-align: center;
+    font-size: 16px;
+    font-weight: 600;
+    color: #222;
+    padding: 4px 0 8px;
+    margin-bottom: 8px;
+    border-bottom: 1px dashed #ececec;
+    letter-spacing: 1px;
+    min-height: 26px;
+}
+.np-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+}
+.np-key {
+    height: 32px;
+    border: 1px solid #ececec;
+    background: #fafbfc;
+    border-radius: 6px;
+    font-size: 14px;
+    color: #333;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all .12s;
+}
+.np-key:hover { background: #f0f1f3; }
+.np-key:active { transform: scale(.96); }
+.np-key.back { color: #888; }
+.np-key.go {
+    background: #EC4141;
+    border-color: #EC4141;
+    color: #fff;
+    font-size: 12px;
+}
+.np-key.go:hover { background: #d93a3a; }
 
 .reader-side {
     width: 280px;
@@ -1415,6 +1797,19 @@ function fmtCount(n) {
     padding: 60px 0;
     color: #8a9199;
 }
+.page-loading { flex-direction: column; gap: 12px; min-height: 320px; }
+.page-fail-tip { font-size: 12px; color: #a0a4ab; display: inline-flex; align-items: center; gap: 8px; }
+.page-retry {
+    font-size: 12px;
+    color: #ec4141;
+    border: 1px solid #f0c6c6;
+    background: #fff5f5;
+    border-radius: 4px;
+    padding: 2px 10px;
+    cursor: pointer;
+    transition: all .15s;
+}
+.page-retry:hover { background: #ec4141; color: #fff; border-color: #ec4141; }
 .detail-empty {
     display: flex;
     align-items: center;

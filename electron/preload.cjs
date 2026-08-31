@@ -159,6 +159,7 @@ const bridgeAPI = {
     smartEduDownloadPdf: (contentId, title) => ipcRenderer.invoke('smart-edu:download-pdf', { contentId, title }),
     smartEduDownloadAudio: (url, title) => ipcRenderer.invoke('smart-edu:download-audio', { url, title }),
     smartEduProbeAudio: (url) => ipcRenderer.invoke('smart-edu:probe-audio', { url }),
+    smartEduFetchImage: (url) => ipcRenderer.invoke('smart-edu:fetch-image', { url }),
     smartEduLoginOpen: () => ipcRenderer.invoke('smart-edu:login-open'),
     smartEduLoginStatus: () => ipcRenderer.invoke('smart-edu:login-status'),
     smartEduLoginManual: (raw) => ipcRenderer.invoke('smart-edu:login-manual', { raw }),

@@ -368,6 +368,7 @@ export const smartEduAudios = (contentId) => animeBridge().smartEduAudios(conten
 export const smartEduDownloadPdf = (contentId, title) => animeBridge().smartEduDownloadPdf(contentId, title)
 export const smartEduDownloadAudio = (url, title) => animeBridge().smartEduDownloadAudio(url, title)
 export const smartEduProbeAudio = (url) => animeBridge().smartEduProbeAudio(url)
+export const smartEduFetchImage = (url) => animeBridge().smartEduFetchImage(url)
 export const smartEduLoginOpen = () => animeBridge().smartEduLoginOpen()
 export const smartEduLoginStatus = () => animeBridge().smartEduLoginStatus()
 export const smartEduLoginManual = (raw) => animeBridge().smartEduLoginManual(raw)

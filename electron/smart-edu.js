@@ -26,6 +26,42 @@ const AUDIO_URL = (id) => `https://s-file-2.ykt.cbern.com.cn/zxx/ndrs/resources/
 const AUTH_FILE = () => path.join(app.getPath('userData'), 'smart-edu-auth.json')
 let authCache = null // { token, cookie, userName, avatar, savedAt }
 
+// 预览图磁盘缓存（userData/smart-edu-preview-cache/<URL 相对路径>）
+// 目的：一本教材整本预读后，任意跳页都由主进程本地读盘返回，跳过网络 → 秒级跳转；
+// 且内存只保留 16 张 dataURL（极低占用），其余全部落在磁盘。
+const PREVIEW_CACHE_DIR = () => path.join(app.getPath('userData'), 'smart-edu-preview-cache')
+const MIME_BY_EXT = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp' }
+// 从 URL 提取可落盘的相对路径（如 .../esp/assets/<asset>/zh-CN/<ts>/transcode/image/77.jpg → 完整子路径）
+function previewCachePath(url) {
+  try {
+    const u = new URL(url)
+    let rel = u.pathname.replace(/^\/+/, '').replace(/[^\w\-.~/@]/g, '_')
+    if (!rel) return null
+    return path.join(PREVIEW_CACHE_DIR(), ...rel.split('/'))
+  } catch { return null }
+}
+
+// —— 目录 / 页数磁盘缓存（userData JSON，毫秒级二次打开）——
+// 目录合并结果缓存 24h（教材分片列表变动不频繁）；页数探测缓存 30 天（同册次 transcode 目录固定），
+// 避免每次进入智慧教材页 / 每打开一本书都重新串行拉全部分片 / 重新二分探测页数。
+const JSON_CACHE_DIR = () => app.getPath('userData')
+const CATALOG_CACHE_FILE = () => path.join(JSON_CACHE_DIR(), 'smart-edu-catalog.json')
+const PAGE_COUNT_CACHE_FILE = () => path.join(JSON_CACHE_DIR(), 'smart-edu-pagecount-cache.json')
+function readJsonCache(file, ttlMs) {
+  try {
+    const raw = fs.readFileSync(file, 'utf8')
+    const obj = JSON.parse(raw)
+    if (obj && typeof obj === 'object' && Date.now() - (obj.at || 0) < ttlMs) return obj.data
+  } catch {}
+  return null
+}
+function writeJsonCache(file, data) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, JSON.stringify({ at: Date.now(), data }))
+  } catch {}
+}
+
 function loadAuth(force = false) {
   if (authCache && !force) return authCache
   try {
@@ -72,19 +108,35 @@ const http = axios.create({
 
 // ===== 教材目录 =====
 // data_version.json -> urls(逗号分隔的分片 JSON 列表) -> 每片是一个数组，元素含 id/title/tag_list/custom_properties
+// 性能：磁盘缓存 24h（二次进入智慧教材页毫秒级直出）；未命中时分片 8 并发下载（串行逐个拉几千本要几十秒）
+const CATALOG_TTL = 24 * 60 * 60 * 1000
 async function getCatalog() {
-  const verRes = await http.get(CATALOG_VERSION_URL)
+  const cached = readJsonCache(CATALOG_CACHE_FILE(), CATALOG_TTL)
+  if (cached && Array.isArray(cached)) return cached
+
+  let verRes
+  try { verRes = await http.get(CATALOG_VERSION_URL) }
+  catch (e) { throw new Error('目录版本加载失败: ' + e.message) }
   if (verRes.status !== 200) throw new Error('目录版本加载失败: HTTP ' + verRes.status)
   const urls = (verRes.data?.urls || '').split(',').map(s => s.trim()).filter(Boolean)
   const books = []
-  for (const u of urls) {
-    let res
-    try { res = await http.get(u) } catch (e) { continue }
-    if (res.status !== 200 || !Array.isArray(res.data)) continue
-    for (const e of res.data) {
-      const b = parseTextbook(e)
-      if (b.id && b.title) books.push(b)
+  const CONC = 8
+  for (let i = 0; i < urls.length; i += CONC) {
+    const chunk = urls.slice(i, i + CONC)
+    const results = await Promise.all(chunk.map(u => http.get(u).catch(() => null)))
+    for (const res of results) {
+      if (!res || res.status !== 200 || !Array.isArray(res.data)) continue
+      for (const e of res.data) {
+        const b = parseTextbook(e)
+        if (b.id && b.title) books.push(b)
+      }
     }
+  }
+  // 拉取失败/超时导致为空时，回退到过期缓存，避免每次硬啃网络
+  if (!books.length) {
+    const stale = readJsonCache(CATALOG_CACHE_FILE(), Infinity)
+    if (stale && Array.isArray(stale) && stale.length) return stale
+    throw new Error('教材目录为空')
   }
   const pick = (b) => b.stage || '\uffff'
   const bySubject = (b) => b.subject || '\uffff'
@@ -92,6 +144,7 @@ async function getCatalog() {
   const term = (b) => b.term || '\uffff'
   const title = (b) => b.title || ''
   books.sort((a, b) => pick(a).localeCompare(pick(b), 'zh-CN') || bySubject(a).localeCompare(bySubject(b), 'zh-CN') || grade(a).localeCompare(grade(b), 'zh-CN') || term(a).localeCompare(term(b), 'zh-CN') || title(a).localeCompare(title(b), 'zh-CN'))
+  writeJsonCache(CATALOG_CACHE_FILE(), books)
   return books
 }
 
@@ -117,8 +170,13 @@ function parseTextbook(e) {
 // 解析出图片目录后用 翻倍+二分 探测真实总页数，生成 1..N 全部页图。
 // PDF：ti_items 中 ti_file_flag=source && ti_format=pdf 的 ti_storages[0]（需 X-Nd-Auth，私有 CDN）
 const pageCountCache = new Map()
+const detailCache = new Map() // contentId -> { at, data }：智能阅读页会先调 detail 再调 preview，两次都走 getDetail，内存缓存避免重复网络请求
+const DETAIL_TTL = 5 * 60 * 1000
 
 async function getDetail(contentId) {
+  const hit = detailCache.get(contentId)
+  if (hit && Date.now() - hit.at < DETAIL_TTL) return hit.data
+
   const token = rawToken()
   const url = DETAIL_URL(contentId)
 
@@ -158,7 +216,9 @@ async function getDetail(contentId) {
     }
   }
 
-  return { previewDir, pdfUrl, title: detail?.title || '', pageCount: previewDir ? await probePageCount(previewDir) : 0 }
+  const result = { previewDir, pdfUrl, title: detail?.title || '', pageCount: previewDir ? await probePageCount(previewDir) : 0 }
+  detailCache.set(contentId, { at: Date.now(), data: result })
+  return result
 }
 
 function firstString(pv) {
@@ -176,13 +236,30 @@ function firstString(pv) {
   return null
 }
 
-// 翻倍探测 + 二分：确定 1..N.jpg 最大可访问页数（公开 CDN 免登录；带缓存）
+// 翻倍探测 + 二分：确定 1..N.jpg 最大可访问页数（公开 CDN 免登录；内存 + 磁盘缓存 30 天）
+// 只发 Range 取前 256 字节判定存在，避免探测页数时把整张图下载下来（原来每次开书都白下几十张图）
+const PAGE_COUNT_TTL = 30 * 24 * 60 * 60 * 1000
+let pageCountDiskCache = null
+function loadPageCountDisk() {
+  if (pageCountDiskCache === null) {
+    const d = readJsonCache(PAGE_COUNT_CACHE_FILE(), PAGE_COUNT_TTL)
+    pageCountDiskCache = (d && typeof d === 'object') ? d : {}
+  }
+  return pageCountDiskCache
+}
 async function probePageCount(baseDir) {
   if (pageCountCache.has(baseDir)) return pageCountCache.get(baseDir)
+  const diskMap = loadPageCountDisk()
+  if (typeof diskMap[baseDir] === 'number') {
+    pageCountCache.set(baseDir, diskMap[baseDir])
+    return diskMap[baseDir]
+  }
   const exists = async (n) => {
     try {
-      const res = await http.get(`${baseDir}/${n}.jpg`, { timeout: 8000, maxRedirects: 2 })
-      return res.status === 200
+      const res = await http.get(`${baseDir}/${n}.jpg`, {
+        timeout: 6000, maxRedirects: 2, headers: { Range: 'bytes=0-255' }
+      })
+      return res.status === 200 || res.status === 206
     } catch { return false }
   }
   let count = 0
@@ -197,6 +274,8 @@ async function probePageCount(baseDir) {
     count = best
   }
   pageCountCache.set(baseDir, count)
+  diskMap[baseDir] = count
+  writeJsonCache(PAGE_COUNT_CACHE_FILE(), diskMap)
   return count
 }
 
@@ -507,6 +586,40 @@ export function registerSmartEduHandlers() {
   ipcMain.handle('smart-edu:audios', async (_, { contentId }) => {
     try { return { success: true, data: await getAudios(contentId) } }
     catch (e) { return { success: false, error: e.message } }
+  })
+  // 预览图取回：由主进程直接下载（Node 层 CDN 放行，渲染进程 new Image() 对智教 CDN 会 403/坏缓存污染），
+  // 转 base64 返回，前端缓存为 dataURL 实现秒级跳转。匿名失败（私有教材）则带令牌重试。
+  // 磁盘缓存：URL 相对路径落盘到 userData/smart-edu-preview-cache，二次命中原生读盘，跨进程/跨会话秒开。
+  ipcMain.handle('smart-edu:fetch-image', async (_, { url }) => {
+    try {
+      if (!/^https?:\/\//i.test(String(url || ''))) return { ok: false }
+      const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      const cacheFile = previewCachePath(url)
+      // 1) 磁盘缓存优先：直接读回（本地毫秒级，不占内存）
+      if (cacheFile) {
+        try {
+          const buf = fs.readFileSync(cacheFile)
+          if (buf && buf.length > 0) {
+            const mime = MIME_BY_EXT[path.extname(cacheFile).toLowerCase()] || 'image/jpeg'
+            return { ok: true, fromCache: true, mime, b64: buf.toString('base64') }
+          }
+        } catch {}
+      }
+      // 2) 网络下载（匿名失败自动带令牌重试），成功后写盘供下次秒读
+      let r
+      try {
+        r = await axios.get(url, { headers: { 'User-Agent': UA }, responseType: 'arraybuffer', timeout: 15000 })
+      } catch (e1) {
+        const h = getSmartEduHeaders()
+        if (!h) return { ok: false }
+        r = await axios.get(url, { headers: { ...h, 'User-Agent': UA }, responseType: 'arraybuffer', timeout: 15000 })
+      }
+      const mime = (r.headers['content-type'] || 'image/jpeg').split(';')[0]
+      if (cacheFile && r.data && r.data.length > 0) {
+        try { fs.mkdirSync(path.dirname(cacheFile), { recursive: true }); fs.writeFileSync(cacheFile, r.data) } catch {}
+      }
+      return { ok: true, mime, b64: Buffer.from(r.data).toString('base64') }
+    } catch (e) { return { ok: false } }
   })
   // 下载整本 PDF（私有 CDN 需 X-Nd-Auth 令牌，主进程注入后交给统一下载管理器 128 线程下载）
   ipcMain.handle('smart-edu:download-pdf', async (_, { contentId, title }) => {
