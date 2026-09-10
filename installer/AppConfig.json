@@ -1,0 +1,11 @@
+{
+  "appName": "茗韵时光",
+  "appExe": "茗韵时光.exe",
+  "uninstallKey": "茗韵时光",
+  "displayVersion": "3.4.5",
+  "publisher": "xiaomingky",
+  "repo": "xiaomingky/MingYunTime",
+  "defaultInstallDir": "%LOCALAPPDATA%\\Programs\\MingYunTime",
+  "downloadBase": "https://github.com/xiaomingky/MingYunTime/releases/latest/download",
+  "downloadFile": "MingYunTime-3.4.5-win.7z"
+}

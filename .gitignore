@@ -74,3 +74,5 @@ update_report.md
 .workbuddy/
 release-v342/
 
+installer/bin/
+installer/obj/

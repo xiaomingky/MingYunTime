@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "set NODE_OPTIONS=--max-old-space-size=1024 && vite",
     "dev:light": "set NODE_OPTIONS=--max-old-space-size=512 && vite",
-    "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && vite build && electron-builder",
+    "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/clean-dist.cjs && node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && vite build && electron-builder",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -54,6 +54,8 @@
   "build": {
     "appId": "com.mingyuntime.app",
     "productName": "茗韵时光",
+    "compression": "maximum",
+    "afterPack": "scripts/afterPack.cjs",
     "directories": {
       "output": "release"
     },
@@ -64,7 +66,6 @@
       "package.json"
     ],
     "extraResources": [
-      "font/**",
       {
         "from": "resources/aria2c.exe",
         "to": "aria2c.exe"
@@ -217,6 +218,12 @@
       "target": [
         {
           "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "7z",
           "arch": [
             "x64"
           ]

@@ -673,19 +673,17 @@ const close = () => {
   overflow: hidden;
 }
 
-/* 歌词切换动画：淡入 + 微上滑 */
+/* 歌词切换动画：纯淡入（去掉位移/弹跳感） */
 .lyric-line-current.lyric-fade-in {
-  animation: lyric-slide-in 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+  animation: lyric-fade-in 0.25s ease-out both;
 }
 
-@keyframes lyric-slide-in {
+@keyframes lyric-fade-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
   }
 }
 

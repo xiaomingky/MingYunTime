@@ -1,0 +1,227 @@
+<Window x:Class="MingYunInstaller.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="茗韵时光安装" Width="500" Height="690"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None" ResizeMode="NoResize"
+        Background="White" SnapsToDevicePixels="True"
+        UseLayoutRounding="True" ShowInTaskbar="False">
+    <Window.Resources>
+        <!-- 版本列表加载中的旋转动画 -->
+        <Storyboard x:Key="SpinAnim" RepeatBehavior="Forever">
+            <DoubleAnimation Storyboard.TargetName="SpinRot" Storyboard.TargetProperty="Angle"
+                             From="0" To="360" Duration="0:0:0.9"/>
+        </Storyboard>
+        <!-- 环形进度内圈光弧常转动画 -->
+        <Storyboard x:Key="RingSpin" RepeatBehavior="Forever">
+            <DoubleAnimation Storyboard.TargetName="InnerSpin" Storyboard.TargetProperty="Angle"
+                             From="0" To="360" Duration="0:0:1.4"/>
+        </Storyboard>
+    </Window.Resources>
+
+    <Border BorderBrush="#E6E6E6" BorderThickness="1" CornerRadius="16" Background="White">
+        <Grid x:Name="Root">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- ===== 顶部品牌区（图标 + 标题 + 关闭） ===== -->
+            <Grid Grid.Row="0" MouseLeftButtonDown="Header_MouseDown">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Width="64" Height="64" CornerRadius="15" Margin="22,18,0,10"
+                        Background="White">
+                    <Border.Effect>
+                        <DropShadowEffect BlurRadius="14" ShadowDepth="0" Opacity="0.18" Color="#EC4141"/>
+                    </Border.Effect>
+                    <Grid>
+                        <Border CornerRadius="15" Background="#EC4141" Opacity="0.95"/>
+                        <Image x:Name="AppIcon" Width="48" Height="48" Stretch="Uniform" Margin="8"/>
+                    </Grid>
+                </Border>
+                <StackPanel Grid.Column="1" Margin="16,0,0,0" VerticalAlignment="Center">
+                    <TextBlock x:Name="TitleText" Text="茗韵时光" FontSize="20" FontWeight="SemiBold" Foreground="#2E2E2E"/>
+                    <TextBlock x:Name="SubText" Text="安装助手" FontSize="12" Foreground="#9A9A9A" Margin="0,4,0,0"/>
+                </StackPanel>
+                <Button Grid.Column="2" x:Name="CloseBtn" Content="✕" Style="{StaticResource IconBtn}"
+                        Margin="0,10,14,0" VerticalAlignment="Top" ToolTip="取消并关闭" Click="CloseBtn_Click"/>
+            </Grid>
+
+            <!-- ===== 顶部渐变分隔条 ===== -->
+            <Border Grid.Row="1" Height="1.5" Margin="26,0">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                        <GradientStop Color="#00EC4141" Offset="0"/>
+                        <GradientStop Color="#66EC4141" Offset="0.5"/>
+                        <GradientStop Color="#00EC4141" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+            </Border>
+
+            <!-- ===== 中部内容 ===== -->
+            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Padding="24,14,24,6">
+                <StackPanel>
+                    <!-- 状态信息 -->
+                    <Border Background="#FFF8F8" BorderBrush="#FADEDE" BorderThickness="1" CornerRadius="10" Padding="14,10" Margin="0,0,0,14">
+                        <StackPanel>
+                            <TextBlock x:Name="InfoText" Text="" TextWrapping="Wrap" FontSize="12.5"
+                                       Foreground="#B33737" LineHeight="19"/>
+                            <TextBlock x:Name="FileInfoText" Text="" TextWrapping="Wrap" FontSize="11"
+                                       Foreground="#C97B7B" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 版本来源 -->
+                    <TextBlock Text="版本来源" FontSize="13" FontWeight="SemiBold" Foreground="#333" Margin="1,0,0,8"/>
+                    <Grid x:Name="SegBack" Height="40">
+                        <Border Background="#F1F1F1" CornerRadius="20"/>
+                        <Border x:Name="SegInd" HorizontalAlignment="Left" Margin="3,0" CornerRadius="17"
+                                Background="White" BorderBrush="#EDEDED" BorderThickness="1">
+                            <Border.Effect>
+                                <DropShadowEffect BlurRadius="10" ShadowDepth="1" Opacity="0.12" Color="#000000" Direction="270"/>
+                            </Border.Effect>
+                            <Border.RenderTransform>
+                                <TranslateTransform x:Name="IndTrans" X="0"/>
+                            </Border.RenderTransform>
+                        </Border>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" x:Name="OnlineBtn" Content="线上版本" Style="{StaticResource SegButton}" Click="OnlineBtn_Click"/>
+                            <Button Grid.Column="1" x:Name="LocalBtn" Content="本地压缩包" Style="{StaticResource SegButton}" Click="LocalBtn_Click"/>
+                        </Grid>
+                    </Grid>
+
+                    <!-- ===== 线上面板 ===== -->
+                    <StackPanel x:Name="OnlineArea" Margin="0,10,0,0">
+                        <!-- 加载中 -->
+                        <Grid x:Name="VersionLoading" Height="128" Visibility="Collapsed">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Grid Width="20" Height="20" HorizontalAlignment="Center">
+                                    <Grid.RenderTransform>
+                                        <RotateTransform x:Name="SpinRot" CenterX="10" CenterY="10"/>
+                                    </Grid.RenderTransform>
+                                    <Path Stroke="#ECECEC" StrokeThickness="2.2" Data="M 10 2 A 8 8 0 1 1 9.9 2"/>
+                                    <Path Stroke="#EC4141" StrokeThickness="2.2" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                          Data="M 10 2 A 8 8 0 0 1 16.5 6"/>
+                                </Grid>
+                                <TextBlock FontSize="12" Foreground="#999" Text="正在获取版本列表…" Margin="0,10,0,0" HorizontalAlignment="Center"/>
+                            </StackPanel>
+                        </Grid>
+                        <!-- 加载失败 -->
+                        <TextBlock x:Name="VersionError" Text="" Visibility="Collapsed" TextWrapping="Wrap" FontSize="12"
+                                   Foreground="#D93A3A" Cursor="Hand" HorizontalAlignment="Center" Margin="0,14"
+                                   ToolTip="点击重试" MouseLeftButtonDown="RetryVersions_Click"/>
+                        <!-- 版本列表 -->
+                        <ListBox x:Name="VersionList" Style="{StaticResource VersionList}" Height="132"
+                                 ItemContainerStyle="{StaticResource VerItem}"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 SelectionChanged="VersionList_SelectionChanged">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Tag}" FontSize="13" FontWeight="SemiBold" Foreground="#3D3D3D" VerticalAlignment="Center"/>
+                                            <Border Background="#FFF1F1" CornerRadius="4" Padding="5,1" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                    Visibility="{Binding IsLatest, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="最新" FontSize="9.5" Foreground="#EC4141"/>
+                                            </Border>
+                                        </StackPanel>
+                                        <TextBlock Margin="0,3,0,0" FontSize="11" Foreground="#8A8A8A">
+                                            <Run Text="{Binding DateText}"/><Run Text="  ·  "/><Run Text="{Binding SizeText}"/>
+                                            <Run Text="  ·  "/><Run Text="{Binding KindText}"/>
+                                        </TextBlock>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <!-- 提示 -->
+                        <Border Background="#FFF8F8" CornerRadius="8" Padding="10,7" Margin="0,8,0,0">
+                            <TextBlock Text="使用内置 aria2c · 16 连接 × 64 分片 · 不限速" FontSize="11" Foreground="#C97B7B"/>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ===== 本地面板 ===== -->
+                    <StackPanel x:Name="LocalArea" Margin="0,10,0,0" Visibility="Collapsed">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="LocalFileBox" Style="{StaticResource ModernTextBox}"
+                                     ToolTip="选择 .7z / .zip 安装包"/>
+                            <Button Grid.Column="1" Content="选择文件…" Style="{StaticResource GhostButton}" Height="38"
+                                    Margin="8,0,0,0" Click="BrowseLocal_Click"/>
+                        </Grid>
+                        <TextBlock x:Name="LocalHint" TextWrapping="Wrap" FontSize="11" Foreground="#999" Margin="1,8,0,0" Height="38"/>
+                    </StackPanel>
+
+                    <!-- 安装位置 -->
+                    <TextBlock Text="安装位置" FontSize="13" FontWeight="SemiBold" Foreground="#333" Margin="1,16,0,8"/>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="InstallDirBox" Style="{StaticResource ModernTextBox}"/>
+                        <Button Grid.Column="1" Content="浏览…" Style="{StaticResource GhostButton}" Height="38" Margin="8,0,0,0" Click="BrowseDir_Click"/>
+                    </Grid>
+
+                    <!-- 选项 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                        <CheckBox x:Name="DesktopChk" Content="创建桌面快捷方式" Style="{StaticResource ModernCheckBox}" IsChecked="True"/>
+                        <CheckBox x:Name="LaunchChk" Content="安装完成后启动" Style="{StaticResource ModernCheckBox}" IsChecked="True" Margin="18,0,0,0"/>
+                    </StackPanel>
+
+                    <!-- 进度区：环形转圈进度 -->
+                    <Grid Margin="0,14,0,6" HorizontalAlignment="Center">
+                        <Grid Width="88" Height="88">
+                            <Path Stroke="#F1F1F1" StrokeThickness="7" StrokeStartLineCap="Round"
+                                  Data="M 44 4 A 40 40 0 1 1 43.9 4"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <Path x:Name="RingFill" Stroke="#EC4141" StrokeThickness="7"
+                                  StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+                                  Data="M 44 4 A 40 40 0 1 1 43.9 4"
+                                  StrokeDashArray="251.4" StrokeDashOffset="251.4"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="PctText" Text="0%" FontSize="17" FontWeight="SemiBold" Foreground="#EC4141"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
+                        <Grid Width="56" Height="56" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Grid.RenderTransform>
+                                <RotateTransform x:Name="InnerSpin" CenterX="28" CenterY="28"/>
+                            </Grid.RenderTransform>
+                            <Path Stroke="#EC4141" StrokeThickness="3" Opacity="0.5" StrokeStartLineCap="Round"
+                                  Data="M 28 4 A 24 24 0 0 1 48 20"/>
+                        </Grid>
+                    </Grid>
+                    <TextBlock x:Name="StatusText" Text="" FontSize="11.5" Foreground="#666" Margin="1,10,0,0" TextWrapping="Wrap" HorizontalAlignment="Center"/>
+                    <TextBlock x:Name="SpdText" Text="" FontSize="11" Foreground="#B0B0B0" Margin="1,4,0,0" TextWrapping="Wrap" HorizontalAlignment="Center"/>
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- ===== 底部操作 ===== -->
+            <Border Grid.Row="3" Background="#FAFAFA" BorderBrush="#F0F0F0" BorderThickness="0,1,0,0"
+                    CornerRadius="0,0,16,16" Padding="22,13">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="FootText" VerticalAlignment="Center" FontSize="11" Foreground="#B0B0B0" TextWrapping="Wrap" Margin="0,0,12,0"/>
+                    <Button Grid.Column="1" Content="取消安装" Style="{StaticResource GhostButton}" Width="96" Margin="0,0,10,0" Click="CancelBtn_Click"/>
+                    <Button Grid.Column="2" x:Name="InstallBtn" Content="立即安装" Style="{StaticResource PrimaryButton}" Click="InstallBtn_Click"/>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>
