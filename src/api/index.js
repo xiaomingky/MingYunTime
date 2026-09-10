@@ -330,6 +330,7 @@ export const animeMetaRelated = (bgmId) => animeBridge().invoke('anime:meta:rela
 // ---------- B站视频专区（独立模块，通过 Electron IPC 调用主进程） ----------
 export const biliVideoHome = (params = {}) => animeBridge().invoke('bilibili:video-home', params)
 export const biliVideoSearch = (params) => animeBridge().invoke('bilibili:video-search', params)
+export const biliLivePlayurl = (roomId) => animeBridge().invoke('bilibili:live-playurl', { roomId })
 export const biliVideoDetail = (bvid) => animeBridge().invoke('bilibili:video-detail', { bvid })
 export const biliVideoPlayurl = (params) => animeBridge().invoke('bilibili:video-playurl', params)
 export const biliVideoSeasonDetail = (params) => animeBridge().invoke('bilibili:video-season-detail', params)

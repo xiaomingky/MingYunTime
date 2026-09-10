@@ -10,7 +10,8 @@ import { useTabIndicator } from '../composables/useTabIndicator'
 import SearchSuggest from '../components/SearchSuggest.vue'
 import BiliCookieLogin from '../components/BiliCookieLogin.vue'
 import BiliIcon from '../components/BiliIcon.vue'
-import { Search, Loader2, Tv, Music, Gamepad2, BookOpen, Smartphone, Coffee, Dog, Wand2, Shirt, PartyPopper, Clapperboard, MonitorPlay, RefreshCw, X, Check, LogOut, Flame, TrendingUp, Play, MessageSquare, ChevronLeft, ChevronRight, Sparkles, Folder, Heart, Film, Star } from 'lucide-vue-next'
+import CustomSelect from '../components/CustomSelect.vue'
+import { Search, Loader2, Tv, Music, Gamepad2, BookOpen, Smartphone, Coffee, Dog, Wand2, Shirt, PartyPopper, Clapperboard, MonitorPlay, RefreshCw, X, Check, LogOut, Flame, TrendingUp, Play, MessageSquare, ChevronLeft, ChevronRight, Sparkles, Folder, Heart, Film, Star, Radio, ArrowUpDown } from 'lucide-vue-next'
 import './anime-common.css'
 
 // keep-alive include 按组件名匹配（App.vue 缓存本列表页，返回时保留搜索/收藏夹状态）
@@ -250,10 +251,35 @@ const { indicatorStyle: regionIndicatorStyle, indicatorVisible: regionIndicatorV
 const searchType = ref('video')
 const SEARCH_TYPES = [
     { key: 'video', label: '视频' },
+    { key: 'live', label: '直播' },
     { key: 'bangumi', label: '番剧' },
     { key: 'movie', label: '影视' }
 ]
-const isPgcSearch = computed(() => searchType.value !== 'video')
+// 搜索排序（视频类型可用）：'' 综合 / click 热度降序 / click_asc 热度升序 / pubdate 最新 / dm 弹幕 / stow 收藏
+const SEARCH_ORDERS = [
+    { key: '', label: '综合' },
+    { key: 'click', label: '热度·降序' },
+    { key: 'click_asc', label: '热度·升序' },
+    { key: 'pubdate', label: '最新发布' },
+    { key: 'dm', label: '弹幕最多' },
+    { key: 'stow', label: '收藏最多' }
+]
+// 自定义下拉选项（CustomSelect：{value,label}）
+const SEARCH_TYPE_OPTIONS = SEARCH_TYPES.map(t => ({ value: t.key, label: t.label }))
+const SEARCH_ORDER_OPTIONS = SEARCH_ORDERS.map(o => ({ value: o.key, label: o.label }))
+// 当前搜索类型图标（下拉触发器前缀展示）
+const searchTypeIcon = computed(() => {
+    const t = SEARCH_TYPES.find(x => x.key === searchType.value)
+    if (!t) return Clapperboard
+    return t.key === 'video' ? Clapperboard : t.key === 'live' ? Radio : (t.key === 'bangumi' ? Tv : Film)
+})
+// 输入框占位：直播类型提示可搜直播间或主播名（live_room 接口同时匹配标题与主播名）
+const searchPlaceholder = computed(() =>
+    searchType.value === 'live' ? '搜索直播间或主播名...' : '搜索B站视频、番剧、影视...'
+)
+const searchOrder = ref('')
+const isPgcSearch = computed(() => searchType.value === 'bangumi' || searchType.value === 'movie')
+const isLiveSearch = computed(() => searchType.value === 'live')
 let blurTimer = null
 
 const onSearchFocus = () => {
@@ -276,7 +302,7 @@ async function handleSearch() {
     searchMode.value = true
     searchPage.value = 1
     try {
-        const res = await biliVideoSearch({ keyword: keyword.value, page: 1, type: searchType.value })
+        const res = await biliVideoSearch({ keyword: keyword.value, page: 1, type: searchType.value, order: searchOrder.value })
         if (res?.success && res.data) {
             searchResults.value = res.data.list || []
             searchHasMore.value = !!res.data.hasMore
@@ -291,17 +317,26 @@ async function handleSearch() {
     }
 }
 
-// 切换搜索类型：已有关键词时自动重搜
-function switchSearchType(t) {
-    if (searchType.value === t) return
-    searchType.value = t
+// 搜索类型下拉变化：v-model 已同步（update:modelValue 先于 change 触发），已有关键词自动重搜
+function onSearchTypeChange() {
+    if (searchType.value === 'live') searchOrder.value = ''
     if (searchMode.value && keyword.value.trim()) handleSearch()
+}
+// 排序下拉变化：仅视频类型显示，变化后自动重搜
+function onSearchOrderChange() {
+    if (searchMode.value && keyword.value.trim()) handleSearch()
+}
+
+// 点击直播卡片进入直播间（FLV 播放页）
+function openLiveRoom(roomId) {
+    if (!roomId) return
+    router.push(`/bilibili/live/${roomId}`)
 }
 
 async function searchGoPage(p) {
     searchLoading.value = true
     try {
-        const res = await biliVideoSearch({ keyword: keyword.value, page: p, type: searchType.value })
+        const res = await biliVideoSearch({ keyword: keyword.value, page: p, type: searchType.value, order: searchOrder.value })
         if (res?.success && res.data) {
             searchResults.value = res.data.list || []
             searchHasMore.value = !!res.data.hasMore
@@ -525,7 +560,7 @@ onUnmounted(() => {
             <Search :size="16" class="search-icon" />
             <input
                 v-model="keyword"
-                placeholder="搜索B站视频..."
+                :placeholder="searchPlaceholder"
                 @keyup.enter="handleSearch"
                 @focus="onSearchFocus"
                 @blur="onSearchBlur"
@@ -542,18 +577,25 @@ onUnmounted(() => {
                 <Search v-else :size="14" />
                 搜索
             </button>
-            <!-- 搜索类型切换：视频 / 番剧 / 影视 -->
-            <div class="search-type-tabs">
-                <button
-                    v-for="t in SEARCH_TYPES"
-                    :key="t.key"
-                    class="search-type-tab"
-                    :class="{ active: searchType === t.key }"
-                    @click="switchSearchType(t.key)"
+            <!-- 搜索类型与排序：统一自定义下拉（直播/番剧/影视类型、视频排序均可下拉选择） -->
+            <div class="search-type-tabs" :class="{ 'type-active': searchType !== 'video' }">
+                <CustomSelect
+                    v-model="searchType"
+                    :options="SEARCH_TYPE_OPTIONS"
+                    class="cs-sel cs-sel-type"
+                    @change="onSearchTypeChange"
                 >
-                    <component :is="t.key === 'video' ? Clapperboard : (t.key === 'bangumi' ? Tv : Film)" :size="13" />
-                    {{ t.label }}
-                </button>
+                    <template #trigger-prefix>
+                        <component :is="searchTypeIcon" :size="13" />
+                    </template>
+                </CustomSelect>
+                <CustomSelect
+                    v-if="searchType === 'video'"
+                    v-model="searchOrder"
+                    :options="SEARCH_ORDER_OPTIONS"
+                    class="cs-sel cs-sel-order"
+                    @change="onSearchOrderChange"
+                />
             </div>
             <button v-if="searchMode" class="back-btn" @click="exitSearch()">返回首页</button>
         </div>
@@ -569,7 +611,28 @@ onUnmounted(() => {
 
         <!-- 搜索结果模式 -->
         <template v-else-if="searchMode">
-            <div class="results-info">共找到 {{ searchResults.length }} 个{{ isPgcSearch ? (searchType === 'bangumi' ? '番剧' : '影视') : '视频' }}{{ searchHasMore ? '（当前页）' : '' }}</div>
+            <div class="results-info">共找到 {{ searchResults.length }} 个{{ isLiveSearch ? '直播' : (isPgcSearch ? (searchType === 'bangumi' ? '番剧' : '影视') : '视频') }}{{ searchHasMore ? '（当前页）' : '' }}</div>
+            <!-- 直播搜索结果 -->
+            <div class="bili-grid" v-if="isLiveSearch && searchResults.length">
+                <div
+                    v-for="(item, idx) in searchResults"
+                    :key="item.roomId"
+                    class="bili-card live"
+                    v-reveal="(idx % 12) * 35"
+                    @click="openLiveRoom(item.roomId)"
+                >
+                    <div class="bili-cover">
+                        <img v-if="item.cover && !isCoverFailed(item.cover)" :src="item.cover" alt="" referrerpolicy="no-referrer" @error="onCoverError(item.cover)" />
+                        <div v-else class="cover-placeholder"><Radio :size="32" /></div>
+                        <span class="live-badge"><Radio :size="10" style="vertical-align:-1px" /> 直播中</span>
+                        <span class="live-online"><BiliIcon name="playcount" :size="12" /> {{ fmtCount(item.online) }}人观看</span>
+                    </div>
+                    <div class="bili-info">
+                        <p class="bili-title" :title="item.title">{{ item.title }}</p>
+                        <p class="bili-author" :class="{ link: item.uid }" :title="item.uid ? '查看主播主页' : ''" @click.stop="goUserSpace(item.uid)"><Tv :size="12" /> {{ item.uname }}<template v-if="item.areaName"> · {{ item.areaName }}</template></p>
+                    </div>
+                </div>
+            </div>
             <!-- PGC（番剧/影视）搜索结果卡片 -->
             <div class="bili-grid" v-if="isPgcSearch && searchResults.length">
                 <div
@@ -596,7 +659,7 @@ onUnmounted(() => {
                 </div>
             </div>
             <!-- 普通视频搜索结果 -->
-            <div class="bili-grid" v-if="!isPgcSearch && searchResults.length">
+            <div class="bili-grid" v-if="searchType === 'video' && searchResults.length">
                 <div
                     v-for="(item, idx) in searchResults"
                     :key="item.bvid"
@@ -616,9 +679,13 @@ onUnmounted(() => {
                     </div>
                 </div>
             </div>
-            <div v-else-if="!isPgcSearch && !searchResults.length" class="empty">
+            <div v-else-if="searchType === 'video' && !searchResults.length" class="empty">
                 <Clapperboard :size="48" />
                 <p>未找到相关视频</p>
+            </div>
+            <div v-if="isLiveSearch && !searchResults.length" class="empty">
+                <Radio :size="48" />
+                <p>未找到相关直播</p>
             </div>
             <div v-if="isPgcSearch && !searchResults.length" class="empty">
                 <Clapperboard :size="48" />
@@ -1229,37 +1296,73 @@ onUnmounted(() => {
     border-color: #fb7299;
 }
 
-/* ===== 搜索类型切换（视频/番剧/影视）===== */
+/* ===== 搜索类型与排序下拉（CustomSelect：小字体、贴合成胶囊容器）===== */
 .search-type-tabs {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     background: #fff;
     border-radius: 16px;
     padding: 3px;
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
 }
 
-.search-type-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
+.search-type-tabs :deep(.custom-select) { width: auto; }
+
+.search-type-tabs :deep(.cs-trigger) {
     border: none;
-    background: none;
-    color: #61666d;
-    font-size: 12px;
-    padding: 4px 12px;
+    background: transparent;
+    padding: 4px 10px;
     border-radius: 12px;
-    cursor: pointer;
-    transition: all 0.2s;
+    font-size: 12px;
+    color: #61666d;
+    gap: 4px;
     white-space: nowrap;
 }
 
-.search-type-tab:hover { color: #fb7299; background: rgba(251, 114, 153, 0.06); }
+.search-type-tabs :deep(.custom-select:hover .cs-trigger) {
+    color: #fb7299;
+    background: rgba(251, 114, 153, 0.06);
+    box-shadow: none;
+}
 
-.search-type-tab.active {
-    background: #fb7299;
-    color: #fff;
+/* 展开时粉色描边（替换组件默认红色） */
+.search-type-tabs :deep(.custom-select.open .cs-trigger) {
+    color: #fb7299;
+    border-color: transparent;
+    box-shadow: 0 0 0 3px rgba(251, 114, 153, 0.15);
+}
+
+.search-type-tabs :deep(.cs-arrow) { color: #fb7299; }
+
+/* 选中非默认类型（直播/番剧/影视）时触发器高亮 */
+.search-type-tabs.type-active :deep(.cs-trigger) {
+    color: #fb7299;
+    font-weight: 600;
+}
+
+/* 排序下拉与类型下拉之间细分隔线 */
+.search-type-tabs :deep(.cs-sel-order .cs-trigger) {
+    border-left: 1px solid #f0f0f0;
+    margin-left: 4px;
+    border-radius: 12px;
+}
+
+/* 直播搜索卡片徽章 */
+.live-badge {
+    position: absolute; left: 6px; top: 6px;
+    display: inline-flex; align-items: center; gap: 3px;
+    background: #fa4e4e; color: #fff;
+    font-size: 11px; font-weight: 600;
+    padding: 2px 7px; border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(250, 78, 78, 0.5);
+}
+.live-online {
+    position: absolute; right: 6px; top: 6px;
+    display: inline-flex; align-items: center; gap: 3px;
+    background: rgba(0, 0, 0, 0.55); color: #fff;
+    font-size: 11px; padding: 2px 7px; border-radius: 4px;
+    backdrop-filter: none;
 }
 
 /* ===== PGC（番剧/影视）搜索结果卡片 ===== */

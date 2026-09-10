@@ -155,6 +155,12 @@ const routes = [
         name: 'BiliUserSpace',
         component: BiliUserSpace
     },
+    {
+        // 直播间：搜索/主页等点击直播卡片进入
+        path: '/bilibili/live/:roomId',
+        name: 'BiliLiveView',
+        component: () => import('../views/BiliLiveView.vue')
+    },
     // 智慧教育教材专区（国家中小学智慧教育平台）
     {
         path: '/smart-edu',

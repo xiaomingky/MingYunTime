@@ -43,11 +43,15 @@ function biliWebCookie() {
   } catch (e) { return '' }
 }
 
-// 请求 Cookie：Web 登录 Cookie 优先，游客 buvid 兜底
+// 请求 Cookie：游客 buvid 设备标识恒携带（B站搜索/首页等接口裸请求会被 -412 风控拦截，
+// 实测无 cookie 直搜返回 -412 页面，带 buvid3/buvid4 后 code:0 正常）；
+// 已登录时再叠加 Web 登录 Cookie（SESSDATA 等），身份更完整。
 async function biliRequestCookie() {
+  const guest = await biliGuestCookie()
   const web = biliWebCookie()
-  if (web) return web
-  return biliGuestCookie()
+  if (!web) return guest
+  if (!guest) return web
+  return `${web.replace(/;\s*$/, '')}; ${guest}`
 }
 
 // B站 API 统一请求（自动携带 Cookie，风控/未登录时刷新游客 Cookie 重试一次）
@@ -66,38 +70,88 @@ async function biliApiGet(url, params = {}) {
   const res = await doReq(cookie)
   if (res.data && res.data.code === 0) return res.data
   const errCode = res.data?.code
-  // 风控(-412/-799/-352) 或未登录(-101)：游客模式刷新 buvid 重试一次；已 Web 登录则提示登录态问题
+  // 风控(-412/-799/-352) 或 登录态失效(-101)：统一降级「游客 buvid」重试一次。
+  // -101 但带游客可用部分数据（如 nav 的 wbi_img）按成功处理，避免搜索第一步误报"需要登录"；
+  // 风控体（-412/-352）携带的 data.report 只是错误详情，绝不能当作成功结果，
+  // 否则会出现"没登录就静默返回空结果（评论数 0、搜索空白无提示）"的假象。
   if ([-412, -799, -352, -101].includes(errCode)) {
-    if (!biliWebCookie()) {
-      biliGuestCookieCache = { cookie: '', ts: 0 }
-      const res2 = await doReq(await biliGuestCookie())
-      if (res2.data && res2.data.code === 0) return res2.data
-    }
+    if (errCode === -101 && hasGuestData(res.data)) return res.data
+    // 强制重取游客标识，避免复用到已被风控标记的旧 buvid
+    biliGuestCookieCache = { cookie: '', ts: 0 }
+    const res2 = await doReq(await biliGuestCookie())
+    if (res2.data && res2.data.code === 0) return res2.data
+    if (errCode === -101 && hasGuestData(res2.data)) return res2.data
     if (errCode === -101) throw new Error('该接口需要登录B站账号，请点击右上角「B站登录」')
     throw new Error(res.data?.message || `B站接口风控(${errCode})，请稍后再试`)
   }
   throw new Error(res.data?.message || `B站接口错误 ${errCode ?? res.status}`)
+
+  // 判断是否为"游客可用的部分数据"：
+  // - nav 等接口未登录(-101)会返回 wbi_img 等游客字段 → 视为部分成功（WBI 签名依赖它）；
+  // - 或 data 里带真实内容数组（list/replies 等）→ 同样是可用的部分数据；
+  // - 风控体里的 data.report（对象）/空对象等一律不算，避免静默吞错。
+  function hasGuestData(body) {
+    if (!body?.data || typeof body.data !== 'object') return false
+    if (body.data.wbi_img != null) return true
+    return Object.values(body.data).some(v => Array.isArray(v) && v.length > 0)
+  }
 }
 
-// 游客 Cookie（buvid3/buvid4，搜索等接口防风控）：
-// 官方 finger/spi 接口直接返回 b_3/b_4，比抓首页 Set-Cookie 稳定；缓存 1 小时
+// 游客 Cookie（完整浏览器指纹：buvid3/buvid4/b_nut/_uuid/b_lsid）：
+// 先抓首页 Set-Cookie（buvid3/b_nut 等），再走官方 finger/spi 接口拿 b_3/b_4（buvid4），
+// 再补齐 _uuid/b_lsid 客户端指纹。伪装成真实浏览器，大幅降低游客请求被风控
+// （-412/-352 → 接口静默返回空）的概率；缓存 1 小时。
 async function biliGuestCookie() {
   if (biliGuestCookieCache.cookie && Date.now() - biliGuestCookieCache.ts < 3600 * 1000) {
     return biliGuestCookieCache.cookie
   }
+  const randHex = (n) => {
+    let s = ''
+    for (let i = 0; i < n; i++) s += Math.floor(Math.random() * 16).toString(16)
+    return s
+  }
+  const parts = []
+  const grab = (setCookieHeaders, key) => {
+    for (const raw of setCookieHeaders || []) {
+      const m = String(raw || '').match(new RegExp('\\b' + key + '=([^;]{1,80})'))
+      if (m && m[1]) parts.push(`${key}=${m[1]}`)
+    }
+  }
+  try {
+    const home = await axios.get('https://www.bilibili.com/', {
+      headers: { 'User-Agent': UA, 'Referer': 'https://www.bilibili.com/' },
+      timeout: 10000,
+      maxRedirects: 0,
+      validateStatus: () => true
+    })
+    const sc = home.headers['set-cookie']
+    grab(Array.isArray(sc) ? sc : sc ? [sc] : [], 'buvid3')
+    grab(Array.isArray(sc) ? sc : sc ? [sc] : [], 'b_nut')
+  } catch (e) { /* 首页抓取失败时降级为仅 spi */ }
   try {
     const res = await axios.get('https://api.bilibili.com/x/frontend/finger/spi', {
       headers: { 'User-Agent': UA, 'Referer': 'https://www.bilibili.com/' },
       timeout: 10000,
       validateStatus: () => true
     })
-    if (res.data?.code === 0 && res.data.data?.b_3) {
-      const parts = [`buvid3=${res.data.data.b_3}`]
+    if (res.data?.code === 0 && res.data.data) {
+      if (res.data.data.b_3) parts.push(`buvid3=${res.data.data.b_3}`)
       if (res.data.data.b_4) parts.push(`buvid4=${res.data.data.b_4}`)
-      biliGuestCookieCache = { cookie: parts.join('; '), ts: Date.now() }
     }
-  } catch (e) { /* 网络失败时降级为无 cookie */ }
-  return biliGuestCookieCache.cookie || ''
+  } catch (e) { /* spi 失败时降级 */ }
+  // 去重（后者覆盖前者：spi 的 buvid3 覆盖首页的）并补齐客户端指纹
+  const uniq = {}
+  for (const p of parts) {
+    const i = p.indexOf('=')
+    if (i <= 0) continue
+    uniq[p.slice(0, i)] = p.slice(i + 1)
+  }
+  if (!uniq['_uuid']) uniq['_uuid'] = `${randHex(8)}-${randHex(4)}-${randHex(4)}-${randHex(4)}-${randHex(12)}`
+  if (!uniq['b_lsid']) uniq['b_lsid'] = randHex(8).toUpperCase() + '_' + randHex(16).toUpperCase()
+  const cookie = Object.entries(uniq).map(([k, v]) => `${k}=${v}`).join('; ')
+  if (!cookie) return ''
+  biliGuestCookieCache = { cookie, ts: Date.now() }
+  return cookie
 }
 
 // WBI mixin key（nav 接口获取，无需登录），缓存 1 小时
@@ -261,11 +315,22 @@ function biliPgcSearchCard(v) {
 }
 
 // B站搜索（wbi 签名 + Web 登录 Cookie / 游客 buvid）
-// type: 'video'（默认普通视频）/ 'bangumi'（番剧 media_bangumi）/ 'movie'（电影 media_ft）
-async function biliSearch({ keyword, page = 1, type = 'video' }) {
+// type: 'video'（默认普通视频）/ 'bangumi'（番剧 media_bangumi）/ 'movie'（电影 media_ft）/ 'live'（直播 live_room）
+// order: ''(综合 totalrank) / click(热度·从高到低) / click_asc(热度·从低到高,本地翻转) / pubdate(最新发布) / dm(弹幕最多) / stow(收藏最多)
+async function biliSearch({ keyword, page = 1, type = 'video', order = '' }) {
   const mixin = await biliWbiKey()
+  // 直播搜索：live_room 返回在线直播间 + 主播，无需登录
+  if (type === 'live') {
+    const params = { search_type: 'live_room', keyword, page }
+    const signed = biliWbiSign(params, mixin)
+    const r = await biliApiGet('https://api.bilibili.com/x/web-interface/wbi/search/type', signed)
+    const list = (r?.data?.result || []).map(biliLiveCard).filter(c => c.roomId)
+    return { list, hasMore: list.length >= 20, type: 'live' }
+  }
   const searchType = type === 'bangumi' ? 'media_bangumi' : type === 'movie' ? 'media_ft' : 'video'
-  const signed = biliWbiSign({ search_type: searchType, keyword, page }, mixin)
+  const params = { search_type: searchType, keyword, page }
+  if (order) params.order = order
+  const signed = biliWbiSign(params, mixin)
   const r = await biliApiGet('https://api.bilibili.com/x/web-interface/wbi/search/type', signed)
   const results = (r?.data?.result || [])
   if (searchType !== 'video') {
@@ -276,11 +341,74 @@ async function biliSearch({ keyword, page = 1, type = 'video' }) {
       .filter(c => c.title && c.seasonId)
     return { list, hasMore: results.length >= 20, type: 'pgc' }
   }
-  const list = results
+  let list = results
     .filter(item => item?.bvid)
     .map(biliCard)
     .filter(c => c.title)
+  // 热度·从低到高：接口只支持降序(click)，本地翻转当前页（正反排序需求）
+  if (order === 'click_asc') list.sort((a, b) => Number(a.play) - Number(b.play))
   return { list, hasMore: list.length >= 20, type: 'video' }
+}
+
+// 直播搜索卡片：roomId 可进直播间，uname/uid 可进主播主页，online 在线人数
+function biliLiveCard(v) {
+  return {
+    live: true,
+    roomId: Number(v.roomid) || 0,
+    uid: Number(v.uid) || 0,
+    uname: String(v.uname || ''),
+    title: biliCleanTitle(String(v.title || '').replace(/<[^>]+>/g, '')),
+    cover: biliCoverUrl(v.cover ?? v.user_cover ?? v.origin_cover ?? ''),
+    online: Number(v.online) || 0,
+    areaName: String(v.area_name || '').replace(/<[^>]+>/g, '')
+  }
+}
+
+// 直播间取流（getRoomPlayInfo，游客/登录均可访问；未开播/已结束返回明确提示）
+// 返回房间信息 + FLV 直播直链，供前端 ArtVideoPlayer(playType=flv, mpegts.js) 播放
+async function biliLivePlayInfo(roomId) {
+  const num = Number(roomId) || 0
+  if (!num) throw new Error('直播间 ID 无效')
+  const r = await biliApiGet('https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo', {
+    room_id: num,
+    protocol: '0,1',
+    format: '0,1,2',
+    codec: '0,1',
+    qn: 10000,
+    platform: 'web',
+    ptype: 8
+  })
+  const d = r?.data || {}
+  const liveStatus = Number(d.live_status) // 0 未开播 / 1 直播中 / 2 轮播
+  const streams = d.playurl_info?.playurl?.stream || []
+  // 挑选视频流：优先 flv/avc（B站 web 播放器同路线，兼容性最好），无 flv 时回落首个可用流
+  let picked = null
+  for (const s of streams) {
+    const fmt = (s.format || []).find(f => (f.format_name || '') === 'flv') || (s.format || [])[0]
+    const codec = fmt?.codec?.[0]
+    const host = codec?.url_info?.[0]?.host || ''
+    if (host) {
+      picked = { host, base: codec.base_url || '', extra: codec.url_info?.[0]?.extra || '' }
+      break
+    }
+  }
+  if (!picked) {
+    if (liveStatus !== 1) throw new Error('主播未开播或直播已结束，请稍后再来看看')
+    throw new Error('获取直播流失败，请稍后重试')
+  }
+  const watched = d.watched_show || {}
+  return {
+    roomId: num,
+    live: liveStatus === 1 || liveStatus === 2,
+    title: String(d.title || `直播间 ${num}`),
+    uname: String(d.uname || ''),
+    uid: Number(d.uid) || 0,
+    cover: biliCoverUrl(d.user_cover || ''),
+    online: Number(watched.num || d.online || 0),
+    areaName: String(d.area_name || d.parent_area_name || ''),
+    liveStatus,
+    streamUrl: picked.host + picked.base + (picked.extra || '')
+  }
 }
 
 // PGC（番剧/电影）季详情：pgc/view/web/season（season_id 或 ep_id 均可定位）
@@ -960,6 +1088,16 @@ ipcMain.handle('bilibili:video-search', async (_, params) => {
   try {
     const data = await biliSearch(params || {})
     return { success: true, data }
+  } catch (e) {
+    return { success: false, message: e.message }
+  }
+})
+
+// 直播间取流（房间信息 + FLV 直链）
+ipcMain.handle('bilibili:live-playurl', async (_, { roomId }) => {
+  try {
+    const data = await biliLivePlayInfo(roomId)
+    return { success: true, ...data }
   } catch (e) {
     return { success: false, message: e.message }
   }

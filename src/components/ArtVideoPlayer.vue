@@ -625,6 +625,22 @@ async function createPlayer(src) {
     art.on('video:volumechange', () => { artVol.value = art.volume || 0 })
     // 点击播放器空白处时收起各面板
 
+    // 跳转进度后（拖进度条/续播/点选集）：清掉上一时间戳仍在飘的旧弹幕，
+    // 按新位置的时间戳重新对齐发射。弹幕插件 seek 时不会自动清屏，
+    // 否则开头发射的弹幕会残留漂移到别的进度位置（"跳别处开头弹幕还飘着"）。
+    art.on('video:seeked', () => {
+        const dk = art?.plugins?.artplayerPluginDanmuku
+        if (!dk || !props.danmaku.length) return
+        try {
+            const cur = Math.max(0, Number(art?.currentTime) || 0)
+            // 预读误差：保留当前时间戳前 1 秒的弹幕，避免跳跃后首屏漏弹
+            const future = props.danmaku.filter(d => Number(d?.time || 0) >= cur - 1)
+            // 更换数据源后无参 load()：插件内部会 reset + 清空画布 + 按当前时间戳重排发射队列
+            if (dk.option) dk.option.danmuku = future
+            dk.load()
+        } catch (e) {}
+    })
+
     art.on('video:ended', () => {
         // 播完清除续播记忆
         try { if (props.resumeKey) localStorage.removeItem('art-resume:' + props.resumeKey) } catch (e) {}
@@ -680,6 +696,8 @@ watch(() => props.danmaku, (list) => {
     const dk = art?.plugins?.artplayerPluginDanmuku
     if (!dk || !art) return
     if ((list || []).length === 0) return
+    // 同步到插件数据源：跳转后无参 load() 需引用最新弹幕列表
+    if (dk.option) dk.option.danmuku = list
     dk.load(list).catch(() => {})
 }, { deep: false })
 
