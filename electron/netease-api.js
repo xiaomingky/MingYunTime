@@ -4,6 +4,8 @@
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
+// Node16 兼容探测/就绪等待/日志/广播（Electron 22 内置 Node 无 fetch/AbortSignal.timeout）
+import { httpProbe, waitForPort, pipeChildLogs, broadcastServicesReady, serviceLog } from './local-service.js'
 
 let neteaseProcess = null
 let healthCheckTimer = null
@@ -46,35 +48,37 @@ function resolveLibsPath() {
 
 export function startNeteaseAPI() {
     if (neteaseProcess) return
+    bootNetease()
+}
 
-    // 端口探测：若 3100 已有服务在跑(应用重复启动/上次残留进程),直接复用,不启动子进程
-    const probeAndStart = async () => {
-        try {
-            const res = await fetch(`${NETEASE_API_BASE}/search/hot`, {
-                signal: AbortSignal.timeout(2000)
-            })
-            if (res.ok) {
-                isHealthy = true
-                // 端口 3100 已有服务在跑,直接复用(跳过子进程启动)
-                if (healthCheckTimer) clearInterval(healthCheckTimer)
-                healthCheckTimer = setInterval(async () => {
-                    try {
-                        const r = await fetch(`${NETEASE_API_BASE}/search/hot`, {
-                            signal: AbortSignal.timeout(3000)
-                        })
-                        isHealthy = r.ok
-                    } catch (e) {
-                        isHealthy = false
-                    }
-                }, 15000)
-                return
-            }
-        } catch (e) {
-            // 端口未占用,正常启动子进程
+async function bootNetease() {
+    try {
+        const status = await httpProbe(`${NETEASE_API_BASE}/search/hot`, 2000)
+        if (status !== null && status < 500) {
+            // 端口 3100 已有服务在跑(应用重复启动/上次残留进程),直接复用,不启动子进程
+            isHealthy = true
+            startHealthCheck()
+            serviceLog('netease', '端口 3100 已有服务在跑,直接复用')
+            broadcastServicesReady({ netease: true })
+            return
         }
-        _spawnNeteaseProcess()
+    } catch (e) {
+        // 端口未占用,正常启动子进程
     }
-    probeAndStart()
+    _spawnNeteaseProcess()
+}
+
+// 健康检查:每 15 秒检测一次服务是否可用（Node16 兼容探测）
+function startHealthCheck() {
+    if (healthCheckTimer) clearInterval(healthCheckTimer)
+    healthCheckTimer = setInterval(async () => {
+        try {
+            const status = await httpProbe(`${NETEASE_API_BASE}/search/hot`, 3000)
+            isHealthy = status !== null && status < 500
+        } catch (e) {
+            isHealthy = false
+        }
+    }, 15000)
 }
 
 // 实际启动网易云 API 子进程
@@ -82,7 +86,10 @@ function _spawnNeteaseProcess() {
     if (neteaseProcess) return
     const appPath = resolveNeteaseAppPath()
     try {
-        if (!fs.existsSync(appPath)) return
+        if (!fs.existsSync(appPath)) {
+            serviceLog('netease', '入口不存在: ' + appPath)
+            return
+        }
     } catch (e) {
         return
     }
@@ -103,6 +110,7 @@ function _spawnNeteaseProcess() {
         }
     } catch (e) { /* ignore */ }
 
+    serviceLog('netease', `启动子进程: ${appPath}`)
     neteaseProcess = spawn(nodeBin, [appPath], {
         env,
         stdio: 'pipe',
@@ -110,11 +118,11 @@ function _spawnNeteaseProcess() {
         cwd: path.dirname(appPath)
     })
 
-    // 不再转发子进程 stdout/stderr 到终端(避免大量日志刷屏)
-    // 子进程输出会被丢弃,仅保留退出码用于崩溃自动重启
-    neteaseProcess.stdout?.on('data', () => {})
-    neteaseProcess.stderr?.on('data', () => {})
+    // 子进程输出落盘到 userData/logs/local-api-netease.log（崩溃根因可查）
+    pipeChildLogs(neteaseProcess, 'netease')
+
     neteaseProcess.on('exit', (code) => {
+        serviceLog('netease', `子进程退出 code=${code}`)
         neteaseProcess = null
         isHealthy = false
         // 异常退出自动重启(12 秒后,错开其他 API 重启时间避免端口冲突)
@@ -122,23 +130,19 @@ function _spawnNeteaseProcess() {
             setTimeout(() => startNeteaseAPI(), 12000)
         }
     })
-    neteaseProcess.on('error', () => {
+    neteaseProcess.on('error', (err) => {
+        serviceLog('netease', 'spawn error: ' + (err?.message || err))
         neteaseProcess = null
         isHealthy = false
     })
 
-    // 健康检查:每 15 秒检测一次服务是否可用
-    if (healthCheckTimer) clearInterval(healthCheckTimer)
-    healthCheckTimer = setInterval(async () => {
-        try {
-            const res = await fetch(`${NETEASE_API_BASE}/search/hot`, {
-                signal: AbortSignal.timeout(3000)
-            })
-            isHealthy = res.ok
-        } catch (e) {
-            isHealthy = false
-        }
-    }, 15000)
+    // 等待端口就绪：就绪后广播给渲染进程（切回本地线路）
+    waitForPort(NETEASE_API_BASE, '/search/hot', { timeoutMs: 25000 }).then((ok) => {
+        isHealthy = ok
+        serviceLog('netease', ok ? '服务已就绪 localhost:3100' : '25s 内未就绪,子进程可能启动失败(查看上方日志)')
+        if (ok) broadcastServicesReady({ netease: true })
+    }).catch(() => {})
+    startHealthCheck()
 }
 
 // 停止子进程
@@ -161,16 +165,9 @@ export function getNeteaseLocalBase() {
 
 // 检查本地服务是否健康
 export async function checkNeteaseLocalHealth() {
-    try {
-        const res = await fetch(`${NETEASE_API_BASE}/search/hot`, {
-            signal: AbortSignal.timeout(3000)
-        })
-        isHealthy = res.ok
-        return isHealthy
-    } catch (e) {
-        isHealthy = false
-        return false
-    }
+    const status = await httpProbe(`${NETEASE_API_BASE}/search/hot`, 3000)
+    isHealthy = status !== null && status < 500
+    return isHealthy
 }
 
 // 同步获取健康状态(基于上次检查结果)

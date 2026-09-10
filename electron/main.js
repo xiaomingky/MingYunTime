@@ -63,13 +63,25 @@ import { startNeteaseAPI, stopNeteaseAPI } from './netease-api.js'
 import './unlock.js'
 
 // --- Win7 兼容性初始化 ---
+// Win7 = Windows NT 6.1（os.release() 以 6.1 开头）。
+// 老机器 + 老显卡驱动是 Win7 卡顿/黑屏的主要来源，这里用「稳健模式」：
+// 保留基本硬件加速（强制软件渲染会明显卡顿），但对 Win7 特有关闭高负载 GPU 特性。
+const isWin7 = process.platform === 'win32' && /^6\.1\./.test(os.release())
 if (process.platform === 'win32') {
     // 强制使用软件渲染或特定的渲染限制会导致严重卡顿。
-    // 我们采取“稳健模式”：限制高负载 GL 特性，但保留基本硬件加速。
+    // 我们采取"稳健模式"：限制高负载 GL 特性，但保留基本硬件加速。
     app.commandLine.appendSwitch('disable-software-rasterizer');
     app.commandLine.appendSwitch('ignore-gpu-blacklist');
     // 如果在极旧的 Win7 上崩溃，可以尝试取消注释下面这行进行彻底降级
     // app.disableHardwareAcceleration();
+}
+if (isWin7) {
+    // Win7 老显卡驱动对 GPU 加速 2D canvas / GPU 栅格化支持差，容易黑屏、掉帧、占满 CPU：
+    // 裁掉这两块高开销特性，渲染明显更稳定、更流畅。
+    app.commandLine.appendSwitch('disable-accelerated-2d-canvas')
+    app.commandLine.appendSwitch('disable-gpu-rasterization')
+    // Win7 上进一步压低 Chromium 各子系统的进程/内存开销（老机器内存小）
+    // js-flags 复用下方全局设置（appendSwitch 同名只保留最后一个，这里不重复设置）
 }
 
 // --- 内存/CPU 优化：V8 和 Chromium 开关（激进省内存） ---

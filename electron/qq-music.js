@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import axios from 'axios'
 import { ipcMain, BrowserWindow, session } from 'electron'
+// Node16 兼容探测/就绪等待/日志/广播
+import { waitForPort, pipeChildLogs, broadcastServicesReady, serviceLog } from './local-service.js'
 
 let qqProcess = null
 let registered = false
@@ -525,10 +527,11 @@ export function startQQMusicAPI() {
         windowsHide: true
     })
 
-    // 不再转发子进程 stdout/stderr 到终端(避免大量日志刷屏)
-    qqProcess.stdout?.on('data', () => {})
-    qqProcess.stderr?.on('data', () => {})
+    // 子进程输出落盘到 userData/logs/local-api-qq.log（崩溃根因可查）
+    pipeChildLogs(qqProcess, 'qq')
+
     qqProcess.on('exit', (code) => {
+        serviceLog('qq', `子进程退出 code=${code}`)
         qqProcess = null
         // 异常退出自动重启(5 秒后)
         if (code !== 0 && code !== null) {
@@ -536,9 +539,15 @@ export function startQQMusicAPI() {
         }
     })
     qqProcess.on('error', (err) => {
-        console.error('[QQ API] spawn error:', err.message)
+        serviceLog('qq', 'spawn error: ' + (err?.message || err))
         qqProcess = null
     })
+
+    // 等待端口就绪：就绪后广播给渲染进程（统一体验，与其他两个本地服务一致）
+    waitForPort(QQ_API_BASE, '/getHotkey', { timeoutMs: 25000 }).then((ok) => {
+        serviceLog('qq', ok ? '服务已就绪 localhost:3200' : '25s 内未就绪,子进程可能启动失败(查看上方日志)')
+        if (ok) broadcastServicesReady({ qq: true })
+    }).catch(() => {})
 
     // 注册 IPC 通道(只注册一次)
     if (!registered) {

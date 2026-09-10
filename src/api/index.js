@@ -46,6 +46,8 @@ export const API_LINES = [
 
 // 本地服务可用性标记（启动时假设可用，首次连接失败后标记为不可用）
 let _neteaseLocalAvailable = true
+// 后台重试定时器：本地服务冷启动（尤其 Win7）可能要数秒，不能一次 3s 探测就永久判死切在线
+let _neteaseRetryTimer = null
 
 function getCurrentApiBaseUrl() {
     const savedKey = localStorage.getItem('api_line')
@@ -62,25 +64,63 @@ const request = axios.create({
     withCredentials: true
 })
 
-// 启动时异步检测本地服务可用性
-;(async () => {
+// 探测本地服务是否就绪（HTTP 已响应即视为就绪：4xx 说明进程活着，只有连不上/超时才判未就绪）
+async function probeNeteaseLocal() {
     try {
         const res = await fetch(`${NETEASE_LOCAL_BASE}/search/hot`, {
-            signal: AbortSignal.timeout(3000)
+            signal: AbortSignal.timeout(2500)
         })
-        if (res.ok) {
-            _neteaseLocalAvailable = true
-            console.log('[NetEase API] 使用本地自部署服务:', NETEASE_LOCAL_BASE)
-        } else {
-            throw new Error('local not ok')
-        }
+        return res.status >= 200 && res.status < 500
     } catch (e) {
-        _neteaseLocalAvailable = false
-        const onlineUrl = API_LINES.find(l => l.key === 'recommended')?.url || API_LINES[1].url
-        request.defaults.baseURL = onlineUrl
-        console.warn('[NetEase API] 本地服务不可用,回退到在线线路:', onlineUrl)
+        return false
     }
+}
+function useNeteaseLocal() {
+    _neteaseLocalAvailable = true
+    request.defaults.baseURL = NETEASE_LOCAL_BASE
+}
+function useNeteaseOnline() {
+    _neteaseLocalAvailable = false
+    const onlineUrl = API_LINES.find(l => l.key === 'recommended')?.url || API_LINES[1].url
+    request.defaults.baseURL = onlineUrl
+}
+
+// 启动时异步检测本地服务可用性。
+// 修复"一打开没有数据，刷新才有"：本地子进程冷启动（Win7 老机器可达数秒）期间，
+// 一次性 3s 探测必定失败会把线路永久钉死在在线 -> 改用「先走在线 + 后台每 3s 重试，
+// 本地一旦就绪自动切回」。刷新才有数据的根因就是永久判死，这里从机制上消除。
+;(async () => {
+    if (await probeNeteaseLocal()) {
+        useNeteaseLocal()
+        console.log('[NetEase API] 使用本地自部署服务:', NETEASE_LOCAL_BASE)
+        return
+    }
+    useNeteaseOnline()
+    console.warn('[NetEase API] 本地服务暂未就绪,先走在线线路,后台持续检测本地服务')
+    let tries = 0
+    _neteaseRetryTimer = setInterval(async () => {
+        tries++
+        if (await probeNeteaseLocal()) {
+            clearInterval(_neteaseRetryTimer); _neteaseRetryTimer = null
+            useNeteaseLocal()
+            console.log('[NetEase API] 本地服务已就绪,切回本地:', NETEASE_LOCAL_BASE)
+            try { window.dispatchEvent(new CustomEvent('netease-local-ready')) } catch (e) {}
+        } else if (tries >= 10) {
+            clearInterval(_neteaseRetryTimer); _neteaseRetryTimer = null
+        }
+    }, 3000)
 })()
+
+// 主进程广播（channel: local-services-ready）：三个本地 API 子进程启动完成即通知前端切回本地，
+// 比轮询更及时；与上面的后台重试互为兜底。
+if (typeof window !== 'undefined' && window.bridge?.on) {
+    window.bridge.on('local-services-ready', (payload) => {
+        if (!payload || !payload.netease) return
+        if (_neteaseLocalAvailable && request.defaults.baseURL === NETEASE_LOCAL_BASE) return
+        useNeteaseLocal()
+        console.log('[NetEase API] 主进程通知本地服务就绪,切回本地:', NETEASE_LOCAL_BASE)
+    })
+}
 
 // 运行时切换 API 线路（无需刷新页面，立即生效）
 export function switchApiLine(lineKey) {

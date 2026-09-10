@@ -223,6 +223,9 @@ export const usePlayerStore = defineStore('player', {
             this._applyVolume()
         },
         async rebuildAudioGraph() {
+            // 先拆掉互斥的 boost 图：同一 <audio> 只能 createMediaElementSource 一次，
+            // 不清掉的话下面的 createMediaElementSource 会抛 InvalidStateError（主图永远建不起来）
+            if (this._tearDownBoostGraph) this._tearDownBoostGraph()
             if (this.source) { try { this.source.disconnect() } catch (e) {}; this.source = null }
             this.eqFilters.forEach(f => { try { f.disconnect() } catch (e) {} })
             this.eqFilters = []
@@ -278,16 +281,51 @@ export const usePlayerStore = defineStore('player', {
                 console.error('rebuildAudioGraph error:', e)
             }
         },
-        // 应用音量:有 volumeGain 时用 GainNode 控制(支持 >100%),否则降级用 audio.volume
+        // 音量增益专用最小图：audio -> gainNode -> destination。
+        // 主图（volumeGain 链）缺失时（AudioContext 建图失败/尚未建图，Win7 老机器常见）以此为兜底，
+        // 让"音量提升 >100%"在无 EQ/可视化的情况下同样生效。
+        // 注意 createMediaElementSource 对同一 <audio> 只能接一个 context：boost 图与主图互斥，
+        // 有主图时用主图；主图重建前必须先拆 boost 图。
+        _tearDownBoostGraph() {
+            if (this.boostSource) { try { this.boostSource.disconnect() } catch (e) {}; this.boostSource = null }
+            if (this.boostGain) { try { this.boostGain.disconnect() } catch (e) {}; this.boostGain = null }
+            if (this.boostCtx) { try { this.boostCtx.close() } catch (e) {}; this.boostCtx = null }
+        },
+        _ensureBoostGraph() {
+            if (this.boostSource || (this.volumeGain && this.ctx)) return
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext
+                if (!AudioCtx) return
+                this.boostCtx = new AudioCtx()
+                this.boostSource = this.boostCtx.createMediaElementSource(this.audio)
+                this.boostGain = this.boostCtx.createGain()
+                this.boostSource.connect(this.boostGain)
+                this.boostGain.connect(this.boostCtx.destination)
+            } catch (e) {
+                console.error('boost graph error:', e)
+                this._tearDownBoostGraph()
+            }
+        },
+        // 应用音量:有主图(volumeGain)时用 GainNode 控制(支持 >100%);
+        // 否则音量 >100% 时惰性建最小增益图;都不可用才降级用 audio.volume(上限 1.0,增益无效但不崩)
         _applyVolume() {
             const gain = this.volume / 100
             if (this.volumeGain && this.ctx) {
                 this.audio.volume = 1.0
                 this.volumeGain.gain.setValueAtTime(gain, this.ctx.currentTime)
-            } else if (this.audio) {
-                // ctx 尚未建立时,用原生 audio.volume(上限 1.0)
-                this.audio.volume = Math.min(1, gain)
+                if (this.boostSource) this._tearDownBoostGraph()
+                return
             }
+            if (gain > 1) {
+                this._ensureBoostGraph()
+                if (this.boostGain && this.boostCtx) {
+                    this.audio.volume = 1.0
+                    this.boostGain.gain.setValueAtTime(gain, this.boostCtx.currentTime)
+                    return
+                }
+            }
+            // ctx 尚未建立/建图失败时,用原生 audio.volume(上限 1.0)
+            if (this.audio) this.audio.volume = Math.min(1, gain)
         },
         async resetAudioElement() {
             const savedSrc = this.audio?.src || ''
@@ -295,6 +333,8 @@ export const usePlayerStore = defineStore('player', {
             const savedVolume = this.volume
             const wasPlaying = this.isPlaying
 
+            // audio 即将整体替换,先拆掉 boost 最小增益图(它绑定旧 audio 元素)
+            if (this._tearDownBoostGraph) this._tearDownBoostGraph()
             if (this.audio) {
                 try { this.audio.pause(); this.audio.src = ''; this.audio.load() } catch (e) {}
                 this.audio = null

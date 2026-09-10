@@ -15,28 +15,56 @@ const KUGOU_ONLINE_BASE = 'https://kgapi.xiaomingky.cn'
 let KUGOU_BASE_URL = KUGOU_LOCAL_BASE
 // 本地服务健康状态(启动时假设可用,首次请求失败后标记为不可用)
 let _localAvailable = true
+// 后台重试定时器:本地服务冷启动(尤其 Win7)可能要数秒,不能一次 3s 探测就永久判死切在线
+let _kugouRetryTimer = null
 
-// 检测本地服务是否可用(启动时调用一次)
+// 探测本地服务是否就绪（HTTP 已响应即视为就绪）
+function probeLocalNow() {
+    return fetch(`${KUGOU_LOCAL_BASE}/search/hot`, { signal: AbortSignal.timeout(2500) })
+        .then(res => res.status >= 200 && res.status < 500)
+        .catch(() => false)
+}
+
+// 检测本地服务是否可用。
+// 修复"一打开没有数据,刷新才有":本地子进程冷启动期间一次性 3s 探测必失败 -> 永久判死切在线;
+// 改为「先走在线 + 后台每 3s 重试,本地一旦就绪自动切回」。
 async function detectLocalAvailability() {
-    try {
-        const res = await fetch(`${KUGOU_LOCAL_BASE}/search/hot`, {
-            signal: AbortSignal.timeout(3000)
-        })
-        _localAvailable = res.ok
-        if (_localAvailable) {
-            KUGOU_BASE_URL = KUGOU_LOCAL_BASE
-            console.log('[Kugou API] 使用本地服务:', KUGOU_BASE_URL)
-        } else {
-            throw new Error('local not ok')
-        }
-    } catch (e) {
-        _localAvailable = false
-        KUGOU_BASE_URL = KUGOU_ONLINE_BASE
-        console.warn('[Kugou API] 本地服务不可用,回退到在线线路:', KUGOU_BASE_URL)
+    if (await probeLocalNow()) {
+        _localAvailable = true
+        KUGOU_BASE_URL = KUGOU_LOCAL_BASE
+        console.log('[Kugou API] 使用本地服务:', KUGOU_BASE_URL)
+        return
     }
+    _localAvailable = false
+    KUGOU_BASE_URL = KUGOU_ONLINE_BASE
+    console.warn('[Kugou API] 本地服务暂未就绪,先走在线线路,后台持续检测本地服务')
+    let tries = 0
+    _kugouRetryTimer = setInterval(async () => {
+        tries++
+        if (await probeLocalNow()) {
+            clearInterval(_kugouRetryTimer); _kugouRetryTimer = null
+            _localAvailable = true
+            KUGOU_BASE_URL = KUGOU_LOCAL_BASE
+            console.log('[Kugou API] 本地服务已就绪,切回本地:', KUGOU_BASE_URL)
+            try { window.dispatchEvent(new CustomEvent('kugou-local-ready')) } catch (e) {}
+        } else if (tries >= 10) {
+            clearInterval(_kugouRetryTimer); _kugouRetryTimer = null
+        }
+    }, 3000)
 }
 // 异步检测,不阻塞模块加载
 detectLocalAvailability()
+
+// 主进程广播(channel: local-services-ready):酷狗本地子进程启动完成即切回本地
+if (typeof window !== 'undefined' && window.bridge?.on) {
+    window.bridge.on('local-services-ready', (payload) => {
+        if (!payload || !payload.kugou) return
+        if (KUGOU_BASE_URL === KUGOU_LOCAL_BASE) return
+        _localAvailable = true
+        KUGOU_BASE_URL = KUGOU_LOCAL_BASE
+        console.log('[Kugou API] 主进程通知本地服务就绪,切回本地:', KUGOU_BASE_URL)
+    })
+}
 
 // localStorage key
 const KUGOU_COOKIE_KEY = 'kugou_cookie'
