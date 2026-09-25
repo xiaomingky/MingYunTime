@@ -1655,7 +1655,7 @@ const openGithub = () => {
         </div>
 
         <EqPanel />
-        
+
         <div class="speed-selector-container">
             <div class="quality-badge clickable" @click="showSpeedMenu = !showSpeedMenu">
                 {{ playerStore.playbackRate }}x

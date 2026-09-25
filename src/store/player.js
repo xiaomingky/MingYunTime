@@ -178,6 +178,8 @@ export const usePlayerStore = defineStore('player', {
 
             this.audio = new Audio()
             this.audio.crossOrigin = "anonymous";
+            // 系统媒体会话（SMTC）桥接：注册全局控制按钮（媒体键/任务栏媒体栏/系统浮层共用），幂等
+            this._initMediaSessionHandlers()
             this.audio.ontimeupdate = () => {
                 // 节流 currentTime 更新：ontimeupdate 每秒触发 4-15 次，
                 // 但 currentTime 是响应式变量，每次更新会触发进度条、歌词高亮等多处 watch
@@ -193,6 +195,8 @@ export const usePlayerStore = defineStore('player', {
                 }
                 this._lastTimeUpdate = now
                 this.currentTime = this.audio.currentTime
+                // 同步进度给系统媒体会话（SMTC 进度条/歌词匹配依赖它）
+                this._updateMediaSessionPositionState()
                 // 无缝播放：在歌曲结束前1秒预加载下一首
                 if (this.audio.duration && this.audio.currentTime > 0 && this.audio.duration - this.audio.currentTime < 1 && !this._nextPreloaded) {
                     this._nextPreloaded = true
@@ -219,7 +223,12 @@ export const usePlayerStore = defineStore('player', {
                 if (this.currentSong?.platform === 'qq' || !this.currentSong.duration || this.currentSong.duration === 0) {
                     this.currentSong.duration = this.audio.duration
                 }
+                this._updateMediaSessionPositionState()
             }
+            // 播放状态变化直接挂 audio 事件：所有 play/pause 入口（UI/系统控制/MV 切换）都会经过这里，
+            // 不用在每个 action 里单独同步
+            this.audio.addEventListener('play', () => this._setMediaSessionPlaybackState('playing'))
+            this.audio.addEventListener('pause', () => this._setMediaSessionPlaybackState('paused'))
             this._applyVolume()
         },
         async rebuildAudioGraph() {
@@ -353,6 +362,8 @@ export const usePlayerStore = defineStore('player', {
             this.audio.crossOrigin = "anonymous";
             this.audio.ontimeupdate = () => {
                 this.currentTime = this.audio.currentTime
+                // 同步进度给系统媒体会话（SMTC 进度条/歌词匹配依赖它）
+                this._updateMediaSessionPositionState()
                 // 无缝播放：提前1秒预加载
                 if (this.audio.duration && this.audio.currentTime > 0 && this.audio.duration - this.audio.currentTime < 1 && !this._nextPreloaded) {
                     this._nextPreloaded = true
@@ -374,7 +385,11 @@ export const usePlayerStore = defineStore('player', {
                 if (this.currentSong?.platform === 'qq' || !this.currentSong.duration || this.currentSong.duration === 0) {
                     this.currentSong.duration = this.audio.duration
                 }
+                this._updateMediaSessionPositionState()
             }
+            // 播放状态变化直接挂 audio 事件（与 initAudio 保持一致）
+            this.audio.addEventListener('play', () => this._setMediaSessionPlaybackState('playing'))
+            this.audio.addEventListener('pause', () => this._setMediaSessionPlaybackState('paused'))
             this.audio.volume = Math.min(1, savedVolume / 100)
 
             this.audio.src = savedSrc
@@ -840,6 +855,8 @@ export const usePlayerStore = defineStore('player', {
                 }
 
                 this.currentSong = normalized
+                // 切歌即推送新元数据：标题/歌手/专辑/封面发布给系统媒体会话（SMTC）
+                this._updateMediaSessionMetadata()
                 this.audio.crossOrigin = isLocal ? null : "anonymous"
 
                 this.audio.src = url
@@ -1422,14 +1439,84 @@ export const usePlayerStore = defineStore('player', {
         setProgress(percent) {
             if (!this.audio || !this.currentSong.duration) return
             this.audio.currentTime = this.currentSong.duration * percent
+            this._updateMediaSessionPositionState()
         },
         seek(time) {
             if (!this.audio) return
             this.audio.currentTime = time
+            this._updateMediaSessionPositionState()
         },
         setVolume(vol) {
             this.volume = Math.max(0, Math.min(500, vol))
             this._applyVolume()
+        },
+        // ===== 系统媒体会话（SMTC）桥接 =====
+        // 把当前歌曲的标题/歌手/专辑/封面/进度发布给 Windows 系统媒体控制，
+        // 任务栏媒体控制器（AF Media Bar 等）、系统媒体浮层、媒体键即可显示完整信息并远程控制。
+        // 注意：audio 走了 WebAudio 建图（EQ/增强）不影响 SMTC——它基于媒体元素而非输出流。
+        _updateMediaSessionMetadata() {
+            if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+            const s = this.currentSong
+            if (!s || !s.id) return
+            // 封面取大图：网易云 URL 常带 ?param=64y64 之类的小图参数，去掉后统一请求 512
+            let cover = s.al?.picUrl || s.picUrl || ''
+            if (cover && /music\.126\.net/.test(cover)) {
+                cover = cover.split('?')[0] + '?param=512y512'
+            }
+            // 歌手串去掉括号别名（如 "Michita (ミチタ)" → "Michita"）：AF Media Bar 等任务栏
+            // 媒体工具拿这份元数据去词源做相似度匹配搜歌词，括号别名会拉低评分导致搜不到词。
+            // 只清洗发布给系统的这份，应用内显示不变
+            const cleanArtist = (s.artist || '')
+                .replace(/\s*[（(][^（）()]*[）)]/g, '')
+                .trim() || '未知歌手'
+            try {
+                navigator.mediaSession.metadata = new MediaMetadata({
+                    title: s.name || '未知歌曲',
+                    artist: cleanArtist,
+                    album: s.al?.name || s.album || '',
+                    artwork: cover ? [{ src: cover, sizes: '512x512' }] : []
+                })
+            } catch (e) { /* 个别环境 MediaMetadata 不可用，静默降级 */ }
+        },
+        _updateMediaSessionPositionState() {
+            if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || !this.audio) return
+            const dur = this.audio.duration
+            // duration 无效（未加载/直播流）时不推送，避免抛错
+            if (!dur || !isFinite(dur)) return
+            try {
+                navigator.mediaSession.setPositionState({
+                    duration: dur,
+                    playbackRate: this.audio.playbackRate || 1,
+                    position: Math.min(this.audio.currentTime || 0, dur)
+                })
+            } catch (e) { /* position 越界等非法状态浏览器会抛错，等下次 timeupdate 纠正 */ }
+        },
+        _setMediaSessionPlaybackState(state) {
+            if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+            try { navigator.mediaSession.playbackState = state } catch (e) {}
+        },
+        _initMediaSessionHandlers() {
+            if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+            // 控制按钮是全局注册（与具体 audio 元素无关），只在首次 initAudio 时挂一次
+            if (this._msHandlersReady) return
+            this._msHandlersReady = true
+            const ms = navigator.mediaSession
+            // setActionHandler 对不支持的名称会抛 NotSupportedError，逐个兜住
+            const safeSet = (name, fn) => { try { ms.setActionHandler(name, fn) } catch (e) {} }
+            // 系统控制统一转发到 store 现有方法，保证与 UI/歌单/播放模式状态一致
+            safeSet('play', () => { if (!this.isPlaying) this.togglePlay() })
+            safeSet('pause', () => { if (this.isPlaying) this.togglePlay() })
+            safeSet('previoustrack', () => this.prev())
+            safeSet('nexttrack', () => this.next())
+            safeSet('seekto', (details) => {
+                if (details?.seekTime != null && isFinite(details.seekTime)) this.seek(details.seekTime)
+            })
+            safeSet('seekbackward', (details) => {
+                if (this.audio) this.seek(Math.max(0, this.audio.currentTime - (details?.seekOffset || 10)))
+            })
+            safeSet('seekforward', (details) => {
+                if (this.audio?.duration) this.seek(Math.min(this.audio.duration - 1, this.audio.currentTime + (details?.seekOffset || 10)))
+            })
         },
         _preloadNextSong() {
             if (this.playlist.length === 0) return
@@ -1562,6 +1649,10 @@ export const usePlayerStore = defineStore('player', {
                 this.audio.src = ''
             }
             this.isPlaying = false
+            // 清空系统媒体会话元数据：避免媒体栏还显示已移除歌曲的信息
+            if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+                try { navigator.mediaSession.metadata = null } catch (e) {}
+            }
         },
         movePlaylistItem(fromIndex, toIndex) {
             if (fromIndex < 0 || fromIndex >= this.playlist.length) return

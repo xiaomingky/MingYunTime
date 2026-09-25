@@ -80,7 +80,8 @@ async function loadDetail() {
     playUrl.value = ''
     dashAudioUrl.value = ''
     currentEpisode.value = null
-    showDisclaimer.value = true   // 每次加载详情都重置免责声明
+    // B站TV 源跳过播放前提示页直接播放；第三方源（樱花等）保留免责声明
+    showDisclaimer.value = !isBiliSource.value
     pendingEpisode.value = null
     biliQualities.value = []      // 重置 B站TV 画质列表
     biliCurrentQn.value = 0
@@ -92,9 +93,14 @@ async function loadDetail() {
             currentRouteIdx.value = 0
             const watched = animeStore.getWatchedEpisodes(source.value, id.value)
             watchedSet.value = new Set(watched)
-            // 默认不自动播放，先显示免责声明，用户点击"开始播放"后再解析第一集
+            // 默认不自动播放，先显示免责声明，用户点击"开始播放"后再解析第一集；
+            // B站TV 源已跳过提示页，直接解析播放第一集
             if (episodes.value.length > 0) {
-                pendingEpisode.value = episodes.value[0]
+                if (isBiliSource.value) {
+                    playEpisode(episodes.value[0])
+                } else {
+                    pendingEpisode.value = episodes.value[0]
+                }
             }
             // B站源：拉取 TV 登录状态（用于播放前提示）
             if (isBiliSource.value) {

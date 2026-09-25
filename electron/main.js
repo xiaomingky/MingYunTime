@@ -113,9 +113,13 @@ process.env.APP_ROOT = path.join(__dirname, '..')
 // 设置正式名称，确保对话框标题正确
 app.name = '茗韵时光'
 // Windows 系统级应用识别：任务栏、开始菜单、跳转列表、Alt+Tab、文件关联"打开方式"都依赖此 ID
-// 必须在 app.whenReady() 之前调用，且与 package.json build.appId 保持一致
+// 必须在 app.whenReady() 之前调用。
+// 这里用 exe 路径而不是 build.appId（com.mingyuntime.app）：AF Media Bar 等任务栏媒体工具
+// 按"AUMID → 进程名"匹配音频会话来实现应用音量控制，只有 AUMID 以 .exe 结尾时才能解析出
+// 进程名；com.* 形式的 ID 匹配不上，导致"控制不了媒体音量"。本工程不使用系统通知，
+// 改 ID 没有通知身份副作用；安装器快捷方式的 appId 保持不变，不受影响。
 if (process.platform === 'win32') {
-    app.setAppUserModelId('com.mingyuntime.app')
+    app.setAppUserModelId(process.execPath)
 }
 
 // 单例锁：确保只有一个实例运行，后续启动会触发 second-instance 事件

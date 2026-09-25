@@ -121,6 +121,49 @@ let dashAudioEl = null
 // FLV 加载超时定时器
 let flvTimer = null
 
+// ===== 音视频同步缓冲（DASH 分离音频"跟不上"时转圈等待对齐）=====
+// 以视频为时间基准、音频跟随。大跨度跳转或音频缓冲不足时音频会落后画面很远，
+// 此时暂停视频、显示转圈，等音频就绪且误差收敛后再恢复播放，避免"画面走了没声"。
+const syncBuffering = ref(false)
+let isResyncing = false
+// 失步判定阈值：超过 1.5s 视为"跨越远了"，走转圈等待流程；0.5~1.5s 内仍静默快贴
+const RESYNC_DRIFT_THRESHOLD = 1.5
+
+function requestResync() {
+    const v = art?.video
+    if (!v || !dashAudioEl || isResyncing) return
+    // 视频本来就暂停（用户按了暂停后拖进度条）：只对齐音频时间，无需转圈打扰
+    if (v.paused) {
+        try { dashAudioEl.currentTime = v.currentTime } catch (e) {}
+        return
+    }
+    isResyncing = true
+    syncBuffering.value = true
+    try { v.pause() } catch (e) {}
+    try { dashAudioEl.pause() } catch (e) {}
+    // 视频此刻已暂停、时间不再走，音频朝它反复贴齐直到收敛
+    const align = () => { try { dashAudioEl.currentTime = v.currentTime } catch (e) {} }
+    align()
+    let waited = 0
+    function finish() {
+        isResyncing = false
+        syncBuffering.value = false
+        if (art?.video && !art.video.ended) art.video.play().catch(() => {})
+    }
+    function poll() {
+        if (!art?.video || !dashAudioEl) { finish(); return }
+        const drift = Math.abs(dashAudioEl.currentTime - art.video.currentTime)
+        // 音频已缓冲到可播（readyState >= 2）且误差收敛到 250ms 内：恢复播放
+        if (dashAudioEl.readyState >= 2 && drift < 0.25) { finish(); return }
+        if (drift > RESYNC_DRIFT_THRESHOLD) align()
+        waited += 150
+        // 兜底：8 秒仍未对齐则强制恢复，宁可短暂不同声也不把用户卡死在转圈上
+        if (waited >= 8000) { finish(); return }
+        setTimeout(poll, 150)
+    }
+    setTimeout(poll, 150)
+}
+
 function showError(msg) {
     playerError.value = msg
     emit('error', msg)
@@ -419,6 +462,7 @@ function destroyDashAudio() {
             v.removeEventListener('waiting', h.syncPause)
             v.removeEventListener('playing', h.syncPlay)
         }
+        if (h && h.syncAudioStall) dashAudioEl.removeEventListener('waiting', h.syncAudioStall)
         try { dashAudioEl.pause(); dashAudioEl.src = ''; dashAudioEl.load() } catch (e) {}
         if (graphDashEl === dashAudioEl) graphDashEl = null
         dashAudioEl = null
@@ -475,6 +519,12 @@ function initDashAudio() {
     const syncPause = () => { if (dashAudioEl) dashAudioEl.pause() }
     const syncSeek = () => {
         if (!dashAudioEl) return
+        // 跳转跨度大（跨越远了）：音频重新缓冲需要时间，转圈等待对齐后再继续，
+        // 避免出现"画面已经走到新位置、音频还在慢慢追"的长时间无声
+        if (Math.abs(dashAudioEl.currentTime - v.currentTime) > RESYNC_DRIFT_THRESHOLD) {
+            requestResync()
+            return
+        }
         try {
             dashAudioEl.currentTime = v.currentTime
             // 大跳转后音频需要重新缓冲：确保音频跟随播放状态，避免"画面追上音频没跟上"
@@ -483,14 +533,21 @@ function initDashAudio() {
     }
     const syncVolume = () => { if (dashAudioEl) { dashAudioEl.volume = v.volume; dashAudioEl.muted = v.muted } }
     const syncRate = () => { if (dashAudioEl) dashAudioEl.playbackRate = v.playbackRate }
-    // 漂移阈值：0.5s 兼顾直播和视频，避免过松或过紧
+    // 漂移阈值：0.5s 兼顾直播和视频，避免过松或过紧；超过 1.5s 走转圈等待对齐流程
     const syncDrift = () => {
         if (!dashAudioEl) return
         const drift = dashAudioEl.currentTime - v.currentTime
+        if (Math.abs(drift) > RESYNC_DRIFT_THRESHOLD) {
+            requestResync()
+            return
+        }
         if (Math.abs(drift) > 0.5) {
             try { dashAudioEl.currentTime = v.currentTime } catch (e) {}
         }
     }
+    // 音频中途缓冲不足（网络抖动/音频源慢）：暂停视频转圈等待，音频恢复后自动继续。
+    // requestResync 内部用 isResyncing 防重入，转圈期间音频自身的 waiting 事件不会再触发暂停
+    const syncAudioStall = () => { if (v && !v.paused && !v.ended) requestResync() }
 
     v.addEventListener('play', syncPlay)
     v.addEventListener('pause', syncPause)
@@ -501,7 +558,8 @@ function initDashAudio() {
     v.addEventListener('timeupdate', syncDrift)
     v.addEventListener('waiting', syncPause)
     v.addEventListener('playing', syncPlay)
-    dashAudioEl._syncHandlers = { syncPlay, syncPause, syncSeek, syncVolume, syncRate, syncDrift }
+    dashAudioEl.addEventListener('waiting', syncAudioStall)
+    dashAudioEl._syncHandlers = { syncPlay, syncPause, syncSeek, syncVolume, syncRate, syncDrift, syncAudioStall }
     // 音量增强已激活时，DASH 音频也接入增益图
     if (audioCtx) ensureAudioGraph()
 }
@@ -734,6 +792,12 @@ defineExpose({ art })
                 <span class="avp-live-dot"></span>LIVE
             </div>
 
+            <!-- 音视频同步缓冲指示（大跳转/音频缓冲不足时转圈等待对齐） -->
+            <div v-if="syncBuffering && !playerError" class="avp-sync-mask" @click.stop>
+                <div class="avp-sync-spinner"></div>
+                <p>音视频同步中…</p>
+            </div>
+
             <!-- 选集面板 -->
             <transition name="avp-slide">
                 <div v-if="showEpPanel && !playerError" class="avp-ep-panel" @click.stop>
@@ -893,6 +957,37 @@ defineExpose({ art })
 @keyframes avp-live-blink {
     0%, 100% { opacity: 1; }
     50% { opacity: .25; }
+}
+
+/* ===== 音视频同步缓冲指示 ===== */
+.avp-sync-mask {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: rgba(0, 0, 0, .55);
+    color: #fff;
+    z-index: 1000;
+    pointer-events: none; /* 不挡操作，同步完成后自动消失 */
+}
+.avp-sync-mask p {
+    margin: 0;
+    font-size: 13px;
+    opacity: .9;
+}
+.avp-sync-spinner {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 3px solid rgba(255, 255, 255, .25);
+    border-top-color: #fb7299;
+    animation: avp-sync-spin .8s linear infinite;
+}
+@keyframes avp-sync-spin {
+    to { transform: rotate(360deg); }
 }
 
 /* ===== 选集面板 ===== */

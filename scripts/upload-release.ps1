@@ -1,11 +1,14 @@
 ﻿# scripts/upload-release.ps1
 # 上传发布资产到 GitHub Releases（无需 gh CLI，用 git remote 中的 PAT 走 REST API）
-# 用法: .\scripts\upload-release.ps1 -Tag v3.4.5
+# 用法: .\scripts\upload-release.ps1 -Tag v3.5.1 [-Version 3.5.1]
+# -Version 缺省时自动从 -Tag 去掉 v 前缀
 param(
-    [Parameter(Mandatory = $true)][string]$Tag
+    [Parameter(Mandatory = $true)][string]$Tag,
+    [string]$Version
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $Version) { $Version = $Tag -replace '^v', '' }
 $repo = "xiaomingky/MingYunTime"
 $root = Split-Path -Parent $PSScriptRoot
 
@@ -26,9 +29,9 @@ Write-Host "Release: $($release.tag_name) id=$rid ($($release.assets.Count) asse
 
 # 3) 资产清单: 显示名 --> 本地路径
 $assets = [ordered]@{
-    "Setup.3.4.5.exe"                = Join-Path $root "release\茗韵时光 Setup 3.4.5.exe"
-    "MingYunTime-3.4.5-win.7z"       = Join-Path $root "release\茗韵时光 Setup 3.4.5.7z"
-    "Installer.3.4.5.exe"            = Join-Path $root "installer\bin\Release\MingYunInstaller.exe"
+    "Setup.$Version.exe"                = Join-Path $root "release\茗韵时光 Setup $Version.exe"
+    "MingYunTime-$Version-win.7z"       = Join-Path $root "release\茗韵时光 Setup $Version.7z"
+    "Installer.$Version.exe"            = Join-Path $root "installer\bin\Release\MingYunInstaller.exe"
 }
 
 foreach ($name in $assets.Keys) {
