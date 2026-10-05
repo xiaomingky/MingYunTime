@@ -24,6 +24,7 @@ const SIDEBAR_SECTIONS = [
     { id: '/anime', label: '动漫区' },
     { id: '/movie', label: '影视区' },
     { id: '/bilibili', label: 'B站区' },
+    { id: '/entertainment', label: '娱乐专区' },
     { id: '/local', label: '本地音乐' },
     { id: '/local-video', label: '本地视频' },
     { id: '/recent', label: '最近播放' },

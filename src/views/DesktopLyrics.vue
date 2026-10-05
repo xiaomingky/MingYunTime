@@ -51,6 +51,22 @@ const getBridge = () => {
 
 let removeListener = null
 
+const widgetCardRef = ref(null)
+let cardSizeObserver = null
+let resizeFrameId = null
+
+const syncWindowSize = () => {
+    if (resizeFrameId !== null) return
+    resizeFrameId = requestAnimationFrame(() => {
+        resizeFrameId = null
+        const card = widgetCardRef.value
+        const b = getBridge()
+        if (card && b?.send) {
+            b.send('lyric-window-resize', { width: card.offsetWidth, height: card.offsetHeight })
+        }
+    })
+}
+
 const registerFonts = async () => {
     const b = getBridge()
     if (b && b.invoke) {
@@ -285,6 +301,8 @@ const onMouseMove = (e) => {
 }
 
 onMounted(() => {
+    cardSizeObserver = new ResizeObserver(syncWindowSize)
+    if (widgetCardRef.value) cardSizeObserver.observe(widgetCardRef.value, { box: 'border-box' })
     registerFonts()
     const b = getBridge()
     if (b && b.on) {
@@ -310,6 +328,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+    cardSizeObserver?.disconnect()
+    if (resizeFrameId !== null) cancelAnimationFrame(resizeFrameId)
     if (removeListener) removeListener()
     if (animFrameId) cancelAnimationFrame(animFrameId)
     document.removeEventListener('mousemove', onMouseMove)
@@ -340,7 +360,7 @@ const close = () => {
 
 <template>
   <div class="desktop-lyric-container" :class="{ locked: isLocked, 'simple-mode': isSimpleMode }">
-    <div class="widget-card" :class="{ 'card-locked': isLocked, 'card-simple': isSimpleMode }" :style="cardBgStyle">
+    <div ref="widgetCardRef" class="widget-card" :class="{ 'card-locked': isLocked, 'card-simple': isSimpleMode }" :style="cardBgStyle">
       <!-- 拖拽层：未锁定时可拖动整个卡片区域 -->
       <div class="drag-overlay" :class="{ 'no-drag': isLocked }"></div>
 
@@ -470,6 +490,7 @@ const close = () => {
   z-index: 10;
   width: 860px;
   height: 176px;
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   /* 通过 CSS 变量控制背景透明度，默认不透明(1) */
@@ -852,8 +873,9 @@ const close = () => {
 /* ============ 简约模式：仅显示歌词，居中放大 ============ */
 .widget-card.card-simple {
   min-width: 320px;
-  max-width: 900px;
-  width: fit-content;
+  max-width: 860px;
+  /* Intrinsic width lets a compact native window grow again for longer lyrics. */
+  width: max-content;
   height: auto;
   min-height: 70px;
   max-height: 160px;

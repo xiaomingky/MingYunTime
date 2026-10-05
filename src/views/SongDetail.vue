@@ -1,6 +1,7 @@
 <script setup>
-import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue'
 import { usePlayerStore } from '../store/player'
+import { useSongDetailStore } from '../store/song-detail'
 import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, RefreshCw, Type, LayoutGrid, AlignLeft, Settings, ThumbsUp, MessageCircle, Trash2, CornerDownLeft } from 'lucide-vue-next'
 import CustomSelect from '../components/CustomSelect.vue'
 import { getCommentNew, likeComment, sendComment } from '../api'
@@ -14,6 +15,9 @@ import { useKugouUserStore } from '../store/kugou-user'
 import KugouComment from '../components/KugouComment.vue'
 
 const playerStore = usePlayerStore()
+const detailPreferences = useSongDetailStore()
+const isAppleDetail = computed(() => detailPreferences.style === 'apple')
+const AppleMusicDetail = defineAsyncComponent(() => import('../components/AppleMusicDetail.vue'))
 const userStore = useUserStore()
 const messageStore = useMessageStore()
 const qqUserStore = useQQUserStore()
@@ -154,7 +158,7 @@ const resetYrcLineCache = () => {
 }
 
 const updateVisualizer = () => {
-  if (!playerStore.showSongDetail) {
+  if (!playerStore.showSongDetail || isAppleDetail.value) {
     if (animationId) cancelAnimationFrame(animationId)
     animationId = null
     return
@@ -227,6 +231,7 @@ const updateVisualizer = () => {
 }
 
 const startVisualizer = () => {
+  if (isAppleDetail.value) return
   if (!animationId) {
     animationId = requestAnimationFrame(updateVisualizer)
   }
@@ -278,6 +283,18 @@ const currentLyricIndex = computed(() => {
 })
 
 const lyricContainer = ref(null)
+watch(isAppleDetail, async apple => {
+  showLyricSettings.value = false
+  if (apple) {
+    if (animationId) cancelAnimationFrame(animationId)
+    animationId = null
+  } else if (playerStore.showSongDetail) {
+    await nextTick()
+    scrollToCenter(currentLyricIndex.value, true)
+    resetYrcLineCache()
+    startVisualizer()
+  }
+})
 const leavingIndexes = ref(new Set())
 
 const lyricFontFamily = computed(() => {
@@ -370,6 +387,7 @@ const switchLyricSource = () => {
 // leavingIndexes 定时器 Map，每个索引独立定时器，避免清除时遗漏导致 pointer-events 永久锁定
 let _leavingTimers = new Map()
 watch(currentLyricIndex, (newIndex, oldIndex) => {
+  if (isAppleDetail.value) return
   if (oldIndex != null && oldIndex >= 0 && oldIndex !== newIndex) {
     leavingIndexes.value.add(oldIndex)
     // 清除该索引的旧定时器（如果有），然后创建新定时器
@@ -396,6 +414,7 @@ watch(currentLyricIndex, (newIndex, oldIndex) => {
 
 // 歌词变化时（切歌加载新歌词）立即定位到当前行（通常为第一行），无动画
 watch(displayLyrics, () => {
+    if (isAppleDetail.value) return
     if (lyricContainer.value) {
         lyricContainer.value.scrollTo({ top: 0, behavior: 'auto' })
     }
@@ -826,8 +845,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="song-detail-overlay" :class="{ show: playerStore.showSongDetail, 'is-cover-mode': playerStore.bgMode === 'cover' }">
-    <div class="bg-blur" v-show="playerStore.bgMode === 'cover'" :style="{ backgroundImage: `url(${getCoverUrl()})` }"></div>
+  <div class="song-detail-overlay" :class="{ show: playerStore.showSongDetail, 'is-cover-mode': !isAppleDetail && playerStore.bgMode === 'cover', 'is-apple-detail': isAppleDetail }">
+    <div class="bg-blur" v-show="!isAppleDetail && playerStore.bgMode === 'cover'" :style="{ backgroundImage: `url(${getCoverUrl()})` }"></div>
     
     <!-- 顶部拖动区域：整个 header 可拖，只有关闭按钮不可拖 -->
     <div class="header drag-header">
@@ -835,6 +854,10 @@ onMounted(() => {
     </div>
 
     <div class="main-content">
+      <AppleMusicDetail v-if="isAppleDetail && playerStore.showSongDetail"
+        :source="lyricSourceText" :qq-song="isQQSong" :is-non-netease="isNonNeteaseSong" :comments-open="showCommentPanel"
+        @playlist="showPlaylistSelector = true" @download="handleDownload" @share="handleShare" @comment="handleComment"
+        @album="goToAlbum" @source="switchLyricSource" @local-mv="playLocalMv" @online-mv="playOnlineMv" />
       <div class="left-section">
         <!-- Normal Cover + Info -->
         <div class="cover-container">
@@ -930,7 +953,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <div class="right-lyrics" v-show="!showCommentPanel">
+      <div v-if="!isAppleDetail" class="right-lyrics" v-show="!showCommentPanel">
         <div class="lyric-controls no-drag">
             <div class="group icon-group">
                 <div class="mv-dropdown-wrap">
@@ -973,6 +996,10 @@ onMounted(() => {
             <!-- 歌词设置项：默认折叠，点击「设置」按钮展开 -->
             <transition name="lyric-settings-collapse">
                 <div v-show="showLyricSettings" class="lyric-settings-wrap">
+                    <div class="group">
+                        <span class="label">页面风格</span>
+                        <CustomSelect v-model="detailPreferences.style" :options="[{label: '经典', value: 'classic'}, {label: 'Apple Music', value: 'apple'}]" compact />
+                    </div>
                     <div class="group">
                         <span class="label">桌面字体</span>
                         <CustomSelect
@@ -1162,7 +1189,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <div class="visualizer-container" ref="visualizerContainer">
+    <div class="visualizer-container" v-show="!isAppleDetail" ref="visualizerContainer">
         <div
             v-for="(bar, i) in rhythmBars"
             :key="i"
@@ -1199,6 +1226,22 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.song-detail-overlay.is-apple-detail { background: #252a28; }
+.is-apple-detail > .header .close-btn { color: #fff; opacity: .75; }
+.is-apple-detail .main-content { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.2fr); grid-template-rows: minmax(0, 1fr); gap: 7%; padding: 12px 7% 30px; max-height: none; min-height: 0; align-items: center; }
+.is-apple-detail .left-section { display: contents; }
+.is-apple-detail .left-section > .cover-container,
+.is-apple-detail .left-section > .song-header,
+.is-apple-detail .left-section > .record-actions { display: none; }
+.is-apple-detail .right-comments { grid-column: 2; grid-row: 1; width: 100%; min-width: 0; height: 100%; color: #fff; background: #202623ee; border-radius: 8px; padding: 18px; }
+.is-apple-detail .right-comments :deep(.content-text),
+.is-apple-detail .right-comments :deep(.username),
+.is-apple-detail .right-comments :deep(.title) { color: #fff; }
+@media (max-width: 760px) {
+  .is-apple-detail .main-content { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 18px; padding: 8px 22px 12px; }
+  .is-apple-detail .right-comments { grid-column: 1; grid-row: 2; }
+}
+
 .song-detail-overlay {
   position: fixed;
   top: 100%;

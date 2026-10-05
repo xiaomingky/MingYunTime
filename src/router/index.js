@@ -49,6 +49,9 @@ const BiliUserSpace = () => import('../views/BiliUserSpace.vue')
 const SmartEduTextbook = () => import('../views/SmartEduTextbook.vue')
 
 const routes = [
+    { path: '/entertainment', name: 'Esports', component: () => import('../views/Esports.vue') },
+    { path: '/entertainment/:game/match/:matchId', name: 'EsportsMatch', component: () => import('../views/EsportsMatch.vue') },
+    { path: '/entertainment/:game/event/:eventId', name: 'EsportsEvent', component: () => import('../views/EsportsEvent.vue') },
     // ========== 网易云平台路由（默认） ==========
     {
         path: '/',

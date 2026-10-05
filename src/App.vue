@@ -3,6 +3,7 @@ import { ref, onMounted, computed, onUnmounted, watch, provide, h, nextTick } fr
 import { useRouter, useRoute } from 'vue-router'
 import { getPendingLockTarget } from './router'
 import { usePlayerStore } from './store/player'
+import { useSongDetailStore } from './store/song-detail'
 import { useUserStore } from './store/user'
 import { useMessageStore } from './store/message'
 import SongDetail from './views/SongDetail.vue'
@@ -54,7 +55,8 @@ import {
   Zap,
   CheckSquare,
   Trash2,
-  GraduationCap
+  GraduationCap,
+  Gamepad2
 } from 'lucide-vue-next'
 import SearchSuggest from './components/SearchSuggest.vue'
 import { useSearchHistoryStore } from './store/searchHistory'
@@ -74,6 +76,7 @@ import CustomSelect from './components/CustomSelect.vue'
 const router = useRouter()
 const route = useRoute()
 const playerStore = usePlayerStore()
+const detailPreferences = useSongDetailStore()
 const userStore = useUserStore()
 const messageStore = useMessageStore()
 const searchHistoryStore = useSearchHistoryStore()
@@ -514,6 +517,7 @@ onUnmounted(() => {
 })
 // 本地资源导航（两平台共用，保留我们的自有功能）
 const libraryNavItems = [
+    { id: '/entertainment', label: '娱乐专区', icon: Gamepad2 },
     { id: '/local', label: '本地音乐', icon: HardDrive },
     { id: '/local-video', label: '本地视频', icon: Film },
     { id: '/recent', label: '最近播放', icon: Clock },
@@ -1061,7 +1065,7 @@ const openGithub = () => {
 </script>
 
 <template>
-  <div class="app-container" :class="{ 'is-desktop-lyrics': route.path === '/desktop-lyrics' }" :data-platform="platformStore.current">
+  <div class="app-container" :class="{ 'is-desktop-lyrics': route.path === '/desktop-lyrics', 'apple-detail-open': playerStore.showSongDetail && detailPreferences.style === 'apple' }" :data-platform="platformStore.current">
     <Toast />
     <VideoDownloadToast />
     <ConfirmModal
@@ -1432,7 +1436,7 @@ const openGithub = () => {
                 v-for="item in visibleLibraryItems"
                 :key="item.id"
                 class="menu-item"
-                :class="{ active: route.path === item.id }"
+                :class="{ active: route.path === item.id || (item.id === '/entertainment' && route.path.startsWith('/entertainment/')) }"
                 @click="navigateTo(item.id)"
               >
                 <component :is="item.icon" :size="18" />
@@ -1586,7 +1590,7 @@ const openGithub = () => {
       </div>
     </div>
 
-    <footer class="footer" :class="{ 'is-transparent': playerStore.showSongDetail && playerStore.bgMode === 'cover' }">
+    <footer class="footer" :class="{ 'is-transparent': playerStore.showSongDetail && playerStore.bgMode === 'cover' && detailPreferences.style !== 'apple', 'is-apple-detail': playerStore.showSongDetail && detailPreferences.style === 'apple' }">
       <div class="song-info" @click="toggleSongDetailOverlay">
         <img :src="getFooterCoverUrl()" class="song-cover" />
         <div class="song-detail">

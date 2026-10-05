@@ -102,6 +102,7 @@ export const usePlayerStore = defineStore('player', {
         analyser: null,
         source: null,
         dataArray: null,
+        timeDataArray: null,
         isLiked: false,
         showMvPlayer: false,
         currentMvId: null,
@@ -170,6 +171,8 @@ export const usePlayerStore = defineStore('player', {
                 try { this.ctx.close() } catch (e) {}
                 this.ctx = null
                 this.analyser = null
+                this.dataArray = null
+                this.timeDataArray = null
                 this.source = null
                 this.eqFilters = []
                 this.eqDryGain = null
@@ -241,6 +244,8 @@ export const usePlayerStore = defineStore('player', {
             if (this.eqDryGain) { try { this.eqDryGain.disconnect() } catch (e) {}; this.eqDryGain = null }
             if (this.eqWetGain) { try { this.eqWetGain.disconnect() } catch (e) {}; this.eqWetGain = null }
             if (this.analyser) { try { this.analyser.disconnect() } catch (e) {}; this.analyser = null }
+            this.dataArray = null
+            this.timeDataArray = null
             if (this.volumeGain) { try { this.volumeGain.disconnect() } catch (e) {}; this.volumeGain = null }
             if (this.ctx) { try { this.ctx.close() } catch (e) {}; this.ctx = null }
 
@@ -251,6 +256,7 @@ export const usePlayerStore = defineStore('player', {
                 this.analyser.fftSize = 256
                 this.analyser.smoothingTimeConstant = 0.8
                 this.dataArray = new Uint8Array(this.analyser.frequencyBinCount)
+                this.timeDataArray = new Uint8Array(this.analyser.fftSize)
 
                 this.source = this.ctx.createMediaElementSource(this.audio)
 
@@ -352,6 +358,8 @@ export const usePlayerStore = defineStore('player', {
                 try { this.ctx.close() } catch (e) {}
                 this.ctx = null
                 this.analyser = null
+                this.dataArray = null
+                this.timeDataArray = null
                 this.source = null
                 this.eqFilters = []
                 this.eqDryGain = null
@@ -1405,6 +1413,13 @@ export const usePlayerStore = defineStore('player', {
             }
             return null
         },
+        updateTimeDomainData() {
+            if (this.analyser && this.timeDataArray) {
+                this.analyser.getByteTimeDomainData(this.timeDataArray)
+                return this.timeDataArray
+            }
+            return null
+        },
         // 窗口隐藏时释放非必要资源（Audio 保留，用户可能在后台听歌）
         // 断开 analyser 节点释放频谱分析相关内存，下次 show 时由 rebuildAudioGraph 重建
         releaseVisualizerResources() {
@@ -1413,6 +1428,7 @@ export const usePlayerStore = defineStore('player', {
                     try { this.analyser.disconnect() } catch (e) {}
                     this.analyser = null
                     this.dataArray = null
+                    this.timeDataArray = null
                 }
             } catch (e) { /* 静默 */ }
         },

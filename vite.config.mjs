@@ -3,11 +3,29 @@ import path from 'node:path'
 import vue from '@vitejs/plugin-vue'
 import electron from 'vite-plugin-electron'
 import renderer from 'vite-plugin-electron-renderer'
+import { transform } from 'esbuild'
+import { createRequire } from 'node:module'
+
+const require = createRequire(import.meta.url)
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  resolve: {
+    // Pixi's URL helper runs in the isolated renderer, where Node require is unavailable.
+    alias: [{ find: /^url$/, replacement: require.resolve('url/') }]
+  },
   plugins: [
     vue(),
+    {
+      name: 'apple-lyrics-css',
+      enforce: 'pre',
+      async transform(code, id) {
+        // AMLL ships nested CSS; Electron 22 needs it flattened in development too.
+        if (id.replaceAll('\\', '/').includes('@applemusic-like-lyrics/core/dist/style.css')) {
+          return (await transform(code, { loader: 'css', target: 'chrome108' })).code
+        }
+      }
+    },
     electron([
       {
         // Main-Process entry file of the Electron App.

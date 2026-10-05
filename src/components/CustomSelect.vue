@@ -9,7 +9,7 @@
  */
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 
-import { ChevronDown } from 'lucide-vue-next'
+import { ChevronDown, Check } from 'lucide-vue-next'
 
 const props = defineProps({
     modelValue: {
@@ -39,6 +39,14 @@ const props = defineProps({
     width: {
         type: [String, Number],
         default: ''
+    },
+    apple: {
+        type: Boolean,
+        default: false
+    },
+    label: {
+        type: String,
+        default: ''
     }
 })
 
@@ -51,6 +59,7 @@ const dropdownStyle = ref({})
 const dropdownRef = ref(null)
 // 展开方向（空间不足时向上弹），用于方向感知的展开动画
 const dropUp = ref(false)
+const highlightedIndex = ref(0)
 
 // 打开时计算浮层位置（基于触发器在视口中的位置）
 const updateDropdownPosition = () => {
@@ -115,6 +124,7 @@ const toggleOpen = () => {
     if (props.disabled) return
     open.value = !open.value
     if (open.value) {
+        highlightedIndex.value = Math.max(0, flatOptions.value.findIndex(opt => opt.value === props.modelValue))
         // 浮层常驻（v-show），无需等 DOM 创建，直接同步定位，避免首次打开卡顿
         updateDropdownPosition()
     }
@@ -124,6 +134,20 @@ const selectOption = (opt) => {
     emit('update:modelValue', opt.value)
     emit('change', opt.value)
     open.value = false
+}
+
+const onTriggerKeydown = (event) => {
+    if (!props.apple || props.disabled) return
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(event.key)) {
+        event.preventDefault()
+        if (!open.value) { toggleOpen(); return }
+        const count = flatOptions.value.length
+        if (!count) return
+        if (event.key === 'Enter' || event.key === ' ') selectOption(flatOptions.value[highlightedIndex.value])
+        else if (event.key === 'Home') highlightedIndex.value = 0
+        else if (event.key === 'End') highlightedIndex.value = count - 1
+        else highlightedIndex.value = (highlightedIndex.value + (event.key === 'ArrowDown' ? 1 : -1) + count) % count
+    } else if (event.key === 'Escape' || event.key === 'Tab') open.value = false
 }
 
 const onDocClick = (e) => {
@@ -170,11 +194,11 @@ onUnmounted(() => {
 <template>
     <div
         class="custom-select"
-        :class="{ compact, transparent, disabled, open }"
+        :class="{ compact, transparent, disabled, open, 'apple-select': apple }"
         ref="rootRef"
         :style="width ? { width: typeof width === 'number' ? width + 'px' : width } : null"
     >
-        <div class="cs-trigger" @click="toggleOpen">
+        <div class="cs-trigger" :tabindex="apple ? (disabled ? -1 : 0) : undefined" :role="apple ? 'combobox' : undefined" :aria-label="apple ? label : undefined" :aria-expanded="apple ? open : undefined" :aria-haspopup="apple ? 'listbox' : undefined" :aria-disabled="apple ? disabled : undefined" @keydown="onTriggerKeydown" @click="toggleOpen">
             <span class="cs-prefix"><slot name="trigger-prefix" /></span>
             <span class="cs-label" :class="{ placeholder: !normalizedOptions.find(o => o.value === modelValue) }">
                 {{ currentLabel }}
@@ -185,7 +209,7 @@ onUnmounted(() => {
         <Teleport to="body">
             <!-- 常驻浮层容器：v-show 显隐，打开时同步定位不卡。
                  选项列表仅在 open 时渲染（v-if），关闭即销毁 —— 避免大选项列表永久挂在 DOM 里撑内存 -->
-            <div v-show="open" class="cs-dropdown cs-dropdown-fixed" :class="{ compact, 'drop-up': dropUp }" ref="dropdownRef" :style="dropdownStyle" @click.stop>
+            <div v-show="open" class="cs-dropdown cs-dropdown-fixed" :class="{ compact, 'drop-up': dropUp, 'apple-select-menu': apple }" :role="apple ? 'listbox' : undefined" :aria-label="apple ? label : undefined" ref="dropdownRef" :style="dropdownStyle" @click.stop>
                 <template v-if="open">
                     <template v-for="(opt, gi) in normalizedOptions" :key="opt.group ? 'g' + gi : opt.value">
                         <!-- 分组 -->
@@ -206,10 +230,13 @@ onUnmounted(() => {
                             v-else-if="opt.value !== undefined"
                             :key="opt.value"
                             class="cs-option"
-                            :class="{ active: opt.value === modelValue }"
+                            :class="{ active: opt.value === modelValue, highlighted: apple && flatOptions[highlightedIndex]?.value === opt.value }"
+                            :role="apple ? 'option' : undefined"
+                            :aria-selected="apple ? opt.value === modelValue : undefined"
                             @click="selectOption(opt)"
                         >
                             {{ opt.label }}
+                            <Check v-if="apple && opt.value === modelValue" :size="14" />
                         </div>
                     </template>
                 </template>
@@ -348,6 +375,14 @@ onUnmounted(() => {
     background-color: #f5f5f5;
 }
 
+.custom-select.apple-select { width: 174px; max-width: 100%; flex-shrink: 1; min-width: 0; }
+.custom-select.apple-select .cs-trigger { min-height: 34px; box-sizing: border-box; background: #ffffff0d; color: #fff; border: 1px solid #ffffff26; border-radius: 7px; padding: 7px 10px; }
+.custom-select.apple-select:hover .cs-trigger { background: #ffffff16; border-color: #ffffff42; }
+.custom-select.apple-select.open .cs-trigger { background: #ffffff16; border-color: #ff708580; box-shadow: 0 0 0 2px #ff708518; }
+.custom-select.apple-select .cs-trigger:focus-visible { outline: 2px solid #ff8397; outline-offset: 2px; }
+.custom-select.apple-select .cs-arrow { color: #ffffff9e; }
+.custom-select.apple-select.disabled .cs-trigger { background: #ffffff08; }
+
 /* 下拉展开动画：浮层从 display:none 变为可见时 CSS 动画自动重放；
    按展开方向区分从上滑入/从下滑入。关闭保持瞬时（菜单收起要干脆） */
 .cs-dropdown.cs-dropdown-fixed {
@@ -420,4 +455,11 @@ onUnmounted(() => {
     padding: 6px 10px;
     font-size: 12px;
 }
+
+.cs-dropdown.cs-dropdown-fixed.apple-select-menu { background: #303632; border-color: #ffffff26; color: #fff; box-shadow: 0 12px 32px #0005; padding: 5px; font: 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; letter-spacing: 0; }
+.cs-dropdown.cs-dropdown-fixed.apple-select-menu .cs-option { display: flex; align-items: center; justify-content: space-between; gap: 14px; color: #ffffffbf; min-height: 34px; box-sizing: border-box; padding: 8px 10px; border-radius: 4px; }
+.cs-dropdown.cs-dropdown-fixed.apple-select-menu .cs-option:hover,
+.cs-dropdown.cs-dropdown-fixed.apple-select-menu .cs-option.highlighted { background: #ffffff12; color: #fff; }
+.cs-dropdown.cs-dropdown-fixed.apple-select-menu .cs-option.active { background: #ff70851a; color: #ff96a6; font-weight: 600; }
+.cs-dropdown.cs-dropdown-fixed.apple-select-menu .cs-option svg { flex-shrink: 0; }
 </style>

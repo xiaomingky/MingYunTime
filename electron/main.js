@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, ipcMain, dialog, protocol, Tray, Menu, nativeImage, session } from 'electron'
+import { app, BrowserWindow, shell, ipcMain, dialog, protocol, Tray, Menu, nativeImage, session, screen } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
@@ -34,6 +34,7 @@ import './anime.js'
 import './bilibili-video.js'
 import './anime-meta.js'
 import './movie.js'
+import './esports.js'
 // 智慧教育教材专区（国家中小学智慧教育平台 basic.smartedu.cn）
 import { getSmartEduHeaders, getMediaInjectionHeaders } from './smart-edu.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
@@ -413,6 +414,8 @@ function createLyricWindow() {
     lyricWin = new BrowserWindow({
         width: 860,
         height: 176,
+        minWidth: 320,
+        minHeight: 70,
         frame: false,
         transparent: true,
         alwaysOnTop: true,
@@ -475,6 +478,22 @@ ipcMain.on('toggle-desktop-lyrics', (_, show) => {
     } else {
         lyricWin?.hide()
     }
+})
+
+ipcMain.on('lyric-window-resize', (event, size) => {
+    if (!lyricWin || lyricWin.isDestroyed() || event.sender !== lyricWin.webContents) return
+    if (!Number.isFinite(size?.width) || !Number.isFinite(size?.height)) return
+
+    const bounds = lyricWin.getBounds()
+    const area = screen.getDisplayMatching(bounds).workArea
+    const width = Math.min(area.width, Math.max(320, Math.min(860, Math.ceil(size.width))))
+    const height = Math.min(area.height, Math.max(70, Math.min(176, Math.ceil(size.height))))
+    if (bounds.width === width && bounds.height === height) return
+
+    // Keep the card centered where it was before resizing, within the display.
+    const x = Math.max(area.x, Math.min(area.x + area.width - width, Math.round(bounds.x + (bounds.width - width) / 2)))
+    const y = Math.max(area.y, Math.min(area.y + area.height - height, Math.round(bounds.y + (bounds.height - height) / 2)))
+    lyricWin.setBounds({ x, y, width, height })
 })
 
 // 打开本地文件/文件夹路径（下载专区使用）

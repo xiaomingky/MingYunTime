@@ -394,6 +394,38 @@ footer.footer {
 }
 
 /* Common Footer Styles */
+footer.footer.is-apple-detail {
+    /* Let the Apple detail background continue behind the player so the footer
+       does not form a separate dark block at the bottom of the window. */
+    background: transparent;
+    border-top-color: transparent;
+    color: #fff;
+}
+.footer.is-apple-detail .control-btns,
+.footer.is-apple-detail .extra-controls,
+.footer.is-apple-detail .time,
+.footer.is-apple-detail .volume-value,
+.footer.is-apple-detail .artist-name { color: #ffffffa6; }
+.footer.is-apple-detail .song-name { color: #fff; }
+.footer.is-apple-detail .play-circle { color: #fff; background: #ffffff12; }
+.footer.is-apple-detail .play-circle svg { fill: #fff; }
+.footer.is-apple-detail .quality-badge,
+.footer.is-apple-detail .eq-toggle-btn:not(.active) { color: #ffffffb3; border-color: #ffffff26; }
+.footer.is-apple-detail .progress-bar,
+.footer.is-apple-detail .volume-slider { background: #ffffff26; }
+.footer.is-apple-detail .progress-fill,
+.footer.is-apple-detail .volume-fill { background: #ffffffb3; }
+.footer.is-apple-detail .progress-dot { background: #fff; box-shadow: none; }
+@media (max-width: 760px) {
+    .app-container.apple-detail-open { --footer-height: 132px; }
+    footer.footer.is-apple-detail { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto; padding: 10px 16px; gap: 8px; }
+    .footer.is-apple-detail > .song-info { display: none; }
+    .footer.is-apple-detail .player-controls { width: 100%; min-width: 0; }
+    .footer.is-apple-detail .control-btns { gap: 20px; }
+    .footer.is-apple-detail .extra-controls { justify-content: space-between; gap: 10px; min-width: 0; }
+    .footer.is-apple-detail .volume-slider { width: 60px; }
+}
+
 .footer {
     justify-content: space-between;
     transition: background-color 0.4s cubic-bezier(0.2, 0, 0.2, 1), border-color 0.4s;
