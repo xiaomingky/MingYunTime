@@ -7,6 +7,7 @@ import {
     kugouSingerDetail, kugouSingerSong, kugouSingerAlbum,
     normalizeKugouSong, normalizeKugouAlbum, normalizeKugouSinger, toKugouTrack
 } from '../../api/kugou'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -94,7 +95,7 @@ const playSong = (song) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = hotSongs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, list)
 }
 
 // 加载更多歌手歌曲
@@ -141,7 +142,7 @@ onMounted(fetchSinger)
         <section class="kugou-section" v-if="hotSongs.length">
             <h2 class="kugou-section-title">热门歌曲</h2>
             <div class="kugou-song-list">
-                <div v-for="(s, i) in hotSongs" :key="s.id || i" class="kugou-song-item" @dblclick="playSong(s)">
+                <div v-for="(s, i) in hotSongs" :key="s.id || i" class="kugou-song-item" @click="playSong(s)">
                     <span class="kugou-song-index">{{ i + 1 }}</span>
                     <img v-if="s.picUrl" :src="s.picUrl" class="kugou-song-cover" loading="lazy" />
                     <div class="kugou-song-info">
@@ -152,6 +153,7 @@ onMounted(fetchSinger)
                         <div class="kugou-song-artist">{{ s.artist }}</div>
                     </div>
                     <div class="kugou-song-album">{{ s.album }}</div>
+                    <SongActionsMenu :song="toKugouTrack(s)" :list="hotSongs.map(toKugouTrack).filter(Boolean)" compact />
                 </div>
             </div>
             <!-- 加载更多 -->

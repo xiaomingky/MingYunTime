@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Heart, Plus, Trash2, X, Bookmark, CheckSquare, Square } from 'lucide-vue-next'
+import { Heart, Plus, Trash2, X, Bookmark, CheckSquare, Square, ListPlus, SkipForward } from 'lucide-vue-next'
 import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { useKugouUserStore } from '../../store/kugou-user'
@@ -11,6 +11,7 @@ import {
 } from '../../api/kugou'
 import KugouComment from '../../components/KugouComment.vue'
 import ConfirmModal from '../../components/ConfirmModal.vue'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
 
 const route = useRoute()
 const playerStore = usePlayerStore()
@@ -20,6 +21,7 @@ const kugouUserStore = useKugouUserStore()
 const loading = ref(false)
 const detail = ref(null)
 const songs = ref([])
+const normalizedTracks = computed(() => songs.value.map(toKugouTrack).filter(Boolean))
 
 const fetchDetail = async () => {
     const idParam = route.params.id
@@ -284,8 +286,8 @@ const fetchDetail = async () => {
 
 const playAll = () => {
     if (!songs.value.length) return
-    const list = songs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playSong(list[0], list)
+    const list = normalizedTracks.value
+    playerStore.playNow(list[0], list)
 }
 
 // 视图切换：歌曲列表 / 评论
@@ -294,9 +296,11 @@ const viewTab = ref('songs')
 const playSong = (song) => {
     const track = toKugouTrack(song)
     if (!track) return
-    const list = songs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, normalizedTracks.value)
 }
+
+const enqueueAll = () => normalizedTracks.value.length && playerStore.enqueue(normalizedTracks.value)
+const playNextAll = () => normalizedTracks.value.length && playerStore.playNext(normalizedTracks.value)
 
 const toggleLike = async (song) => {
     // hash 校验在 toggleLikeSong 内部完成,不重复提示
@@ -481,7 +485,11 @@ onMounted(fetchDetail)
                 </div>
                 <div class="kugou-playlist-desc" v-if="detail.description">{{ detail.description }}</div>
                 <div class="kugou-playlist-actions">
-                    <button class="kugou-play-btn" @click="playAll">播放全部</button>
+                    <div class="kugou-play-actions">
+                        <button class="kugou-play-btn" @click="playAll">播放全部</button>
+                        <button class="kugou-collect-btn" @click="enqueueAll"><ListPlus :size="14" />加入队列</button>
+                        <button class="kugou-collect-btn" @click="playNextAll"><SkipForward :size="14" />下一首播放</button>
+                    </div>
                     <!-- 批量管理按钮: 仅自己创建的歌单显示(排除"我喜欢") -->
                     <button
                         v-if="isMinePlaylist && detail.id !== kugouUserStore.likedPlaylistId && songs.length"
@@ -537,7 +545,7 @@ onMounted(fetchDetail)
                     {{ batchRemoving ? '移除中...' : '移除选中' }}
                 </button>
             </div>
-            <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="batchMode && toggleSelect(s)" @dblclick="!batchMode && playSong(s)">
+            <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="batchMode ? toggleSelect(s) : playSong(s)">
                 <div v-if="batchMode" class="kugou-col-check" @click.stop="toggleSelect(s)">
                     <CheckSquare v-if="isSelected(s.hash)" :size="16" class="kugou-check-icon active" />
                     <Square v-else :size="16" class="kugou-check-icon" />
@@ -553,6 +561,7 @@ onMounted(fetchDetail)
                 </div>
                 <div class="kugou-song-album">{{ s.album }}</div>
                 <div v-if="!batchMode" class="kugou-song-actions">
+                    <SongActionsMenu :song="toKugouTrack(s)" :list="normalizedTracks" compact />
                     <Plus :size="16" class="kugou-action-icon" title="添加到歌单" @click="openAddToPlaylist(s, $event)" />
                     <Heart
                         :size="16"
@@ -774,8 +783,10 @@ onMounted(fetchDetail)
     border-radius: 18px;
     cursor: pointer;
     font-size: 14px;
+    display: inline-flex; align-items: center; gap: 5px;
 }
 .kugou-play-btn:hover { opacity: 0.9; }
+.kugou-play-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .kugou-collect-btn {
     display: flex; align-items: center; gap: 4px;
     background: transparent; color: var(--primary-color);

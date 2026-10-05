@@ -8,7 +8,8 @@ import { useMessageStore } from '../store/message'
 
 const userStore = useUserStore()
 const messageStore = useMessageStore()
-import { Play, Heart, Share2, Download, Search, Clock, Edit, Trash2, Camera, X, CheckSquare, Square } from 'lucide-vue-next'
+import { Play, Heart, Share2, Download, Search, Clock, Edit, Trash2, Camera, X, CheckSquare, Square, ListPlus, SkipForward } from 'lucide-vue-next'
+import SongActionsMenu from '../components/SongActionsMenu.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -53,6 +54,14 @@ const formatTime = (ms) => {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+}
+
+const enqueueAll = () => {
+    if (tracks.value.length) playerStore.enqueue(tracks.value)
+}
+
+const playNextAll = () => {
+    if (tracks.value.length) playerStore.playNext(tracks.value)
 }
 
 const toggleLike = async (track) => {
@@ -236,8 +245,14 @@ const handleCoverChange = async (e) => {
                 <span class="time">{{ new Date(playlist.createTime).toLocaleDateString() }}创建</span>
                 </div>
                 <div class="actions">
-                <button class="play-all" @click="playerStore.playSong(tracks[0], tracks)">
+                <button class="play-all" @click="playerStore.playNow(tracks[0], tracks)">
                     <Play :size="16" fill="white" /> 播放全部
+                </button>
+                <button class="action-btn" @click="enqueueAll">
+                    <ListPlus :size="16" /> 加入队列
+                </button>
+                <button class="action-btn" @click="playNextAll">
+                    <SkipForward :size="16" /> 下一首播放
                 </button>
                 <button class="action-btn" @click="toggleSubscribe">
                     <Heart :size="16" :fill="isSubscribed ? '#EC4141' : 'none'" :color="isSubscribed ? '#EC4141' : 'currentColor'" /> 
@@ -288,7 +303,7 @@ const handleCoverChange = async (e) => {
                 </tr>
                 </thead>
                 <tbody>
-                <tr v-for="(track, index) in tracks" :key="track.id" @dblclick="playerStore.playSong(track, tracks)" class="track-row">
+                <tr v-for="(track, index) in tracks" :key="track.id" @click="playerStore.playNow(track, tracks)" class="track-row">
                     <td class="index-cell">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</td>
                     <td class="operation-cell">
                         <span v-if="selectMode" class="track-check" @click.stop="toggleSelect(track)">
@@ -303,6 +318,7 @@ const handleCoverChange = async (e) => {
                           :color="(playerStore.isLiked && playerStore.currentSong.id === track.id || userStore.isSongLiked(track.id)) ? '#EC4141' : 'currentColor'"
                           @click.stop="toggleLike(track)"
                         />
+                        <SongActionsMenu :song="track" :list="tracks" compact />
                     </td>
                     <td class="title-cell" :title="track.name">
                         <div class="title-container">

@@ -9,6 +9,7 @@ import {
     normalizeKugouSong, normalizeKugouPlaylist, normalizeKugouAlbum, normalizeKugouSinger, toKugouTrack,
     flattenKugouSingerList
 } from '../../api/kugou'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -216,7 +217,7 @@ const playSong = (song) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = songs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, list)
 }
 
 const goToPlaylist = (id) => id && router.push(`/kugou/playlist/${id}`)
@@ -307,7 +308,7 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
                 <template v-else>
                     <!-- 歌曲 -->
                     <div v-if="activeTab === 'song'" class="kugou-song-list">
-                        <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @dblclick="playSong(s)">
+                        <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="playSong(s)">
                             <span class="kugou-song-index">{{ i + 1 }}</span>
                             <img v-if="s.picUrl" :src="s.picUrl" class="kugou-song-cover" loading="lazy" />
                             <div class="kugou-song-info">
@@ -318,6 +319,7 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
                                 <div class="kugou-song-artist">{{ s.artist }}</div>
                             </div>
                             <div class="kugou-song-album">{{ s.album }}</div>
+                            <SongActionsMenu :song="toKugouTrack(s)" :list="songs.map(toKugouTrack).filter(Boolean)" compact />
                         </div>
                     </div>
 

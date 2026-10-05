@@ -3,7 +3,8 @@ import { ref, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAlbum } from '../api'
 import { usePlayerStore } from '../store/player'
-import { Play, Heart, ChevronLeft } from 'lucide-vue-next'
+import { Play, Heart, ChevronLeft, ListPlus, SkipForward } from 'lucide-vue-next'
+import SongActionsMenu from '../components/SongActionsMenu.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +40,8 @@ const formatTime = (ms) => {
 const goBack = () => {
     router.back()
 }
+const enqueueAll = () => tracks.value.length && playerStore.enqueue(tracks.value)
+const playNextAll = () => tracks.value.length && playerStore.playNext(tracks.value)
 
 watch(() => route.params.id, (newId) => {
   if (newId) fetchAlbum()
@@ -67,9 +70,11 @@ onMounted(() => {
                         <span v-if="album.publishTime">发布时间：{{ new Date(album.publishTime).toLocaleDateString('zh-CN') }}</span>
                         <span v-if="album.company">发行公司：{{ album.company }}</span>
                     </p>
-                    <button class="play-all-btn" @click="playerStore.playSong(tracks[0], tracks)">
+                    <button class="play-all-btn" @click="playerStore.playNow(tracks[0], tracks)">
                         <Play :size="16" fill="white" /> 播放全部
                     </button>
+                    <button class="album-queue-btn" @click="enqueueAll"><ListPlus :size="15" />加入队列</button>
+                    <button class="album-queue-btn" @click="playNextAll"><SkipForward :size="15" />下一首播放</button>
                 </div>
             </div>
         </div>
@@ -80,13 +85,14 @@ onMounted(() => {
                 <div class="col-title">歌曲</div>
                 <div class="col-artist">歌手</div>
                 <div class="col-duration">时长</div>
+                <div class="col-actions">操作</div>
             </div>
             <div 
                 v-for="(track, index) in tracks" 
                 :key="track.id" 
                 class="track-item"
                 :class="{ active: playerStore.currentSong.id === track.id }"
-                @dblclick="playerStore.playSong(track, tracks)"
+                @click="playerStore.playNow(track, tracks)"
             >
                 <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
                 <div class="col-title">
@@ -94,6 +100,7 @@ onMounted(() => {
                 </div>
                 <div class="col-artist">{{ track.ar?.map(a => a.name).join('/') || track.artists?.map(a => a.name).join('/') || '未知' }}</div>
                 <div class="col-duration">{{ formatTime(track.dt) }}</div>
+                <SongActionsMenu :song="track" :list="tracks" compact />
             </div>
             <div v-if="tracks.length === 0" class="empty-state">暂无歌曲</div>
         </div>
@@ -209,6 +216,20 @@ onMounted(() => {
     opacity: 0.9;
     transform: translateY(-1px);
 }
+.album-queue-btn {
+    margin-top: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 9px 14px;
+    border: 1px solid #e4e4e4;
+    border-radius: 18px;
+    background: #fff;
+    color: #666;
+    cursor: pointer;
+    font-size: 13px;
+}
+.album-queue-btn:hover { color: var(--primary-color); border-color: var(--primary-color); }
 
 .track-list {
     border-top: 1px solid #f0f0f0;
@@ -217,7 +238,7 @@ onMounted(() => {
 
 .list-header {
     display: grid;
-    grid-template-columns: 40px 1fr 1fr 80px;
+    grid-template-columns: 40px 1fr 1fr 80px 36px;
     padding: 8px 12px;
     font-size: 12px;
     color: #999;
@@ -225,7 +246,7 @@ onMounted(() => {
 
 .track-item {
     display: grid;
-    grid-template-columns: 40px 1fr 1fr 80px;
+    grid-template-columns: 40px 1fr 1fr 80px 36px;
     padding: 12px;
     border-radius: 8px;
     cursor: pointer;

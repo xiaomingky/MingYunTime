@@ -40,6 +40,7 @@ import {
   SkipBack,
   SkipForward,
   Repeat,
+  Repeat1,
   Volume2,
   ListMusic,
   Plus,
@@ -56,7 +57,9 @@ import {
   CheckSquare,
   Trash2,
   GraduationCap,
-  Gamepad2
+  Gamepad2,
+  GripVertical,
+  ListPlus
 } from 'lucide-vue-next'
 import SearchSuggest from './components/SearchSuggest.vue'
 import { useSearchHistoryStore } from './store/searchHistory'
@@ -84,6 +87,7 @@ const platformStore = usePlatformStore()
 const qqUserStore = useQQUserStore()
 const kugouUserStore = useKugouUserStore()
 const settingsStore = useSettingsStore()
+const playModeLabel = computed(() => ({ 0: '列表循环', 1: '单曲循环', 2: '随机播放' }[playerStore.playMode] || '列表循环'))
 
 // 当前平台的登录态（根据平台自动选择 userStore / qqUserStore / kugouUserStore）
 const activeUserStore = computed(() =>
@@ -624,6 +628,7 @@ const onGlobalKeydown = (e) => {
 }
 
 onMounted(() => {
+  playerStore.restorePlaybackState()
   playerStore.initAudio()
   window.addEventListener('keydown', onGlobalKeydown)
 
@@ -659,7 +664,7 @@ onMounted(() => {
         if (song && song.url) {
             // 加入本地曲库并立即播放
             playerStore.addLocalSongs([song])
-            playerStore.playSong(song)
+            playerStore.playNow(song)
         }
     })
 
@@ -727,6 +732,23 @@ const formatTime = (seconds) => {
   const m = Math.floor(seconds / 60)
   const s = Math.floor(seconds % 60)
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+}
+
+// Queue items come from multiple platforms, so their duration fields are not
+// consistent: dt is commonly milliseconds while duration may be seconds or
+// milliseconds depending on the source. Normalize either form for display.
+const getQueueSongDuration = (song) => {
+  const toSeconds = (value) => {
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0
+    return numeric >= 10000 ? numeric / 1000 : numeric
+  }
+
+  const dt = Number(song?.dt)
+  if (Number.isFinite(dt) && dt > 0) return toSeconds(dt)
+
+  const duration = Number(song?.duration ?? song?.song?.duration)
+  return toSeconds(duration)
 }
 
 const minimize = () => {
@@ -912,22 +934,50 @@ watch(() => playerStore.currentIndex, () => {
 })
 
 let draggedPlaylistIndex = -1
+// 插入位置范围为 0..playlist.length，支持明确拖到某行前/后以及队列末尾。
+let dragOverPlaylistIndex = -1
 
 const onDragStart = (index, e) => {
     draggedPlaylistIndex = index
+    dragOverPlaylistIndex = -1
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', index)
 }
 
+const getPlaylistInsertionIndex = (index, e) => {
+    const row = e.currentTarget
+    if (!row?.getBoundingClientRect) return index
+    const rect = row.getBoundingClientRect()
+    return e.clientY >= rect.top + rect.height / 2 ? index + 1 : index
+}
+
 const onDragOver = (index, e) => {
     e.preventDefault()
-    if (draggedPlaylistIndex === -1 || draggedPlaylistIndex === index) return
-    playerStore.movePlaylistItem(draggedPlaylistIndex, index)
-    draggedPlaylistIndex = index
+    if (draggedPlaylistIndex === -1) return
+    dragOverPlaylistIndex = getPlaylistInsertionIndex(index, e)
+}
+
+const onDrop = (index, e) => {
+    e.preventDefault()
+    const fromIndex = draggedPlaylistIndex
+    const insertionIndex = getPlaylistInsertionIndex(index, e)
+    const toIndex = insertionIndex > fromIndex ? insertionIndex - 1 : insertionIndex
+    if (fromIndex !== -1 && toIndex !== fromIndex) playerStore.movePlaylistItem(fromIndex, toIndex)
+    onDragEnd()
 }
 
 const onDragEnd = () => {
     draggedPlaylistIndex = -1
+    dragOverPlaylistIndex = -1
+}
+
+const playQueueSong = (song) => playerStore.playNow(song)
+const playQueueSongNext = (song) => playerStore.playNext(song)
+const removeQueueSong = (index) => playerStore.removeFromQueue(index)
+const clearQueue = async () => {
+    if (!playerStore.playlist.length) return
+    const confirmed = await messageStore.confirm('清空后将停止当前播放，确定继续吗？', '清空播放队列')
+    if (confirmed) playerStore.clearPlaylist()
 }
 
 // Draggable Progress/Volume
@@ -1612,9 +1662,9 @@ const openGithub = () => {
 
       <div class="player-controls">
         <div class="control-btns">
-          <div class="mode-btn clickable hover-red" title="播放模式" @click="playerStore.togglePlayMode()">
+          <div class="mode-btn clickable hover-red" :title="`播放模式：${playModeLabel}`" :aria-label="`播放模式：${playModeLabel}`" @click="playerStore.togglePlayMode()">
              <Repeat v-if="playerStore.playMode === 0" :size="18" />
-             <Repeat v-else-if="playerStore.playMode === 1" :size="18" class="text-red" />
+             <Repeat1 v-else-if="playerStore.playMode === 1" :size="18" class="text-red" />
              <Shuffle v-else :size="18" />
           </div>
           <SkipBack :size="20" fill="currentColor" class="clickable hover-red" @click="playerStore.prev()" />
@@ -1702,32 +1752,54 @@ const openGithub = () => {
     </footer>
 
     <!-- Playlist Drawer -->
-    <div class="playlist-drawer" :class="{ show: playerStore.showPlaylist }">
-       <div class="drawer-header">
-          <h3>当前播放 ({{ playerStore.playlist.length }})</h3>
-          <span class="clear-btn clickable hover-red" @click="playerStore.clearPlaylist()">清空列表</span>
-       </div>
-       <div class="drawer-list" ref="drawerListRef">
-          <div 
-            v-for="(song, index) in playerStore.playlist" 
-            :key="song.id" 
-            class="list-item"
-            :class="{ active: index === playerStore.currentIndex, dragging: draggedPlaylistIndex === index }"
-            draggable="true"
-            @dragstart="onDragStart(index, $event)"
-            @dragover="onDragOver(index, $event)"
-            @dragend="onDragEnd"
-            @dblclick="playerStore.playSong(song)"
-          >
-             <span class="drag-handle no-drag">⠿</span>
-             <span class="song-name truncate">{{ song.name }}</span>
-             <span class="artist truncate">
-                {{ song.ar ? (song.ar.length > 0 ? song.ar.map(a => a.name).join('/') : '未知歌手') : (song.artists ? song.artists.map(a => a.name).join('/') : (song.artist || '未知歌手')) }}
-             </span>
-             <span class="duration">{{ formatTime((song.dt || (song.duration ? song.duration * 1000 : 0)) / 1000) }}</span>
+    <Transition name="drawer-fade">
+    <div v-if="playerStore.showPlaylist" class="playlist-drawer-overlay" @click.self="playerStore.showPlaylist = false">
+      <aside class="playlist-drawer" aria-label="播放队列">
+        <div class="drawer-header">
+          <div>
+            <h3>播放队列</h3>
+            <span class="drawer-subtitle">{{ playerStore.playlist.length }} 首歌曲 · {{ playerStore.currentIndex >= 0 ? '正在播放' : '未开始' }}</span>
           </div>
-       </div>
-     </div>
+          <div class="drawer-header-actions">
+            <button class="drawer-text-btn" :disabled="playerStore.currentIndex < 0 || playerStore.currentIndex >= playerStore.playlist.length - 1" @click="playerStore.clearUpcoming()">清空接下来</button>
+            <button class="drawer-icon-btn" title="清空播放队列" @click="clearQueue"><Trash2 :size="16" /></button>
+            <button class="drawer-icon-btn" title="关闭队列" @click="playerStore.showPlaylist = false"><X :size="18" /></button>
+          </div>
+        </div>
+        <div v-if="!playerStore.playlist.length" class="drawer-empty">
+          <ListMusic :size="30" />
+          <strong>队列是空的</strong>
+          <span>在歌曲的更多操作中加入队列</span>
+        </div>
+        <div v-else class="drawer-list" ref="drawerListRef">
+          <template v-for="(song, index) in playerStore.playlist" :key="song.queueItemId || `${song.id}-${index}`">
+            <div v-if="index === 0 && playerStore.currentIndex > 0" class="queue-section-title">播放记录</div>
+            <div v-else-if="index === playerStore.currentIndex" class="queue-section-title">正在播放</div>
+            <div v-else-if="index === 0 || (playerStore.currentIndex >= 0 && index === playerStore.currentIndex + 1)" class="queue-section-title">接下来</div>
+            <div
+              class="list-item"
+              :class="{ active: index === playerStore.currentIndex, dragging: draggedPlaylistIndex === index, 'drag-over-before': dragOverPlaylistIndex === index && draggedPlaylistIndex !== index, 'drag-over-after': dragOverPlaylistIndex === index + 1 && draggedPlaylistIndex !== index }"
+              @click="playQueueSong(song)"
+              @dragover="onDragOver(index, $event)"
+              @drop="onDrop(index, $event)"
+            >
+              <span class="drag-handle no-drag" draggable="true" title="拖动排序" @click.stop @dragstart.stop="onDragStart(index, $event)" @dragend="onDragEnd"><GripVertical :size="16" /></span>
+              <span class="queue-index">{{ index === playerStore.currentIndex ? '♫' : String(index + 1).padStart(2, '0') }}</span>
+              <div class="queue-song-copy">
+                <span class="song-name truncate">{{ song.name }}</span>
+                <span class="artist truncate">{{ song.ar ? (song.ar.length > 0 ? song.ar.map(a => a.name).join('/') : '未知歌手') : (song.artists ? song.artists.map(a => a.name).join('/') : (song.artist || '未知歌手')) }}</span>
+              </div>
+              <span class="duration">{{ formatTime(getQueueSongDuration(song)) }}</span>
+              <div class="queue-item-actions" @click.stop>
+                <button class="queue-action-btn" title="下一首播放" @click="playQueueSongNext(song)"><ListPlus :size="15" /></button>
+                <button v-if="index !== playerStore.currentIndex" class="queue-action-btn danger" title="移出队列" @click="removeQueueSong(index)"><X :size="15" /></button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </aside>
+    </div>
+    </Transition>
     </div>
     <router-view v-if="route.path === '/desktop-lyrics'" />
 
@@ -2482,77 +2554,144 @@ const openGithub = () => {
 }
 
 /* Playlist Drawer Styles */
+.playlist-drawer-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1999;
+    background: rgba(20, 20, 24, 0.12);
+}
 .playlist-drawer {
     position: fixed;
-    right: -320px;
+    right: 0;
     bottom: var(--footer-height);
-    width: 320px;
-    height: 500px;
+    width: min(430px, calc(100vw - 24px));
+    height: min(620px, calc(100vh - var(--header-height) - var(--footer-height) - 24px));
     background: white;
-    box-shadow: -5px 0 20px rgba(0,0,0,0.1);
+    box-shadow: -14px 0 36px rgba(20, 20, 30, 0.16);
     z-index: 2000;
-    transition: right 0.3s ease;
     display: flex;
     flex-direction: column;
-    border-top-left-radius: 8px;
-}
-
-.playlist-drawer.show {
-    right: 0;
+    border-top-left-radius: 12px;
+    border-bottom-left-radius: 12px;
+    overflow: hidden;
 }
 
 .drawer-header {
-    padding: 20px;
-    border-bottom: 1px solid #eee;
+    padding: 18px 18px 14px;
+    border-bottom: 1px solid #f0f0f2;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
 }
 
 .drawer-header h3 {
-    font-size: 18px;
-    color: #333;
+    font-size: 17px;
+    color: #222;
+    margin: 0;
 }
 
-.clear-btn {
+.drawer-subtitle {
+    display: block;
+    margin-top: 4px;
     font-size: 12px;
-    color: #666;
+    color: #999;
+}
+
+.drawer-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.drawer-text-btn,
+.drawer-icon-btn,
+.queue-action-btn {
+    border: 0;
+    background: transparent;
+    color: #888;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.drawer-text-btn {
+    font-size: 12px;
+    padding: 6px 8px;
+}
+.drawer-text-btn:hover:not(:disabled),
+.drawer-icon-btn:hover,
+.queue-action-btn:hover {
+    color: var(--primary-color);
+    background: rgba(236, 65, 65, 0.08);
+    border-radius: 6px;
+}
+.drawer-text-btn:disabled {
+    color: #ccc;
+    cursor: default;
+}
+.drawer-icon-btn {
+    width: 30px;
+    height: 30px;
 }
 
 .drawer-list {
     flex: 1;
     overflow-y: auto;
+    padding: 8px 8px 16px;
+}
+
+.queue-section-title {
+    padding: 12px 10px 6px;
+    font-size: 11px;
+    color: #aaa;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
 }
 
 .list-item {
-    padding: 12px 20px;
+    min-height: 56px;
+    padding: 8px 10px;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     font-size: 13px;
     cursor: pointer;
+    border-radius: 8px;
+    position: relative;
+    transition: background-color 0.15s ease, transform 0.15s ease;
 }
 
 .list-item:hover {
-    background: #f9f9f9;
+    background: #f7f7f8;
 }
 
 .list-item.active {
     color: var(--primary-color);
-    background: #f5f5f5;
+    background: rgba(236, 65, 65, 0.08);
 }
 
 .list-item.dragging {
     opacity: 0.5;
-    background: #f0f0f0;
+    background: #f1f1f2;
+}
+.list-item.drag-over-before {
+    box-shadow: inset 0 2px 0 var(--primary-color);
+}
+.list-item.drag-over-after {
+    box-shadow: inset 0 -2px 0 var(--primary-color);
 }
 
 .drag-handle {
     cursor: grab;
-    color: #ccc;
-    font-size: 14px;
+    color: #bbb;
+    width: 20px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     user-select: none;
-    margin-right: 2px;
+    flex-shrink: 0;
 }
 
 .drag-handle:active {
@@ -2560,18 +2699,82 @@ const openGithub = () => {
 }
 
 .list-item .song-name {
-    flex: 2;
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
 }
 
 .list-item .artist {
-    flex: 1;
     color: #888;
+    display: block;
+    font-size: 11px;
+    margin-top: 3px;
+}
+
+.queue-index {
+    width: 24px;
+    color: #aaa;
+    font-size: 11px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.queue-song-copy {
+    min-width: 0;
+    flex: 1;
 }
 
 .list-item .duration {
     width: 40px;
-    color: #ccc;
+    color: #aaa;
     text-align: right;
+    flex-shrink: 0;
+    font-size: 11px;
+}
+
+.queue-item-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+.list-item:hover .queue-item-actions,
+.list-item:focus-within .queue-item-actions {
+    opacity: 1;
+}
+.queue-action-btn {
+    width: 27px;
+    height: 27px;
+}
+.queue-action-btn.danger:hover {
+    color: #d64545;
+    background: rgba(214, 69, 69, 0.1);
+}
+.drawer-empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 8px;
+    color: #aaa;
+    font-size: 12px;
+}
+.drawer-empty strong {
+    color: #666;
+    font-size: 14px;
+}
+.drawer-fade-enter-active,
+.drawer-fade-leave-active { transition: opacity 0.18s ease; }
+.drawer-fade-enter-from,
+.drawer-fade-leave-to { opacity: 0; }
+.drawer-fade-enter-active .playlist-drawer { animation: drawer-in 0.2s ease-out both; }
+.drawer-fade-leave-active .playlist-drawer { animation: drawer-out 0.16s ease-in both; }
+@keyframes drawer-in { from { transform: translateX(18px); opacity: 0.5; } to { transform: translateX(0); opacity: 1; } }
+@keyframes drawer-out { from { transform: translateX(0); opacity: 1; } to { transform: translateX(18px); opacity: 0.5; } }
+@media (max-width: 560px) {
+    .playlist-drawer { bottom: 0; height: min(72vh, 620px); border-radius: 12px 12px 0 0; }
+    .queue-item-actions { opacity: 1; }
 }
 /* Custom Modal Styles */
 .modal-overlay {

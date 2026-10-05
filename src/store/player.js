@@ -51,6 +51,24 @@ const KUGOU_QUALITY_FALLBACK = {
     '320': ['320', '128'],
     '128': ['128', '320']
 }
+
+const makeQueueItemId = () => `queue-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+const readStoredJson = (key, fallback) => {
+    try {
+        if (typeof localStorage === 'undefined') return fallback
+        const value = JSON.parse(localStorage.getItem(key) || 'null')
+        return value == null ? fallback : value
+    } catch (e) {
+        return fallback
+    }
+}
+const storedPlaylist = readStoredJson('playlist', [])
+const storedCurrentSong = readStoredJson('current_song', null)
+const storedCurrentIndex = Number.parseInt(typeof localStorage !== 'undefined' ? localStorage.getItem('current_index') : '', 10)
+const storedPlayMode = Number.parseInt(typeof localStorage !== 'undefined' ? localStorage.getItem('play_mode') : '', 10)
+const initialPlaylist = Array.isArray(storedPlaylist)
+    ? storedPlaylist.map(song => ({ ...song, queueItemId: song.queueItemId || makeQueueItemId() }))
+    : []
 const isQQPlatform = () => getCurrentPlatform() === 'qq'
 const isKugouPlatform = () => getCurrentPlatform() === 'kugou'
 const qualityLabel = (lv) => {
@@ -75,7 +93,7 @@ const readInitialQuality = () => {
 
 export const usePlayerStore = defineStore('player', {
     state: () => ({
-        currentSong: {
+        currentSong: storedCurrentSong && storedCurrentSong.id ? storedCurrentSong : {
             id: null,
             name: '歌曲名',
             artist: '歌手',
@@ -88,9 +106,12 @@ export const usePlayerStore = defineStore('player', {
         isPlaying: false,
         currentTime: 0,
         volume: 50,
-        playlist: [],
-        currentIndex: -1,
-        playMode: 0, // 0: sequence, 1: loop, 2: random
+        playlist: initialPlaylist,
+        currentIndex: Number.isFinite(storedCurrentIndex) && storedCurrentIndex >= 0 && storedCurrentIndex < initialPlaylist.length
+            ? storedCurrentIndex : -1,
+        playMode: [0, 1, 2].includes(storedPlayMode) ? storedPlayMode : 0, // 0: list loop, 1: single loop, 2: random
+        shuffleBag: [],
+        shuffleHistory: [],
         audio: null,
         showSongDetail: false,
         showPlaylist: false,
@@ -160,6 +181,38 @@ export const usePlayerStore = defineStore('player', {
         },
     }),
     actions: {
+        _normalizeQueue(list, preserveQueueIds = true) {
+            return (Array.isArray(list) ? list : []).filter(song => song && song.id).map(song => ({
+                ...song,
+                queueItemId: preserveQueueIds && song.queueItemId ? song.queueItemId : makeQueueItemId()
+            }))
+        },
+        _resetShuffleState() {
+            this.shuffleBag = []
+            this.shuffleHistory = []
+        },
+        _getRandomNextIndex() {
+            const candidates = this.playlist
+                .map((song, index) => ({ song, index }))
+                .filter(({ index }) => index !== this.currentIndex)
+            if (!candidates.length) return this.currentIndex
+            const candidateIndexes = candidates.map(item => item.index)
+            const bag = this.shuffleBag.filter(index => candidateIndexes.includes(index))
+            this.shuffleBag = bag.length ? bag : [...candidateIndexes]
+            const pick = Math.floor(Math.random() * this.shuffleBag.length)
+            const nextIndex = this.shuffleBag.splice(pick, 1)[0]
+            // 记录当前项而不是下一项，这样随机模式下的“上一首”能回到真实播放历史。
+            if (this.currentIndex >= 0) this.shuffleHistory.push(this.currentIndex)
+            if (this.shuffleHistory.length > this.playlist.length * 2) this.shuffleHistory.shift()
+            return nextIndex
+        },
+        restorePlaybackState() {
+            if (!this.playlist.length) return
+            if (this.currentIndex < 0 || this.currentIndex >= this.playlist.length) {
+                this.currentIndex = 0
+            }
+            this.currentSong = this.playlist[this.currentIndex]
+        },
         initAudio() {
             this.yrcLyrics = null // 重置逐词歌词
             this.lyricSource = '' // 重置歌词来源
@@ -430,14 +483,19 @@ export const usePlayerStore = defineStore('player', {
             return this.setupEqChain()
         },
         async playSong(song, list = [], options = {}) {
-            this.initAudio()
             if (!song || !song.id) return
+            this.initAudio()
+
+            const incomingQueueItemId = song.queueItemId
 
             // 同一首歌再次点击：直接从头播放，不重新设置 src（避免浏览器忽略重复 src 导致无反应）
             if (this.currentSong && this.currentSong.id === song.id && this.audio && this.audio.src) {
                 if (list.length > 0) {
-                    this.playlist = [...list]
-                    this.currentIndex = this.playlist.findIndex(s => s.id === song.id)
+                    this.playlist = this._normalizeQueue(list)
+                    this.currentIndex = incomingQueueItemId
+                        ? this.playlist.findIndex(s => s.queueItemId === incomingQueueItemId)
+                        : this.playlist.findIndex(s => s.id === song.id)
+                    this._resetShuffleState()
                 }
                 try {
                     if (this.ctx) await this.ctx.resume()
@@ -454,12 +512,18 @@ export const usePlayerStore = defineStore('player', {
 
             // Update playlist if provided, otherwise ensure song is in current playlist
             if (list.length > 0) {
-                this.playlist = [...list]
-                this.currentIndex = this.playlist.findIndex(s => s.id === song.id)
+                this.playlist = this._normalizeQueue(list)
+                this.currentIndex = incomingQueueItemId
+                    ? this.playlist.findIndex(s => s.queueItemId === incomingQueueItemId)
+                    : this.playlist.findIndex(s => s.id === song.id)
+                if (this.currentIndex < 0) this.currentIndex = this.playlist.findIndex(s => s.id === song.id)
+                this._resetShuffleState()
             } else {
-                const index = this.playlist.findIndex(s => s.id === song.id)
+                const index = incomingQueueItemId
+                    ? this.playlist.findIndex(s => s.queueItemId === incomingQueueItemId)
+                    : this.playlist.findIndex(s => s.id === song.id)
                 if (index === -1) {
-                    this.playlist.push(song)
+                    this.playlist.push({ ...song, queueItemId: incomingQueueItemId || makeQueueItemId() })
                     this.currentIndex = this.playlist.length - 1
                 } else {
                     this.currentIndex = index
@@ -862,6 +926,7 @@ export const usePlayerStore = defineStore('player', {
                     normalized.al.picUrl = normalized.picUrl
                 }
 
+                normalized.queueItemId = this.playlist[this.currentIndex]?.queueItemId || song.queueItemId || makeQueueItemId()
                 this.currentSong = normalized
                 // 切歌即推送新元数据：标题/歌手/专辑/封面发布给系统媒体会话（SMTC）
                 this._updateMediaSessionMetadata()
@@ -1537,7 +1602,10 @@ export const usePlayerStore = defineStore('player', {
         _preloadNextSong() {
             if (this.playlist.length === 0) return
             let nextIndex = (this.currentIndex + 1) % this.playlist.length
-            if (this.playMode === 2) nextIndex = Math.floor(Math.random() * this.playlist.length)
+            if (this.playMode === 2) {
+                const candidates = this.playlist.map((_, index) => index).filter(index => index !== this.currentIndex)
+                if (candidates.length) nextIndex = candidates[Math.floor(Math.random() * candidates.length)]
+            }
             if (this.playMode === 1) return // 单曲循环不需要预加载
             // 清理上一次的预加载 Audio 对象，避免内存泄漏
             if (this._preloadAudio) {
@@ -1626,15 +1694,54 @@ export const usePlayerStore = defineStore('player', {
                 })
             }
         },
+        playNow(song, list = []) {
+            // 手动点播代表新的播放意图，不应沿用上一轮随机池或随机返回历史。
+            this._resetShuffleState()
+            return this.playSong(song, list)
+        },
+        enqueue(songs) {
+            // 每次加入都创建新的队列项，允许同一首歌重复排入且可分别拖动/移除。
+            const items = this._normalizeQueue(Array.isArray(songs) ? songs : [songs], false)
+            if (!items.length) return
+            const wasEmpty = this.playlist.length === 0
+            this.playlist.push(...items)
+            this._resetShuffleState()
+            if (wasEmpty && this.currentIndex < 0) {
+                return this.playSong(this.playlist[0])
+            }
+            return items
+        },
+        playNext(songs) {
+            const items = this._normalizeQueue(Array.isArray(songs) ? songs : [songs], false)
+            if (!items.length) return
+            const insertAt = this.currentIndex >= 0 ? this.currentIndex + 1 : this.playlist.length
+            this.playlist.splice(insertAt, 0, ...items)
+            this._resetShuffleState()
+            return items
+        },
+        removeFromQueue(index) {
+            if (index < 0 || index >= this.playlist.length || index === this.currentIndex) return false
+            this.playlist.splice(index, 1)
+            if (index < this.currentIndex) this.currentIndex--
+            this._resetShuffleState()
+            return true
+        },
+        clearUpcoming() {
+            if (this.currentIndex < 0) return
+            this.playlist.splice(this.currentIndex + 1)
+            this._resetShuffleState()
+        },
         next() {
             if (this.playlist.length === 0) return
 
             let nextIndex = this.currentIndex
             if (this.playMode === 2) { // Random
-                nextIndex = Math.floor(Math.random() * this.playlist.length)
+                nextIndex = this._getRandomNextIndex()
             } else if (this.playMode === 1) { // Loop single
-                this.audio.currentTime = 0
-                this.audio.play()
+                if (this.audio) {
+                    this.audio.currentTime = 0
+                    this.audio.play().catch(() => {})
+                }
                 return
             } else { // Sequence
                 nextIndex = (this.currentIndex + 1) % this.playlist.length
@@ -1644,15 +1751,28 @@ export const usePlayerStore = defineStore('player', {
         },
         prev() {
             if (this.playlist.length === 0) return
-            let prevIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length
+            if (this.audio && this.audio.currentTime > 3) {
+                this.audio.currentTime = 0
+                return
+            }
+            let prevIndex
+            if (this.playMode === 2 && this.shuffleHistory.length) {
+                prevIndex = this.shuffleHistory.pop()
+                if (prevIndex < 0 || prevIndex >= this.playlist.length || prevIndex === this.currentIndex) {
+                    prevIndex = null
+                }
+            }
+            if (prevIndex == null) prevIndex = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length
             this.playSong(this.playlist[prevIndex])
         },
         togglePlayMode() {
             this.playMode = (this.playMode + 1) % 3
+            this._resetShuffleState()
         },
         clearPlaylist() {
             this.playlist = []
             this.currentIndex = -1
+            this._resetShuffleState()
             this.currentSong = {
                 id: null,
                 name: '歌曲名',
@@ -1683,6 +1803,7 @@ export const usePlayerStore = defineStore('player', {
             } else if (fromIndex > this.currentIndex && toIndex <= this.currentIndex) {
                 this.currentIndex++
             }
+            this._resetShuffleState()
         },
         parseLyrics(lrc, tlrc) {
             if (!lrc) {

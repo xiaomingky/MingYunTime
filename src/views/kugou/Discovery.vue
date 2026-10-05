@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { ChevronLeft, ChevronRight, Play } from 'lucide-vue-next'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
 import {
     kugouAlbumNew, kugouPlaylist,
     kugouBanner, kugouNewSong,
@@ -99,7 +100,7 @@ const playNewSong = (song) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = newSongs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, list)
 }
 
 const formatPlayCount = (n) => {
@@ -180,6 +181,7 @@ onUnmounted(() => stopBannerAuto())
                         </div>
                         <div class="kugou-song-artist" :title="s.artist">{{ s.artist }}</div>
                     </div>
+                    <SongActionsMenu :song="toKugouTrack(s)" :list="newSongs.map(toKugouTrack).filter(Boolean)" compact />
                 </div>
             </div>
         </section>
@@ -397,6 +399,19 @@ onUnmounted(() => stopBannerAuto())
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+.kugou-song-item > .song-actions-menu {
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+.kugou-song-item:hover > .song-actions-menu,
+.kugou-song-item:focus-within > .song-actions-menu {
+    opacity: 1;
+}
+@media (max-width: 700px) {
+    .kugou-song-item > .song-actions-menu {
+        opacity: 1;
+    }
 }
 
 /* ===== Card Grid ===== */

@@ -5,6 +5,7 @@ import { getUserCloud, deleteUserCloud, getSongUrl, matchCloud, cloudSearch, API
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
 import { useUserStore } from '../store/user'
+import SongActionsMenu from '../components/SongActionsMenu.vue'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
@@ -185,7 +186,7 @@ const toTrack = (song) => ({
 const tracks = computed(() => filteredSongs.value.map(toTrack))
 
 const playSong = (song) => {
-    playerStore.playSong(toTrack(song), tracks.value)
+    playerStore.playNow(toTrack(song), tracks.value)
 }
 
 const handleDelete = async (song) => {
@@ -683,12 +684,12 @@ defineExpose({ refreshData: fetchSongs })
             :key="song.id"
             class="song-row"
             :class="{ dragging: dragFromIndex === index, 'drag-over': dragOverIndex === index && dragFromIndex !== index, playing: playerStore.currentSong.id === song.songId }"
-            @dblclick="playSong(song)"
+            @click="playSong(song)"
             @dragover.prevent="onDragOver(index, $event)"
             @drop.prevent="onDrop(index, $event)"
             @dragleave="onDragLeave"
           >
-            <div class="drag-handle" draggable="true" @dragstart.stop="onDragStart(index, $event)" @dragend.stop="onDragEnd">
+            <div class="drag-handle" draggable="true" @click.stop @dragstart.stop="onDragStart(index, $event)" @dragend.stop="onDragEnd">
               <GripVertical :size="16" />
             </div>
             <img v-if="song.coverUrl" :src="song.coverUrl" class="song-cover" />
@@ -708,11 +709,12 @@ defineExpose({ refreshData: fetchSongs })
               </div>
             </div>
             <div class="row-actions">
-              <button class="row-btn" @click="playSong(song)" title="播放"><Play :size="16" /></button>
-              <button class="row-btn" @click="openMatchDialog(song)" title="匹配网易云歌曲"><Link2 :size="16" /></button>
-              <button class="row-btn" @click="handleUnmatchSong(song)" title="取消匹配（恢复文件原信息）"><Unlink :size="16" /></button>
-              <button class="row-btn" @click="handleDownload(song)" title="下载"><Download :size="16" /></button>
-              <button class="row-btn danger" @click="handleDelete(song)" title="删除"><Trash2 :size="16" /></button>
+              <SongActionsMenu :song="toTrack(song)" :list="tracks" compact />
+              <button class="row-btn" @click.stop="playSong(song)" title="播放"><Play :size="16" /></button>
+              <button class="row-btn" @click.stop="openMatchDialog(song)" title="匹配网易云歌曲"><Link2 :size="16" /></button>
+              <button class="row-btn" @click.stop="handleUnmatchSong(song)" title="取消匹配（恢复文件原信息）"><Unlink :size="16" /></button>
+              <button class="row-btn" @click.stop="handleDownload(song)" title="下载"><Download :size="16" /></button>
+              <button class="row-btn danger" @click.stop="handleDelete(song)" title="删除"><Trash2 :size="16" /></button>
             </div>
           </div>
         </div>

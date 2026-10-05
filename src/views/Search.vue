@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { cloudSearch } from '../api'
 import { usePlayerStore } from '../store/player'
 import { Play, Heart, Download } from 'lucide-vue-next'
+import SongActionsMenu from '../components/SongActionsMenu.vue'
 import { useUserStore } from '../store/user'
 import { useMessageStore } from '../store/message'
 
@@ -135,7 +136,7 @@ onMounted(handleSearch)
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(song, index) in songs" :key="song.id" @dblclick="playerStore.playSong(song, songs)" class="track-row">
+          <tr v-for="(song, index) in songs" :key="song.id" @click="playerStore.playNow(song, songs)" class="track-row">
             <td class="index-cell">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</td>
             <td class="operation-cell">
                 <Heart 
@@ -147,6 +148,7 @@ onMounted(handleSearch)
                     @click.stop="toggleLike(song)"
                 /> 
                 <Download :size="14" />
+                <SongActionsMenu :song="song" :list="songs" compact />
             </td>
             <td class="title-cell" :title="song.name">
                 <div class="title-container">

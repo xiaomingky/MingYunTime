@@ -1,10 +1,12 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { qqPlaylistDetail, normalizeQQSong, toQQTrack, enrichQQSongWithDetail, getQQCookie } from '../../api/qq'
 import QQComment from '../../components/QQComment.vue'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
+import { ListPlus, Play, SkipForward } from 'lucide-vue-next'
 
 const route = useRoute()
 const playerStore = usePlayerStore()
@@ -13,6 +15,7 @@ const messageStore = useMessageStore()
 const loading = ref(false)
 const detail = ref(null)
 const songs = ref([])
+const normalizedTracks = computed(() => songs.value.map(toQQTrack).filter(Boolean))
 
 const fetchDetail = async () => {
     const disstid = route.params.id
@@ -53,16 +56,18 @@ const fetchDetail = async () => {
 
 const playAll = () => {
     if (!songs.value.length) return
-    const list = songs.value.map(toQQTrack).filter(Boolean)
-    playerStore.playSong(list[0], list)
+    const list = normalizedTracks.value
+    playerStore.playNow(list[0], list)
 }
 
 const playSong = (song) => {
     const track = toQQTrack(song)
     if (!track) return
-    const list = songs.value.map(toQQTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, normalizedTracks.value)
 }
+
+const enqueueAll = () => normalizedTracks.value.length && playerStore.enqueue(normalizedTracks.value)
+const playNextAll = () => normalizedTracks.value.length && playerStore.playNext(normalizedTracks.value)
 
 watch(() => route.params.id, fetchDetail)
 onMounted(fetchDetail)
@@ -80,12 +85,16 @@ onMounted(fetchDetail)
                     <span v-if="detail.playCount">播放：{{ detail.playCount }}</span>
                 </div>
                 <div class="qq-playlist-desc" v-if="detail.description">{{ detail.description }}</div>
-                <button class="qq-play-btn" @click="playAll">播放全部</button>
+                <div class="qq-play-actions">
+                    <button class="qq-play-btn" @click="playAll"><Play :size="15" fill="currentColor" />播放全部</button>
+                    <button class="qq-queue-btn" @click="enqueueAll"><ListPlus :size="15" />加入队列</button>
+                    <button class="qq-queue-btn" @click="playNextAll"><SkipForward :size="15" />下一首播放</button>
+                </div>
             </div>
         </div>
 
         <div class="qq-song-list">
-            <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @dblclick="playSong(s)">
+            <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
                 <span class="qq-song-index">{{ i + 1 }}</span>
                 <img v-if="s.picUrl" :src="s.picUrl" class="qq-song-cover" loading="lazy" />
                 <div class="qq-song-info">
@@ -94,6 +103,7 @@ onMounted(fetchDetail)
                 </div>
                 <div class="qq-song-album">{{ s.album }}</div>
                 <div class="qq-song-duration">{{ Math.floor(s.duration / 60000) }}:{{ String(Math.floor(s.duration / 1000 % 60)).padStart(2, '0') }}</div>
+                <SongActionsMenu :song="toQQTrack(s)" :list="normalizedTracks" compact />
             </div>
         </div>
 
@@ -161,8 +171,25 @@ onMounted(fetchDetail)
     border-radius: 18px;
     cursor: pointer;
     font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
 }
 .qq-play-btn:hover { opacity: 0.9; }
+.qq-play-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.qq-queue-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--border-color, #e6e6e6);
+    background: #fff;
+    color: var(--text-secondary, #666);
+    border-radius: 16px;
+    padding: 7px 13px;
+    cursor: pointer;
+    font-size: 13px;
+}
+.qq-queue-btn:hover { color: var(--primary-color); border-color: var(--primary-color); }
 .qq-song-list {
     display: flex;
     flex-direction: column;

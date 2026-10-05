@@ -4,6 +4,7 @@ import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
 import { usePlatformStore } from '../store/platform'
 import { Play, Trash2 } from 'lucide-vue-next'
+import SongActionsMenu from '../components/SongActionsMenu.vue'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
@@ -41,7 +42,7 @@ const clearRecent = async () => {
         <span class="count">共 {{ filteredRecentSongs.length }} 首</span>
       </div>
       <div class="actions">
-        <button class="play-all-btn" @click="playerStore.playSong(filteredRecentSongs[0], filteredRecentSongs)">
+        <button class="play-all-btn" @click="playerStore.playNow(filteredRecentSongs[0], filteredRecentSongs)">
           <Play :size="16" fill="white" /> 播放全部
         </button>
         <button class="clear-btn" @click="clearRecent">
@@ -64,7 +65,7 @@ const clearRecent = async () => {
         :key="song.id" 
         class="track-item"
         :class="{ active: playerStore.currentSong.id === song.id }"
-        @dblclick="playerStore.playSong(song, filteredRecentSongs)"
+        @click="playerStore.playNow(song, filteredRecentSongs)"
       >
         <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
         <div class="col-title">
@@ -73,6 +74,7 @@ const clearRecent = async () => {
         <div class="col-artist text-truncate">{{ song.artist }}</div>
         <div class="col-album text-truncate">{{ song.al?.name || '未知专辑' }}</div>
         <div class="col-duration">{{ formatTime(song.duration) }}</div>
+        <SongActionsMenu :song="song" :list="filteredRecentSongs" compact />
       </div>
       
       <div v-if="filteredRecentSongs.length === 0" class="empty-state">

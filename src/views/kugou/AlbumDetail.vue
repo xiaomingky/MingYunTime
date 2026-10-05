@@ -5,6 +5,7 @@ import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { kugouAlbumDetail, kugouAlbumSongs, normalizeKugouSong, normalizeKugouAlbum, toKugouTrack } from '../../api/kugou'
 import KugouComment from '../../components/KugouComment.vue'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
 
 const route = useRoute()
 const playerStore = usePlayerStore()
@@ -62,7 +63,7 @@ const playSong = (song) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = songs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, list)
 }
 
 // 视图切换：歌曲列表 / 评论
@@ -90,7 +91,7 @@ onMounted(fetchAlbum)
         </div>
 
         <div v-if="viewTab === 'songs'" class="kugou-song-list">
-            <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @dblclick="playSong(s)">
+            <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="playSong(s)">
                 <span class="kugou-song-index">{{ i + 1 }}</span>
                 <div class="kugou-song-info">
                     <div class="kugou-song-name">
@@ -100,6 +101,7 @@ onMounted(fetchAlbum)
                     <div class="kugou-song-artist">{{ s.artist }}</div>
                 </div>
                 <div class="kugou-song-duration">{{ Math.floor(s.duration / 60000) }}:{{ String(Math.floor(s.duration / 1000 % 60)).padStart(2, '0') }}</div>
+                <SongActionsMenu :song="toKugouTrack(s)" :list="songs.map(toKugouTrack).filter(Boolean)" compact />
             </div>
         </div>
 

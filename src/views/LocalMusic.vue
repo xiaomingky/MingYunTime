@@ -7,6 +7,7 @@ import { useMessageStore } from '../store/message'
 import FormatConvert from './FormatConvert.vue'
 import LyricFetch from './LyricFetch.vue'
 import { useTabIndicator } from '../composables/useTabIndicator'
+import SongActionsMenu from '../components/SongActionsMenu.vue'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
@@ -128,7 +129,7 @@ const formatSize = (bytes) => {
 }
 
 const playLocal = (song) => {
-    playerStore.playSong(song, playerStore.localSongs)
+    playerStore.playNow(song, playerStore.localSongs)
 }
 
 const removeSong = async (song) => {
@@ -330,7 +331,7 @@ const saveMetadata = async () => {
         </div>
       </div>
       <div class="actions" v-if="activeTab === 'local'">
-        <button class="play-all-btn" @click="playerStore.playSong(playerStore.localSongs[0], playerStore.localSongs)">
+        <button class="play-all-btn" @click="playerStore.playNow(playerStore.localSongs[0], playerStore.localSongs)">
           <Play :size="16" fill="white" /> 播放全部
         </button>
         <div class="add-dropdown" ref="addDropdownRef">
@@ -395,7 +396,7 @@ const saveMetadata = async () => {
         :key="song.path"
         class="track-item"
         :class="{ active: playerStore.currentSong.path === song.path, selected: selectedPaths.includes(song.path), dragging: dragFromIndex === index, 'drag-over': dragOverIndex === index && dragFromIndex !== index }"
-        @dblclick="playLocal(song)"
+        @click="playLocal(song)"
         @dragover.prevent="onDragOver(index, $event)"
         @drop.prevent="onDrop(index, $event)"
         @dragleave="onDragLeave"
@@ -416,6 +417,7 @@ const saveMetadata = async () => {
         <div class="col-artist text-truncate">{{ song.al.name }}</div>
         <div class="col-album">{{ formatSize(song.size) }}</div>
         <div class="col-actions">
+            <SongActionsMenu :song="song" :list="playerStore.localSongs" compact />
             <button class="icon-btn" title="编辑元数据" @click.stop="openEditModal(song)">
                 <Edit3 :size="14" />
             </button>

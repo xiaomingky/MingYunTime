@@ -13,6 +13,7 @@ import {
 import { usePlayerStore } from '../store/player'
 import { useUserStore } from '../store/user'
 import { ChevronLeft, ChevronRight, Play, User, RefreshCw } from 'lucide-vue-next'
+import SongActionsMenu from '../components/SongActionsMenu.vue'
 
 const router = useRouter()
 const playerStore = usePlayerStore()
@@ -190,7 +191,7 @@ onUnmounted(() => { clearInterval(bannerTimer) })
         <section class="new-songs-section">
           <h2 class="section-title">最新音乐 <ChevronRight :size="20" /></h2>
           <div class="new-songs-grid">
-            <div v-for="(item, index) in newSongs" :key="item.id" class="song-item" @click="playerStore.playSong(item, newSongs)">
+            <div v-for="(item, index) in newSongs" :key="item.id" class="song-item" @click="playerStore.playNow(item, newSongs)">
               <div class="song-rank">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
               <div class="song-thumb">
                 <img :src="item.picUrl" />
@@ -206,6 +207,7 @@ onUnmounted(() => { clearInterval(bannerTimer) })
                 <div class="mini-name">{{ item.name }}</div>
                 <div class="mini-artist">{{ item.artists ? item.artists.map(a => a.name).join('/') : '未知歌手' }}</div>
               </div>
+              <SongActionsMenu :song="item" :list="newSongs" compact />
             </div>
           </div>
         </section>
@@ -273,7 +275,7 @@ onUnmounted(() => { clearInterval(bannerTimer) })
       <template v-else-if="activeTab === 'new'">
         <section class="new-music-section">
             <div class="new-songs-grid">
-                 <div v-for="(item, index) in newSongs" :key="item.id" class="song-item" @click="playerStore.playSong(item, newSongs)">
+                 <div v-for="(item, index) in newSongs" :key="item.id" class="song-item" @click="playerStore.playNow(item, newSongs)">
                     <div class="song-rank">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
                     <div class="song-thumb">
                         <img :src="item.album?.picUrl || item.picUrl" />
@@ -285,6 +287,7 @@ onUnmounted(() => { clearInterval(bannerTimer) })
                         <div class="mini-name">{{ item.name }}</div>
                         <div class="mini-artist">{{ item.artists ? item.artists.map(a => a.name).join('/') : (item.ar ? item.ar.map(a => a.name).join('/') : '未知歌手') }}</div>
                     </div>
+                    <SongActionsMenu :song="item" :list="newSongs" compact />
                 </div>
             </div>
         </section>
@@ -624,6 +627,16 @@ onUnmounted(() => { clearInterval(bannerTimer) })
   overflow: hidden;
 }
 
+.song-item > .song-actions-menu {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.song-item:hover > .song-actions-menu,
+.song-item:focus-within > .song-actions-menu {
+  opacity: 1;
+}
+
 .mini-name {
   font-size: 14px;
   color: #333;
@@ -639,6 +652,12 @@ onUnmounted(() => { clearInterval(bannerTimer) })
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+@media (max-width: 700px) {
+  .song-item > .song-actions-menu {
+    opacity: 1;
+  }
 }
 
 /* Rank section styles */

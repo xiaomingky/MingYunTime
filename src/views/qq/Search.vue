@@ -5,6 +5,7 @@ import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { qqSearch, qqHotkey, qqSmartbox, qqMvPlay, normalizeQQSong, toQQTrack, enrichQQSongWithDetail, getQQCookie } from '../../api/qq'
 import ArtVideoPlayer from '../../components/ArtVideoPlayer.vue'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -172,7 +173,7 @@ const playSong = (song) => {
     const track = toQQTrack(song)
     if (!track) return
     const list = songs.value.map(toQQTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, list)
 }
 
 const goToPlaylist = (id) => id && router.push(`/qq/playlist/${id}`)
@@ -288,7 +289,7 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
             <div class="qq-search-content" v-loading="loading">
                 <!-- 歌曲 -->
                 <div v-if="activeTab === 'song'" class="qq-song-list">
-                    <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @dblclick="playSong(s)">
+                    <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
                         <span class="qq-song-index">{{ i + 1 }}</span>
                         <img v-if="s.picUrl" :src="s.picUrl" class="qq-song-cover" loading="lazy" />
                         <div class="qq-song-info">
@@ -296,6 +297,7 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
                             <div class="qq-song-artist">{{ s.artist }}</div>
                         </div>
                         <div class="qq-song-album">{{ s.album }}</div>
+                        <SongActionsMenu :song="toQQTrack(s)" :list="songs.map(toQQTrack).filter(Boolean)" compact />
                     </div>
                 </div>
 

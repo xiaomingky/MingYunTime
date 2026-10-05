@@ -9,6 +9,7 @@ import {
     normalizeKugouSong, normalizeKugouPlaylist, toKugouTrack
 } from '../../api/kugou'
 import ConfirmModal from '../../components/ConfirmModal.vue'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
@@ -135,7 +136,7 @@ const playSong = (song) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = likedSongs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, list)
 }
 
 const playAll = () => {
@@ -237,7 +238,7 @@ onMounted(loadLiked)
                     {{ batchUnliking ? '取消中...' : '取消喜欢' }}
                 </button>
             </div>
-            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="kugou-song-item" @click="batchMode && toggleSelect(s)" @dblclick="!batchMode && playSong(s)">
+            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="kugou-song-item" @click="batchMode ? toggleSelect(s) : playSong(s)">
                 <div v-if="batchMode" class="kugou-col-check" @click.stop="toggleSelect(s)">
                     <CheckSquare v-if="isSelected(s.hash)" :size="16" class="kugou-check-icon active" />
                     <Square v-else :size="16" class="kugou-check-icon" />
@@ -260,6 +261,7 @@ onMounted(loadLiked)
                     <div class="kugou-song-artist">{{ s.artist }}</div>
                 </div>
                 <div class="kugou-song-album">{{ s.album }}</div>
+                <SongActionsMenu v-if="!batchMode" :song="toKugouTrack(s)" :list="likedSongs.map(toKugouTrack).filter(Boolean)" compact />
                 <div v-if="!batchMode" class="kugou-song-actions">
                     <Plus :size="16" class="kugou-action-icon" title="添加到歌单" @click="openAddToPlaylist(s, $event)" />
                     <Trash2 :size="16" class="kugou-action-icon kugou-remove-icon" title="从喜欢移除" @click="removeFromLiked(s, $event)" />

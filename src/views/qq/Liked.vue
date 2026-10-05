@@ -4,6 +4,7 @@ import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { useQQUserStore } from '../../store/qq-user'
 import { qqUserLikedSongs, normalizeQQSong, toQQTrack, enrichQQSongWithDetail } from '../../api/qq'
+import SongActionsMenu from '../../components/SongActionsMenu.vue'
 
 const playerStore = usePlayerStore()
 const messageStore = useMessageStore()
@@ -67,7 +68,7 @@ const playSong = (song) => {
     const track = toQQTrack(song)
     if (!track) return
     const list = likedSongs.value.map(toQQTrack).filter(Boolean)
-    playerStore.playSong(track, list)
+    playerStore.playNow(track, list)
 }
 
 const playAll = () => {
@@ -110,7 +111,7 @@ onMounted(loadLiked)
         <div v-if="error" class="qq-error">{{ error }}</div>
 
         <div class="qq-song-list" v-if="likedSongs.length">
-            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="qq-song-item" @dblclick="playSong(s)">
+            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
                 <span class="qq-song-index">{{ i + 1 }}</span>
                 <img
                     v-if="s.picUrl"
@@ -127,6 +128,7 @@ onMounted(loadLiked)
                     <div class="qq-song-artist">{{ s.artist }}</div>
                 </div>
                 <div class="qq-song-album">{{ s.album }}</div>
+                <SongActionsMenu :song="toQQTrack(s)" :list="likedSongs.map(toQQTrack).filter(Boolean)" compact />
             </div>
         </div>
 
