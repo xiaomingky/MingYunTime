@@ -96,11 +96,11 @@ const fetchAll = async () => {
 const goToAlbum = (albumid) => albumid && router.push(`/kugou/album/${albumid}`)
 const goToPlaylist = (id) => id && router.push(`/kugou/playlist/${id}`)
 
-const playNewSong = (song) => {
+const playNewSong = (song, event = null) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = newSongs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playNow(track, list)
+    playerStore.handleSongClick(track, list, event)
 }
 
 const formatPlayCount = (n) => {
@@ -165,7 +165,7 @@ onUnmounted(() => stopBannerAuto())
                     v-for="(s, i) in newSongs"
                     :key="s.id || i"
                     class="kugou-song-item"
-                    @click="playNewSong(s)"
+                    @click="playNewSong(s, $event)"
                 >
                     <div class="kugou-song-rank">{{ i + 1 < 10 ? '0' + (i + 1) : i + 1 }}</div>
                     <div class="kugou-song-thumb">

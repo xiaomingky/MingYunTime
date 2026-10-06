@@ -65,7 +65,7 @@ const clearRecent = async () => {
         :key="song.id" 
         class="track-item"
         :class="{ active: playerStore.currentSong.id === song.id }"
-        @click="playerStore.playNow(song, filteredRecentSongs)"
+        @click="playerStore.handleSongClick(song, filteredRecentSongs, $event)"
       >
         <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
         <div class="col-title">

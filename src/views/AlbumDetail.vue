@@ -92,7 +92,7 @@ onMounted(() => {
                 :key="track.id" 
                 class="track-item"
                 :class="{ active: playerStore.currentSong.id === track.id }"
-                @click="playerStore.playNow(track, tracks)"
+                @click="playerStore.handleSongClick(track, tracks, $event)"
             >
                 <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
                 <div class="col-title">

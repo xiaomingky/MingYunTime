@@ -91,11 +91,11 @@ const fetchSinger = async () => {
     }
 }
 
-const playSong = (song) => {
+const playSong = (song, event = null) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = hotSongs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playNow(track, list)
+    playerStore.handleSongClick(track, list, event)
 }
 
 // 加载更多歌手歌曲
@@ -142,7 +142,7 @@ onMounted(fetchSinger)
         <section class="kugou-section" v-if="hotSongs.length">
             <h2 class="kugou-section-title">热门歌曲</h2>
             <div class="kugou-song-list">
-                <div v-for="(s, i) in hotSongs" :key="s.id || i" class="kugou-song-item" @click="playSong(s)">
+                <div v-for="(s, i) in hotSongs" :key="s.id || i" class="kugou-song-item" @click="playSong(s, $event)">
                     <span class="kugou-song-index">{{ i + 1 }}</span>
                     <img v-if="s.picUrl" :src="s.picUrl" class="kugou-song-cover" loading="lazy" />
                     <div class="kugou-song-info">

@@ -63,7 +63,8 @@ export const useSettingsStore = defineStore('settings', {
             shortcuts: { ...DEFAULT_SHORTCUTS, ...(saved.shortcuts || {}) },
             // 兼容旧配置：若新配置缺失，则回退读取原 'close_action' / 'api_line' 的本地值
             closePrefer: saved.closePrefer ?? localStorage.getItem('close_action') ?? 'ask',
-            apiLine: saved.apiLine ?? localStorage.getItem('api_line') ?? null
+            apiLine: saved.apiLine ?? localStorage.getItem('api_line') ?? null,
+            songClickMode: saved.songClickMode === 'double' ? 'double' : 'single'
         }
     },
     actions: {
@@ -71,7 +72,8 @@ export const useSettingsStore = defineStore('settings', {
             localStorage.setItem('app_settings', JSON.stringify({
                 shortcuts: this.shortcuts,
                 closePrefer: this.closePrefer,
-                apiLine: this.apiLine
+                apiLine: this.apiLine,
+                songClickMode: this.songClickMode
             }))
             // 同步旧的独立键，方便旧逻辑/外部读取保持同步
             localStorage.setItem('close_action', this.closePrefer)
@@ -91,6 +93,10 @@ export const useSettingsStore = defineStore('settings', {
         },
         setApiLine(key) {
             this.apiLine = key
+            this.persist()
+        },
+        setSongClickMode(mode) {
+            this.songClickMode = mode === 'double' ? 'double' : 'single'
             this.persist()
         }
     }

@@ -132,11 +132,11 @@ const loadLiked = async () => {
     }
 }
 
-const playSong = (song) => {
+const playSong = (song, event = null) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = likedSongs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playNow(track, list)
+    playerStore.handleSongClick(track, list, event)
 }
 
 const playAll = () => {
@@ -238,7 +238,7 @@ onMounted(loadLiked)
                     {{ batchUnliking ? '取消中...' : '取消喜欢' }}
                 </button>
             </div>
-            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="kugou-song-item" @click="batchMode ? toggleSelect(s) : playSong(s)">
+            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="kugou-song-item" @click="batchMode ? toggleSelect(s) : playSong(s, $event)">
                 <div v-if="batchMode" class="kugou-col-check" @click.stop="toggleSelect(s)">
                     <CheckSquare v-if="isSelected(s.hash)" :size="16" class="kugou-check-icon active" />
                     <Square v-else :size="16" class="kugou-check-icon" />

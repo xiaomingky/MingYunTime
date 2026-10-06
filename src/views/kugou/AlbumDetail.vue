@@ -59,11 +59,11 @@ const fetchAlbum = async () => {
     }
 }
 
-const playSong = (song) => {
+const playSong = (song, event = null) => {
     const track = toKugouTrack(song)
     if (!track) return
     const list = songs.value.map(toKugouTrack).filter(Boolean)
-    playerStore.playNow(track, list)
+    playerStore.handleSongClick(track, list, event)
 }
 
 // 视图切换：歌曲列表 / 评论
@@ -91,7 +91,7 @@ onMounted(fetchAlbum)
         </div>
 
         <div v-if="viewTab === 'songs'" class="kugou-song-list">
-            <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="playSong(s)">
+        <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="playSong(s, $event)">
                 <span class="kugou-song-index">{{ i + 1 }}</span>
                 <div class="kugou-song-info">
                     <div class="kugou-song-name">

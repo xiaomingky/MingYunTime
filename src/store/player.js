@@ -6,6 +6,7 @@ import {
     kugouVideoUrl, kugouSongMv, kugouVideoDetail, kugouSearch
 } from '../api/kugou'
 import { useMessageStore } from './message'
+import { useSettingsStore } from './settings'
 import { getCurrentPlatform } from '../api'
 
 // 网易云音质 level -> 中文名 映射（已实测：jymaster/sky/dolby 均映射成 jyeffect，故移除）
@@ -113,6 +114,8 @@ export const usePlayerStore = defineStore('player', {
         shuffleBag: [],
         shuffleHistory: [],
         audio: null,
+        playbackLoading: false,
+        _playRequestId: 0,
         showSongDetail: false,
         showPlaylist: false,
         lyrics: [],
@@ -214,12 +217,10 @@ export const usePlayerStore = defineStore('player', {
             this.currentSong = this.playlist[this.currentIndex]
         },
         initAudio() {
+            // Keep one media element and one Web Audio source for its lifetime.
+            if (this.audio) return
             this.yrcLyrics = null // 重置逐词歌词
             this.lyricSource = '' // 重置歌词来源
-            if (this.audio) {
-                try { this.audio.pause(); this.audio.src = ''; this.audio.load() } catch (e) {}
-                this.audio = null
-            }
             if (this.ctx) {
                 try { this.ctx.close() } catch (e) {}
                 this.ctx = null
@@ -230,6 +231,7 @@ export const usePlayerStore = defineStore('player', {
                 this.eqFilters = []
                 this.eqDryGain = null
                 this.eqWetGain = null
+                this.volumeGain = null
             }
 
             this.audio = new Audio()
@@ -269,6 +271,7 @@ export const usePlayerStore = defineStore('player', {
                 this.next()
             }
             this.audio.onerror = (e) => {
+                if (e.target !== this.audio) return
                 console.error('Audio error:', e)
                 this.isPlaying = false
             }
@@ -283,27 +286,49 @@ export const usePlayerStore = defineStore('player', {
             }
             // 播放状态变化直接挂 audio 事件：所有 play/pause 入口（UI/系统控制/MV 切换）都会经过这里，
             // 不用在每个 action 里单独同步
-            this.audio.addEventListener('play', () => this._setMediaSessionPlaybackState('playing'))
-            this.audio.addEventListener('pause', () => this._setMediaSessionPlaybackState('paused'))
+            this._bindPlaybackStateEvents(this.audio)
             this._applyVolume()
         },
+        _bindPlaybackStateEvents(audio) {
+            audio.addEventListener('play', () => {
+                if (this.audio !== audio || audio.paused) return
+                this.isPlaying = true
+                this._setMediaSessionPlaybackState('playing')
+            })
+            audio.addEventListener('pause', () => {
+                if (this.audio !== audio || !audio.paused) return
+                this.isPlaying = false
+                this._setMediaSessionPlaybackState('paused')
+            })
+        },
+        _hasAudioSource(audio = this.audio) {
+            return !!audio?.getAttribute?.('src')
+        },
+        async _resumeAudioContexts() {
+            for (const ctx of [this.ctx, this.boostCtx]) {
+                if (ctx && ctx.state === 'suspended') await ctx.resume()
+            }
+        },
+        async _startAudioPlayback(audio, requestId) {
+            this._applyVolume()
+            await this._resumeAudioContexts()
+            if (this.audio !== audio || this._playRequestId !== requestId) return false
+            audio.playbackRate = this.playbackRate
+            await audio.play()
+            if (this.audio !== audio || this._playRequestId !== requestId) return false
+            this.isPlaying = !audio.paused
+            return true
+        },
         async rebuildAudioGraph() {
-            // 先拆掉互斥的 boost 图：同一 <audio> 只能 createMediaElementSource 一次，
-            // 不清掉的话下面的 createMediaElementSource 会抛 InvalidStateError（主图永远建不起来）
-            if (this._tearDownBoostGraph) this._tearDownBoostGraph()
-            if (this.source) { try { this.source.disconnect() } catch (e) {}; this.source = null }
-            this.eqFilters.forEach(f => { try { f.disconnect() } catch (e) {} })
-            this.eqFilters = []
-            if (this.eqDryGain) { try { this.eqDryGain.disconnect() } catch (e) {}; this.eqDryGain = null }
-            if (this.eqWetGain) { try { this.eqWetGain.disconnect() } catch (e) {}; this.eqWetGain = null }
-            if (this.analyser) { try { this.analyser.disconnect() } catch (e) {}; this.analyser = null }
-            this.dataArray = null
-            this.timeDataArray = null
-            if (this.volumeGain) { try { this.volumeGain.disconnect() } catch (e) {}; this.volumeGain = null }
-            if (this.ctx) { try { this.ctx.close() } catch (e) {}; this.ctx = null }
+            if (!this.audio) return
+            if (this.source && this.ctx) {
+                this._applyVolume()
+                return
+            }
 
             try {
                 const AudioCtx = window.AudioContext || window.webkitAudioContext
+                if (!AudioCtx) return
                 this.ctx = new AudioCtx()
                 this.analyser = this.ctx.createAnalyser()
                 this.analyser.fftSize = 256
@@ -347,48 +372,48 @@ export const usePlayerStore = defineStore('player', {
                 this._applyVolume()
             } catch (e) {
                 console.error('rebuildAudioGraph error:', e)
+                // Once attached, a media source must remain connected to an output.
+                if (this.source && this.ctx) {
+                    try {
+                        this.source.disconnect()
+                        this.volumeGain = this.ctx.createGain()
+                        this.source.connect(this.volumeGain)
+                        this.volumeGain.connect(this.ctx.destination)
+                        this._applyVolume()
+                    } catch (fallbackError) {
+                        console.error('Audio output fallback error:', fallbackError)
+                    }
+                } else {
+                    try { await this.ctx?.close() } catch (closeError) {}
+                    this.ctx = null
+                    this.volumeGain = null
+                    if (this.audio) this.audio.volume = Math.min(1, this.volume / 100)
+                }
             }
         },
-        // 音量增益专用最小图：audio -> gainNode -> destination。
-        // 主图（volumeGain 链）缺失时（AudioContext 建图失败/尚未建图，Win7 老机器常见）以此为兜底，
-        // 让"音量提升 >100%"在无 EQ/可视化的情况下同样生效。
-        // 注意 createMediaElementSource 对同一 <audio> 只能接一个 context：boost 图与主图互斥，
-        // 有主图时用主图；主图重建前必须先拆 boost 图。
+        // Retire legacy boost nodes only when replacing their media element.
         _tearDownBoostGraph() {
             if (this.boostSource) { try { this.boostSource.disconnect() } catch (e) {}; this.boostSource = null }
             if (this.boostGain) { try { this.boostGain.disconnect() } catch (e) {}; this.boostGain = null }
             if (this.boostCtx) { try { this.boostCtx.close() } catch (e) {}; this.boostCtx = null }
         },
         _ensureBoostGraph() {
-            if (this.boostSource || (this.volumeGain && this.ctx)) return
-            try {
-                const AudioCtx = window.AudioContext || window.webkitAudioContext
-                if (!AudioCtx) return
-                this.boostCtx = new AudioCtx()
-                this.boostSource = this.boostCtx.createMediaElementSource(this.audio)
-                this.boostGain = this.boostCtx.createGain()
-                this.boostSource.connect(this.boostGain)
-                this.boostGain.connect(this.boostCtx.destination)
-            } catch (e) {
-                console.error('boost graph error:', e)
-                this._tearDownBoostGraph()
-            }
+            if (!this.audio || (this.volumeGain && this.ctx)) return
+            this.rebuildAudioGraph().catch(error => console.error('Audio gain graph error:', error))
         },
-        // 应用音量:有主图(volumeGain)时用 GainNode 控制(支持 >100%);
-        // 否则音量 >100% 时惰性建最小增益图;都不可用才降级用 audio.volume(上限 1.0,增益无效但不崩)
+        // EQ, visualization and boosted volume share the same media source.
         _applyVolume() {
             const gain = this.volume / 100
-            if (this.volumeGain && this.ctx) {
+            if (this.audio && this.volumeGain && this.ctx) {
                 this.audio.volume = 1.0
                 this.volumeGain.gain.setValueAtTime(gain, this.ctx.currentTime)
-                if (this.boostSource) this._tearDownBoostGraph()
                 return
             }
             if (gain > 1) {
                 this._ensureBoostGraph()
-                if (this.boostGain && this.boostCtx) {
+                if (this.volumeGain && this.ctx) {
                     this.audio.volume = 1.0
-                    this.boostGain.gain.setValueAtTime(gain, this.boostCtx.currentTime)
+                    this.volumeGain.gain.setValueAtTime(gain, this.ctx.currentTime)
                     return
                 }
             }
@@ -396,15 +421,17 @@ export const usePlayerStore = defineStore('player', {
             if (this.audio) this.audio.volume = Math.min(1, gain)
         },
         async resetAudioElement() {
-            const savedSrc = this.audio?.src || ''
-            const savedTime = this.currentTime
+            const requestId = ++this._playRequestId
+            const savedSrc = this.audio?.getAttribute('src') || ''
+            const savedTime = this.audio?.currentTime ?? this.currentTime
             const savedVolume = this.volume
+            const savedRate = Number(this.playbackRate) || this.audio?.playbackRate || 1
             const wasPlaying = this.isPlaying
 
             // audio 即将整体替换,先拆掉 boost 最小增益图(它绑定旧 audio 元素)
             if (this._tearDownBoostGraph) this._tearDownBoostGraph()
             if (this.audio) {
-                try { this.audio.pause(); this.audio.src = ''; this.audio.load() } catch (e) {}
+                try { this.audio.pause(); this.audio.removeAttribute('src'); this.audio.load() } catch (e) {}
                 this.audio = null
             }
             if (this.ctx) {
@@ -417,6 +444,7 @@ export const usePlayerStore = defineStore('player', {
                 this.eqFilters = []
                 this.eqDryGain = null
                 this.eqWetGain = null
+                this.volumeGain = null
             }
 
             this.audio = new Audio()
@@ -436,6 +464,7 @@ export const usePlayerStore = defineStore('player', {
             }
             this.audio.onended = () => { this._nextPreloaded = false; this.next() }
             this.audio.onerror = (e) => {
+                if (e.target !== this.audio) return
                 console.error('Audio error:', e)
                 this.isPlaying = false
             }
@@ -449,11 +478,13 @@ export const usePlayerStore = defineStore('player', {
                 this._updateMediaSessionPositionState()
             }
             // 播放状态变化直接挂 audio 事件（与 initAudio 保持一致）
-            this.audio.addEventListener('play', () => this._setMediaSessionPlaybackState('playing'))
-            this.audio.addEventListener('pause', () => this._setMediaSessionPlaybackState('paused'))
+            this._bindPlaybackStateEvents(this.audio)
             this.audio.volume = Math.min(1, savedVolume / 100)
 
-            this.audio.src = savedSrc
+            if (savedSrc) this.audio.src = savedSrc
+            this.playbackRate = savedRate
+            this.audio.playbackRate = savedRate
+            const audio = this.audio
 
             // 设置音频设备（在 src 之后，load 之前）
             if (this.currentDeviceId && this.audio.setSinkId) {
@@ -465,18 +496,19 @@ export const usePlayerStore = defineStore('player', {
                 }
             }
 
+            if (this.audio !== audio || this._playRequestId !== requestId) return
             this.audio.load()
 
             await this.rebuildAudioGraph()
 
             if (wasPlaying) {
-                this.audio.currentTime = savedTime
-                if (this.ctx) await this.ctx.resume()
-                this.audio.play().then(() => { this.isPlaying = true }).catch(() => {})
+                if (this.audio !== audio || this._playRequestId !== requestId) return
+                audio.currentTime = savedTime
+                await this._startAudioPlayback(audio, requestId)
             }
         },
         async setupEqChain() {
-            if (!this.audio || !this.audio.src) return
+            if (!this._hasAudioSource()) return
             await this.resetAudioElement()
         },
         teardownEqChain() {
@@ -485,11 +517,17 @@ export const usePlayerStore = defineStore('player', {
         async playSong(song, list = [], options = {}) {
             if (!song || !song.id) return
             this.initAudio()
+            const audio = this.audio
+            const requestId = ++this._playRequestId
+            const isCurrentRequest = () => this._playRequestId === requestId && this.audio === audio
+            this.playbackLoading = true
+            // Unlock the audio context while the click still has user activation.
+            this.rebuildAudioGraph().then(() => this._resumeAudioContexts()).catch(error => console.error('Audio initialization error:', error))
 
             const incomingQueueItemId = song.queueItemId
 
             // 同一首歌再次点击：直接从头播放，不重新设置 src（避免浏览器忽略重复 src 导致无反应）
-            if (this.currentSong && this.currentSong.id === song.id && this.audio && this.audio.src) {
+            if (!options.suppressQualityPrompt && this.currentSong && this.currentSong.id === song.id && this._hasAudioSource()) {
                 if (list.length > 0) {
                     this.playlist = this._normalizeQueue(list)
                     this.currentIndex = incomingQueueItemId
@@ -498,13 +536,15 @@ export const usePlayerStore = defineStore('player', {
                     this._resetShuffleState()
                 }
                 try {
-                    if (this.ctx) await this.ctx.resume()
-                    this.audio.currentTime = 0
-                    await this.audio.play()
-                    this.isPlaying = true
+                    audio.currentTime = 0
+                    await this._startAudioPlayback(audio, requestId)
                 } catch (e) { console.error('Replay same song fail:', e) }
+                finally { if (isCurrentRequest()) this.playbackLoading = false }
                 return
             }
+
+            audio.pause()
+            this.isPlaying = false
 
             // 清空旧歌曲的歌词缓存，防止切歌时闪烁上一首的歌词
             this.lyrics = []
@@ -573,6 +613,7 @@ export const usePlayerStore = defineStore('player', {
                         }
                     }
                     if (!url) {
+                        if (!isCurrentRequest()) return
                         // 区分错误原因：未登录 vs 版权限制
                         if (!cookie) {
                             useMessageStore().error(`播放失败：[${song.name}] 请先登录 QQ 音乐账号`)
@@ -738,6 +779,7 @@ export const usePlayerStore = defineStore('player', {
                     }
                     // 1.6 旧版+hash修正都失败：尝试试听版本
                     if (!resolvedUrl) {
+                        if (!isCurrentRequest()) return
                         try {
                             const trialRes = await kugouSongUrl(hash, '128', album_id, album_audio_id, '30')
                             const trialData = trialRes?.data || trialRes
@@ -880,6 +922,7 @@ export const usePlayerStore = defineStore('player', {
                     }
                 }
 
+                if (!isCurrentRequest()) return
                 if (!url && !isLocal) {
                     useMessageStore().error(`播放失败：[${song.name}] 由于版权或VIP限制，${qualityLabel(this.quality)} 音质资源不可用`)
                     this.next()
@@ -942,27 +985,29 @@ export const usePlayerStore = defineStore('player', {
                         console.log(`--- [Audio] playSong 设备已切换到: ${this.currentDeviceId}`)
                     } catch (e) { console.error('setSinkId:', e) }
                 }
+                if (!isCurrentRequest()) return
 
                 this.audio.load()
 
                 // 重建 audio graph（统一使用 createMediaElementSource）
                 await this.rebuildAudioGraph()
-
-                if (this.ctx) {
-                    await this.ctx.resume()
-                }
+                if (!isCurrentRequest()) return
 
                 // 每次新播放/重新播放都强制回到歌曲开头
                 this.audio.currentTime = 0
 
-                this.audio.play().then(() => {
-                    this.isPlaying = true
-                }).catch(error => {
+                try {
+                    if (!await this._startAudioPlayback(audio, requestId)) return
+                    this.playbackLoading = false
+                } catch (error) {
+                    if (!isCurrentRequest()) return
+                    this.isPlaying = false
                     console.error('Playback fail:', error)
                     if (isLocal) {
                         useMessageStore().error('本地文件加载失败，请确定文件路径正确且协议已注册。')
                     }
-                })
+                    return
+                }
 
                 // 获取歌词逻辑：
                 // - 本地音乐：检查本地歌词文件 → 无YRC则弹窗选择歌词源
@@ -1122,6 +1167,7 @@ export const usePlayerStore = defineStore('player', {
                     // 1. 先检查本地是否有歌词文件
                     if (bridge && bridge.loadLocalLyric) {
                         const lRes = await bridge.loadLocalLyric(song.path)
+                        if (!isCurrentRequest()) return
                         if (lRes.success) {
                             const content = lRes.lyric || ''
                             if (content.includes('---yrc---')) {
@@ -1388,7 +1434,11 @@ export const usePlayerStore = defineStore('player', {
                 this.addToRecent(normalized)
 
             } catch (err) {
+                if (!isCurrentRequest()) return
+                this.isPlaying = false
                 console.error('playSong error:', err)
+            } finally {
+                if (isCurrentRequest()) this.playbackLoading = false
             }
         },
         async checkIfLiked(id) {
@@ -1485,36 +1535,33 @@ export const usePlayerStore = defineStore('player', {
             }
             return null
         },
-        // 窗口隐藏时释放非必要资源（Audio 保留，用户可能在后台听歌）
-        // 断开 analyser 节点释放频谱分析相关内存，下次 show 时由 rebuildAudioGraph 重建
+        // The analyser is part of the audible output chain, including in the tray.
         releaseVisualizerResources() {
-            try {
-                if (this.analyser) {
-                    try { this.analyser.disconnect() } catch (e) {}
-                    this.analyser = null
-                    this.dataArray = null
-                    this.timeDataArray = null
-                }
-            } catch (e) { /* 静默 */ }
+            this._lastTimeUpdate = 0
         },
-        togglePlay() {
-            if (!this.audio?.src) return
-            if (this.isPlaying) {
-                this.audio.pause()
+        async togglePlay() {
+            if (this.playbackLoading || (this.audio && !this.audio.paused)) {
+                ++this._playRequestId
+                this.playbackLoading = false
+                this.audio?.pause()
                 this.isPlaying = false
-            } else {
-                if (this.ctx) {
-                    this.ctx.resume().then(() => {
-                        this.audio.play().then(() => {
-                            this.isPlaying = true
-                        }).catch(e => console.error(e))
-                    })
-                } else {
-                    this.initAudio()
-                    this.audio.play().then(() => {
-                        this.isPlaying = true
-                    }).catch(e => console.error(e))
-                }
+                return
+            }
+            if (!this._hasAudioSource()) {
+                if (this.currentSong?.id) return this.playSong(this.currentSong)
+                return
+            }
+            const audio = this.audio
+            const requestId = ++this._playRequestId
+            this.playbackLoading = true
+            try {
+                await this.rebuildAudioGraph()
+                await this._startAudioPlayback(audio, requestId)
+            } catch (error) {
+                if (this._playRequestId === requestId) this.isPlaying = false
+                console.error('Resume playback failed:', error)
+            } finally {
+                if (this._playRequestId === requestId) this.playbackLoading = false
             }
         },
         setProgress(percent) {
@@ -1530,6 +1577,7 @@ export const usePlayerStore = defineStore('player', {
         setVolume(vol) {
             this.volume = Math.max(0, Math.min(500, vol))
             this._applyVolume()
+            if (this.audio && !this.audio.paused) this._resumeAudioContexts().catch(error => console.error('Audio context resume failed:', error))
         },
         // ===== 系统媒体会话（SMTC）桥接 =====
         // 把当前歌曲的标题/歌手/专辑/封面/进度发布给 Windows 系统媒体控制，
@@ -1699,6 +1747,15 @@ export const usePlayerStore = defineStore('player', {
             this._resetShuffleState()
             return this.playSong(song, list)
         },
+        // Native click counts follow the system double-click interval.
+        handleSongClick(song, list = [], event = null) {
+            if (!song || !song.id) return
+            if (!event) return this.playNow(song, list)
+            const mode = useSettingsStore().songClickMode
+            if (mode === 'double' ? event.detail === 2 : event.detail <= 1) {
+                return this.playNow(song, list)
+            }
+        },
         enqueue(songs) {
             // 每次加入都创建新的队列项，允许同一首歌重复排入且可分别拖动/移除。
             const items = this._normalizeQueue(Array.isArray(songs) ? songs : [songs], false)
@@ -1770,6 +1827,8 @@ export const usePlayerStore = defineStore('player', {
             this._resetShuffleState()
         },
         clearPlaylist() {
+            ++this._playRequestId
+            this.playbackLoading = false
             this.playlist = []
             this.currentIndex = -1
             this._resetShuffleState()
@@ -1782,7 +1841,8 @@ export const usePlayerStore = defineStore('player', {
             }
             if (this.audio) {
                 this.audio.pause()
-                this.audio.src = ''
+                this.audio.removeAttribute('src')
+                this.audio.load()
             }
             this.isPlaying = false
             // 清空系统媒体会话元数据：避免媒体栏还显示已移除歌曲的信息
@@ -2587,7 +2647,7 @@ export const usePlayerStore = defineStore('player', {
             }
             
             // 如果当前没有播放内容，只保存设置，等下次播放时应用
-            if (!this.audio.src) {
+            if (!this._hasAudioSource()) {
                 console.log('--- [Audio] 当前无播放内容，设备设置已保存')
                 return
             }

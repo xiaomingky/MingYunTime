@@ -42,11 +42,11 @@ const fetchAlbum = async () => {
     }
 }
 
-const playSong = (song) => {
+const playSong = (song, event = null) => {
     const track = toQQTrack(song)
     if (!track) return
     const list = songs.value.map(toQQTrack).filter(Boolean)
-    playerStore.playNow(track, list)
+    playerStore.handleSongClick(track, list, event)
 }
 
 watch(() => route.params.id, fetchAlbum)
@@ -65,7 +65,7 @@ onMounted(fetchAlbum)
         </div>
 
         <div class="qq-song-list">
-            <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
+            <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @click="playSong(s, $event)">
                 <span class="qq-song-index">{{ i + 1 }}</span>
                 <div class="qq-song-info">
                     <div class="qq-song-name">{{ s.name }}</div>

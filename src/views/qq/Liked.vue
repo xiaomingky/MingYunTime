@@ -64,11 +64,11 @@ const loadLiked = async () => {
     }
 }
 
-const playSong = (song) => {
+const playSong = (song, event = null) => {
     const track = toQQTrack(song)
     if (!track) return
     const list = likedSongs.value.map(toQQTrack).filter(Boolean)
-    playerStore.playNow(track, list)
+    playerStore.handleSongClick(track, list, event)
 }
 
 const playAll = () => {
@@ -111,7 +111,7 @@ onMounted(loadLiked)
         <div v-if="error" class="qq-error">{{ error }}</div>
 
         <div class="qq-song-list" v-if="likedSongs.length">
-            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
+            <div v-for="(s, i) in likedSongs" :key="s.id || i" class="qq-song-item" @click="playSong(s, $event)">
                 <span class="qq-song-index">{{ i + 1 }}</span>
                 <img
                     v-if="s.picUrl"

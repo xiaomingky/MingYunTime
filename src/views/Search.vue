@@ -136,7 +136,7 @@ onMounted(handleSearch)
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(song, index) in songs" :key="song.id" @click="playerStore.playNow(song, songs)" class="track-row">
+          <tr v-for="(song, index) in songs" :key="song.id" @click="playerStore.handleSongClick(song, songs, $event)" class="track-row">
             <td class="index-cell">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</td>
             <td class="operation-cell">
                 <Heart 

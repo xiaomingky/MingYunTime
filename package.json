@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "3.6.1",
+  "version": "3.6.2",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -238,10 +238,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "茗韵时光",
-      "installerHeader": "build/installer-header.bmp",
-      "installerSidebar": "build/installer-sidebar.bmp",
       "installerIcon": "build/icon.ico",
-      "uninstallerSidebar": "build/installer-sidebar.bmp",
       "uninstallerIcon": "build/icon.ico",
       "include": "build/installer.nsh",
       "runAfterFinish": true,

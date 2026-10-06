@@ -713,6 +713,8 @@ onMounted(() => {
         try {
             if (typeof playerStore.rebuildAudioGraph === 'function' && playerStore.audio) {
                 playerStore.rebuildAudioGraph()
+                    .then(() => playerStore._resumeAudioContexts())
+                    .catch(error => console.error('Audio recovery failed:', error))
             }
         } catch (e) { /* 静默 */ }
     })
@@ -971,7 +973,7 @@ const onDragEnd = () => {
     dragOverPlaylistIndex = -1
 }
 
-const playQueueSong = (song) => playerStore.playNow(song)
+const playQueueSong = (song, event) => playerStore.handleSongClick(song, [], event)
 const playQueueSongNext = (song) => playerStore.playNext(song)
 const removeQueueSong = (index) => playerStore.removeFromQueue(index)
 const clearQueue = async () => {
@@ -1779,7 +1781,7 @@ const openGithub = () => {
             <div
               class="list-item"
               :class="{ active: index === playerStore.currentIndex, dragging: draggedPlaylistIndex === index, 'drag-over-before': dragOverPlaylistIndex === index && draggedPlaylistIndex !== index, 'drag-over-after': dragOverPlaylistIndex === index + 1 && draggedPlaylistIndex !== index }"
-              @click="playQueueSong(song)"
+              @click="playQueueSong(song, $event)"
               @dragover="onDragOver(index, $event)"
               @drop="onDrop(index, $event)"
             >

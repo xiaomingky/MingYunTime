@@ -60,10 +60,10 @@ const playAll = () => {
     playerStore.playNow(list[0], list)
 }
 
-const playSong = (song) => {
+const playSong = (song, event = null) => {
     const track = toQQTrack(song)
     if (!track) return
-    playerStore.playNow(track, normalizedTracks.value)
+    playerStore.handleSongClick(track, normalizedTracks.value, event)
 }
 
 const enqueueAll = () => normalizedTracks.value.length && playerStore.enqueue(normalizedTracks.value)
@@ -94,7 +94,7 @@ onMounted(fetchDetail)
         </div>
 
         <div class="qq-song-list">
-            <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
+            <div v-for="(s, i) in songs" :key="s.id || i" class="qq-song-item" @click="playSong(s, $event)">
                 <span class="qq-song-index">{{ i + 1 }}</span>
                 <img v-if="s.picUrl" :src="s.picUrl" class="qq-song-cover" loading="lazy" />
                 <div class="qq-song-info">

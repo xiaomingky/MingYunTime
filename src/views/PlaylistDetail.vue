@@ -303,7 +303,7 @@ const handleCoverChange = async (e) => {
                 </tr>
                 </thead>
                 <tbody>
-                <tr v-for="(track, index) in tracks" :key="track.id" @click="playerStore.playNow(track, tracks)" class="track-row">
+                <tr v-for="(track, index) in tracks" :key="track.id" @click="playerStore.handleSongClick(track, tracks, $event)" class="track-row">
                     <td class="index-cell">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</td>
                     <td class="operation-cell">
                         <span v-if="selectMode" class="track-check" @click.stop="toggleSelect(track)">

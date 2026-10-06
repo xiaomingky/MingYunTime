@@ -108,11 +108,11 @@ const fetchSinger = async () => {
     }
 }
 
-const playSong = (song) => {
+const playSong = (song, event = null) => {
     const track = toQQTrack(song)
     if (!track) return
     const list = hotSongs.value.map(toQQTrack).filter(Boolean)
-    playerStore.playNow(track, list)
+    playerStore.handleSongClick(track, list, event)
 }
 
 // MV 播放
@@ -166,7 +166,7 @@ onMounted(fetchSinger)
         <section class="qq-section" v-if="hotSongs.length">
             <h2 class="qq-section-title">热门歌曲</h2>
             <div class="qq-song-list">
-                <div v-for="(s, i) in hotSongs" :key="s.id || i" class="qq-song-item" @click="playSong(s)">
+                <div v-for="(s, i) in hotSongs" :key="s.id || i" class="qq-song-item" @click="playSong(s, $event)">
                     <span class="qq-song-index">{{ i + 1 }}</span>
                     <div class="qq-song-info">
                         <div class="qq-song-name">{{ s.name }}</div>

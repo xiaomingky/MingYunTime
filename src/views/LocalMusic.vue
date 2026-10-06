@@ -128,8 +128,8 @@ const formatSize = (bytes) => {
     return mb.toFixed(1) + ' MB'
 }
 
-const playLocal = (song) => {
-    playerStore.playNow(song, playerStore.localSongs)
+const playLocal = (song, event = null) => {
+    playerStore.handleSongClick(song, playerStore.localSongs, event)
 }
 
 const removeSong = async (song) => {
@@ -396,7 +396,7 @@ const saveMetadata = async () => {
         :key="song.path"
         class="track-item"
         :class="{ active: playerStore.currentSong.path === song.path, selected: selectedPaths.includes(song.path), dragging: dragFromIndex === index, 'drag-over': dragOverIndex === index && dragFromIndex !== index }"
-        @click="playLocal(song)"
+        @click="playLocal(song, $event)"
         @dragover.prevent="onDragOver(index, $event)"
         @drop.prevent="onDrop(index, $event)"
         @dragleave="onDragLeave"

@@ -293,10 +293,10 @@ const playAll = () => {
 // 视图切换：歌曲列表 / 评论
 const viewTab = ref('songs')
 
-const playSong = (song) => {
+const playSong = (song, event = null) => {
     const track = toKugouTrack(song)
     if (!track) return
-    playerStore.playNow(track, normalizedTracks.value)
+    playerStore.handleSongClick(track, normalizedTracks.value, event)
 }
 
 const enqueueAll = () => normalizedTracks.value.length && playerStore.enqueue(normalizedTracks.value)
@@ -545,7 +545,7 @@ onMounted(fetchDetail)
                     {{ batchRemoving ? '移除中...' : '移除选中' }}
                 </button>
             </div>
-            <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="batchMode ? toggleSelect(s) : playSong(s)">
+            <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="batchMode ? toggleSelect(s) : playSong(s, $event)">
                 <div v-if="batchMode" class="kugou-col-check" @click.stop="toggleSelect(s)">
                     <CheckSquare v-if="isSelected(s.hash)" :size="16" class="kugou-check-icon active" />
                     <Square v-else :size="16" class="kugou-check-icon" />

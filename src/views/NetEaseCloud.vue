@@ -185,8 +185,8 @@ const toTrack = (song) => ({
 
 const tracks = computed(() => filteredSongs.value.map(toTrack))
 
-const playSong = (song) => {
-    playerStore.playNow(toTrack(song), tracks.value)
+const playSong = (song, event = null) => {
+    playerStore.handleSongClick(toTrack(song), tracks.value, event)
 }
 
 const handleDelete = async (song) => {
@@ -684,7 +684,7 @@ defineExpose({ refreshData: fetchSongs })
             :key="song.id"
             class="song-row"
             :class="{ dragging: dragFromIndex === index, 'drag-over': dragOverIndex === index && dragFromIndex !== index, playing: playerStore.currentSong.id === song.songId }"
-            @click="playSong(song)"
+            @click="playSong(song, $event)"
             @dragover.prevent="onDragOver(index, $event)"
             @drop.prevent="onDrop(index, $event)"
             @dragleave="onDragLeave"

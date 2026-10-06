@@ -191,7 +191,7 @@ onUnmounted(() => { clearInterval(bannerTimer) })
         <section class="new-songs-section">
           <h2 class="section-title">最新音乐 <ChevronRight :size="20" /></h2>
           <div class="new-songs-grid">
-            <div v-for="(item, index) in newSongs" :key="item.id" class="song-item" @click="playerStore.playNow(item, newSongs)">
+            <div v-for="(item, index) in newSongs" :key="item.id" class="song-item" @click="playerStore.handleSongClick(item, newSongs, $event)">
               <div class="song-rank">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
               <div class="song-thumb">
                 <img :src="item.picUrl" />
@@ -275,7 +275,7 @@ onUnmounted(() => { clearInterval(bannerTimer) })
       <template v-else-if="activeTab === 'new'">
         <section class="new-music-section">
             <div class="new-songs-grid">
-                 <div v-for="(item, index) in newSongs" :key="item.id" class="song-item" @click="playerStore.playNow(item, newSongs)">
+                 <div v-for="(item, index) in newSongs" :key="item.id" class="song-item" @click="playerStore.handleSongClick(item, newSongs, $event)">
                     <div class="song-rank">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
                     <div class="song-thumb">
                         <img :src="item.album?.picUrl || item.picUrl" />

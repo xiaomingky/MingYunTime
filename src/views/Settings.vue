@@ -750,6 +750,27 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">歌曲列表点击播放</div>
+            <div class="setting-desc">选择歌曲行需要单击还是双击才开始播放；底部播放按钮和“立即播放”菜单不受影响</div>
+          </div>
+          <div class="close-options" role="radiogroup" aria-label="歌曲列表点击播放方式">
+            <button
+              v-for="opt in [{ value: 'single', label: '单击播放' }, { value: 'double', label: '双击播放' }]"
+              :key="opt.value"
+              class="close-opt"
+              :class="{ active: settingsStore.songClickMode === opt.value }"
+              role="radio"
+              type="button"
+              :aria-checked="settingsStore.songClickMode === opt.value"
+              @click="settingsStore.setSongClickMode(opt.value)"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
+
         <!-- 网易云 API 线路（仅网易云平台显示，用美化下拉） -->
         <div v-if="platformStore.isNetease" class="setting-row">
           <div class="setting-info">
@@ -1412,6 +1433,8 @@ onUnmounted(() => {
 
 .close-options { display: flex; gap: 6px; }
 .close-opt {
+    border: 0;
+    font-family: inherit;
     padding: 6px 14px;
     font-size: 12px;
     border-radius: 15px;
