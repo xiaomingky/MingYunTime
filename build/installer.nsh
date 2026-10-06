@@ -1,6 +1,6 @@
 ; Native controls only. MUI2 and nsDialogs work on Windows 7 SP1.
 !define MUI_TEXTCOLOR "24252A"
-!define MUI_BGCOLOR "FFFFFF"
+!define MUI_BGCOLOR "F0F0F0"
 !define MUI_HEADER_TEXT_COLOR "24252A"
 !define MUI_HEADER_BGCOLOR "FFFFFF"
 !define MUI_ABORTWARNING
@@ -10,6 +10,7 @@
 !endif
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"
+SetFont "Microsoft YaHei" 9
 
 Var NativeDialog
 Var NativeLabel
@@ -20,7 +21,7 @@ Var NativeTitleFont
   Pop $NativeLabel
   CreateFont $NativeTitleFont "Microsoft YaHei" 18 600
   SendMessage $NativeLabel ${WM_SETFONT} $NativeTitleFont 1
-  SetCtlColors $NativeLabel "C93349" "FFFFFF"
+  SetCtlColors $NativeLabel "C93349" "F0F0F0"
 !macroend
 
 !ifndef BUILD_UNINSTALLER
@@ -38,19 +39,18 @@ Function NativeWelcomeCreate
   ${If} $NativeDialog == error
     Abort
   ${EndIf}
-  SetCtlColors $NativeDialog "24252A" "FFFFFF"
+  SetCtlColors $NativeDialog "24252A" "F0F0F0"
   !insertmacro NativeTitle "欢迎安装茗韵时光"
   ${NSD_CreateLabel} 0 56u 100% 42u "安装向导将帮助你选择安装范围与存放目录。$\r$\n点击「下一步」继续。"
   Pop $NativeLabel
   ${NSD_CreateLabel} 0 114u 100% 36u "Windows 7 SP1 / 8.1 / 10 / 11 · 64 位$\r$\n安装包包含全部程序文件，安装过程无需联网。"
   Pop $NativeLabel
-  SetCtlColors $NativeLabel "70717A" "FFFFFF"
+  SetCtlColors $NativeLabel "70717A" "F0F0F0"
   nsDialogs::Show
 FunctionEnd
 
 !macro customFinishPage
   Page custom NativeFinishCreate NativeFinishLeave
-!macroend
 
 Function NativeFinishCreate
   !insertmacro MUI_HEADER_TEXT "安装完成" "茗韵时光已准备就绪"
@@ -59,7 +59,7 @@ Function NativeFinishCreate
   ${If} $NativeDialog == error
     Abort
   ${EndIf}
-  SetCtlColors $NativeDialog "24252A" "FFFFFF"
+  SetCtlColors $NativeDialog "24252A" "F0F0F0"
   !insertmacro NativeTitle "开始你的音乐时光"
   ${NSD_CreateLabel} 0 56u 100% 36u "程序已安装到：$\r$\n$INSTDIR"
   Pop $NativeLabel
@@ -78,11 +78,15 @@ FunctionEnd
 Function NativeFinishLeave
   ${NSD_GetState} $NativeRunCheckbox $0
   ${If} $0 == ${BST_CHECKED}
-    ; launchLink is declared by the assisted installer after this include;
-    ; use the installed executable path so this custom page stays self-contained.
-    ExecShell "open" "$INSTDIR\MingYunTime.exe"
+    ${If} ${isUpdated}
+      StrCpy $1 "--updated"
+    ${Else}
+      StrCpy $1 ""
+    ${EndIf}
+    ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
   ${EndIf}
 FunctionEnd
+!macroend
 
 !macro customInit
   ; Keep the existing destination when upgrading.
@@ -110,7 +114,7 @@ Function un.NativeWelcomeCreate
   ${If} $NativeDialog == error
     Abort
   ${EndIf}
-  SetCtlColors $NativeDialog "24252A" "FFFFFF"
+  SetCtlColors $NativeDialog "24252A" "F0F0F0"
   !insertmacro NativeTitle "卸载茗韵时光"
   ${NSD_CreateLabel} 0 56u 100% 54u "此向导将移除程序文件与快捷方式。$\r$\n账户、歌单与个人设置将保留。$\r$\n点击「下一步」继续。"
   Pop $NativeLabel
@@ -130,7 +134,7 @@ Function un.NativeFinishCreate
   ${If} $NativeDialog == error
     Abort
   ${EndIf}
-  SetCtlColors $NativeDialog "24252A" "FFFFFF"
+  SetCtlColors $NativeDialog "24252A" "F0F0F0"
   !insertmacro NativeTitle "程序已卸载"
   ${NSD_CreateLabel} 0 56u 100% 36u "程序文件与快捷方式已移除。$\r$\n个人设置已保留，重新安装后可继续使用。"
   Pop $NativeLabel
