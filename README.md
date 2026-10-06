@@ -4,6 +4,8 @@
 
 [English](README_EN.md) · [下载 v3.6.1](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.1) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
+[程序官网](https://music.xiaomingky.dpdns.org) · [作者网站](https://xiaomingky.dpdns.org)
+
 ![Version](https://img.shields.io/badge/version-3.6.1-EC4141) ![Windows](https://img.shields.io/badge/Windows-7%20%2F%2010%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-22-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
 基于 Vue 3 + Electron 22 构建，集成网易云音乐、QQ 音乐、酷狗概念版。除了发现、搜索、歌单和专辑，还提供可排序播放队列、本地音乐、经典 / Apple Music 风格歌词、桌面歌词、均衡器和统一下载中心。视频专区包含 B站、动漫、影视、网页解析与直播；娱乐专区提供 CS / VAL 赛事；智慧教材支持阅读、批注与配套音频。
@@ -190,6 +192,16 @@
 | 字体 / 远处模糊 | 系统无衬线 / 宋体，开关非当前句模糊 |
 
 手动滚动后可点「回到当前句」，也会稍后自动恢复跟随；点击句子跳转。风格设置不会生成资源缺少的歌词。
+
+### 逐字歌词效果
+
+以下使用《一路向北》的真实逐字时间轴录制，展示字内高亮推进与后续字逐个点亮，两种页面均支持；GIF 为静音循环。
+
+![经典逐字歌词](showimage/v3.6.1/classic-word-lyrics.gif)
+
+![Apple Music 逐字歌词](showimage/v3.6.1/apple-word-lyrics.gif)
+
+播放后打开歌曲详情：经典页点「逐词 / 逐行」按钮，Apple Music 页在右上角齿轮中选择「歌词模式 → 逐词」。界面标为「逐词」，中文效果按歌词源的字 / 词时间戳推进；英文按对应单词推进。没有逐字数据时，先在「歌词来源」选择带逐字的候选，否则使用逐行显示。
 
 ## 桌面歌词与音效
 
@@ -438,4 +450,4 @@ Electron 通常启动网易云 3100、QQ 3200、酷狗 3300 服务。网易云 /
 
 </details>
 
-网站：[xiaomingky.cn](https://xiaomingky.cn) · [Releases](https://github.com/xiaomingky/MingYunTime/releases) · [English](README_EN.md)
+作者网站：[xiaomingky.dpdns.org](https://xiaomingky.dpdns.org) · 程序官网：[music.xiaomingky.dpdns.org](https://music.xiaomingky.dpdns.org) · [Releases](https://github.com/xiaomingky/MingYunTime/releases) · [English](README_EN.md)

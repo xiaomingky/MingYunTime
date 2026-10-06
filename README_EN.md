@@ -4,6 +4,8 @@
 
 [中文版](README.md) · [Download v3.6.1](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.1) · [Report an issue](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
+[App website](https://music.xiaomingky.dpdns.org) · [Author website](https://xiaomingky.dpdns.org)
+
 ![Version](https://img.shields.io/badge/version-3.6.1-EC4141) ![Windows](https://img.shields.io/badge/Windows-7%20%2F%2010%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-22-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
 Built with Vue 3 and Electron 22, MingYun Time integrates NetEase Cloud Music, QQ Music and KuGou Concept Edition. Discover music, search, open playlists and albums, arrange a playback queue, manage local music, switch between Classic and Apple Music-style lyrics, use desktop lyrics and EQ, and manage downloads in one place. The video area includes Bilibili, anime, movies, URL parsing and streams; the entertainment area covers CS / VAL esports; digital textbooks provide reading, annotation and companion audio.
@@ -190,6 +192,16 @@ A cover-and-lyrics layout provides following scroll, word highlighting, elastic 
 | Font / distant-line blur | System sans-serif / serif; toggle blur for non-current lines |
 
 After scrolling manually, click Return to current line or wait for automatic following to resume. Click a line to seek. Changing style does not create missing lyric data.
+
+### Character and word-timed lyrics
+
+These captures use the genuine word-timing data for Jay Chou's “一路向北” (All the Way North). They show highlighting moving through each character and advancing to subsequent characters in both page styles. GIFs loop silently.
+
+![Classic character-timed lyrics](showimage/v3.6.1/classic-word-lyrics.gif)
+
+![Apple Music-style character-timed lyrics](showimage/v3.6.1/apple-word-lyrics.gif)
+
+Play a song and open its details. On the Classic page, use the Word / Line button; on the Apple Music page, open the top-right gear and select Lyric mode → Word. The Chinese interface labels this mode “逐词”: Chinese highlighting follows the source's character / word timestamps, while English follows timed words. If timing data is absent, choose a word-timed candidate under Lyric source or use line timing.
 
 ## Desktop lyrics and audio effects
 
@@ -438,4 +450,4 @@ The project declares **MIT** licensing. Third-party APIs, data, media and tools 
 
 </details>
 
-Website: [xiaomingky.cn](https://xiaomingky.cn) · [Releases](https://github.com/xiaomingky/MingYunTime/releases) · [中文版](README.md)
+Author website: [xiaomingky.dpdns.org](https://xiaomingky.dpdns.org) · App website: [music.xiaomingky.dpdns.org](https://music.xiaomingky.dpdns.org) · [Releases](https://github.com/xiaomingky/MingYunTime/releases) · [中文版](README.md)
