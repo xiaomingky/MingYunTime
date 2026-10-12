@@ -397,12 +397,16 @@ ipcMain.handle('movie:sources', async () => {
 })
 
 ipcMain.handle('movie:home', async (_, { source }) => {
-  try {
-    const data = await getHome(source)
-    return { success: true, data }
-  } catch (e) {
-    return { success: false, message: e.message }
+  const candidates = [...new Set([source, ...Object.keys(SOURCES)])].filter(id => SOURCES[id])
+  for (const candidate of candidates) {
+    try {
+      const data = await getHome(candidate)
+      if (data.latest?.length || data.hot?.length || data.ranking?.length) {
+        return { success: true, data, source: candidate, fallback: candidate !== source }
+      }
+    } catch (e) { console.warn(`[Movie] ${candidate} unavailable:`, e.message) }
   }
+  return { success: false, message: '影视线路暂时没有可用内容，请稍后刷新或切换线路。' }
 })
 
 ipcMain.handle('movie:search', async (_, { source, keyword }) => {
@@ -430,5 +434,4 @@ ipcMain.handle('movie:parse-playurl', async (_, { source, episodeUrl }) => {
     return { success: false, message: e.message }
   }
 })
-
 

@@ -290,7 +290,6 @@ export const biliVideoInteract = (aid, bvid = '') => animeBridge().invoke('bilib
 export const biliVideoUserSpace = (mid, page = 1) => animeBridge().invoke('bilibili:user-space', { mid, page })
 export const biliVideoUserSeasons = (mid, pageNum = 1, pageSize = 10) => animeBridge().invoke('bilibili:video-user-seasons', { mid, pageNum, pageSize })
 export const biliVideoSeasonArchives = (mid, seasonId, pageNum = 1) => animeBridge().invoke('bilibili:video-season-archives', { mid, seasonId, pageNum })
-export const biliVideoConclusion = (bvid, cid) => animeBridge().invoke('bilibili:video-conclusion', { bvid, cid })
 export const biliGetWebCookie = () => animeBridge().invoke('bili:get-web-cookie')
 export const biliSetWebCookie = (cookie) => animeBridge().invoke('bili:set-web-cookie', cookie)
 export const biliGetTvToken = () => animeBridge().invoke('bili:get-tv-token')

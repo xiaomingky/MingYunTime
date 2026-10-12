@@ -1128,7 +1128,9 @@ const openGithub = () => {
     </Transition>
 
     <div v-if="route.path !== '/desktop-lyrics'" class="normal-layout-wrapper">
-      <Transition name="song-panel"><SongDetail v-if="playerStore.showSongDetail" /></Transition>
+      <Transition name="song-panel">
+        <div v-if="playerStore.showSongDetail" class="song-panel-shell"><SongDetail /></div>
+      </Transition>
       <LoginModal v-if="showLogin" :show="showLogin" @close="showLogin = false" />
       <LockModal :show="showLockModal" @close="showLockModal = false" @verified="onLockVerified" />
       <MvPlayer v-if="playerStore.showMvPlayer" />
@@ -2965,6 +2967,10 @@ const openGithub = () => {
 </style>
 
 <style scoped>
-.song-panel-enter-active, .song-panel-leave-active { transition: opacity .22s ease; }
-.song-panel-enter-from, .song-panel-leave-to { opacity: 0; }
+.song-panel-shell { position: fixed; inset: 0; z-index: 1000; }
+.song-panel-enter-active, .song-panel-leave-active {
+  transition: transform .42s cubic-bezier(.22, 1, .36, 1);
+  will-change: transform;
+}
+.song-panel-enter-from, .song-panel-leave-to { transform: translateY(100%); }
 </style>

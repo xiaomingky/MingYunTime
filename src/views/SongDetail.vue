@@ -1237,14 +1237,13 @@ onMounted(() => {
 
 .song-detail-overlay {
   position: fixed;
-  top: 100%;
+  top: 0;
   left: 0;
   width: 100%;
   height: 100%; /* 占满全屏，延伸到footer下方 */
   padding-bottom: var(--footer-height); /* 防止内容被footer挡住 */
   background-color: #fff;
   z-index: 1000;
-  transition: top 0.4s cubic-bezier(0.2, 0, 0.2, 1);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1258,8 +1257,8 @@ onMounted(() => {
 
 .song-detail-overlay.show {
   top: 0;
-  /* 注意：不要在这里加 transform（如 translateZ(0)），
-     会导致 -webkit-app-region: drag 顶部拖动区域命中失效（时灵时不灵） */
+  /* The parent animates only during enter/leave and settles without a transform,
+     preserving the native window drag region after opening. */
   pointer-events: auto;
 }
 

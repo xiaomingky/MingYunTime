@@ -4,6 +4,7 @@
 // 本文件内部用 axios 调用 http://localhost:3200/*,规避 CORS
 import { spawn } from 'node:child_process'
 import { createServiceLifecycle } from './service-lifecycle.js'
+import { searchQQWithFallback } from './qq-search.js'
 import { apiRuntimePath } from './local-service.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -773,7 +774,7 @@ function registerQQIpcHandlers() {
 
     // ========== 搜索类(3) ==========
     ipcMain.handle('qq:search', async (_, params) => {
-        return qqGet('/getSearchByKey', { key: params.key, limit: params.limit || 30, page: params.page || 1, catZhida: params.catZhida ?? 1 }, params.cookie)
+        return searchQQWithFallback({ primary: qqGet, get: axios.get, key: params.key, limit: params.limit || 30, page: params.page || 1, catZhida: params.catZhida ?? 0, cookie: params.cookie })
     })
     ipcMain.handle('qq:smartbox', async (_, params) => {
         return qqGet('/getSmartbox', { key: params.key }, params.cookie)

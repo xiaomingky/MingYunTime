@@ -230,6 +230,8 @@ async function startDownload(params) {
     headers = Object.assign({ 'User-Agent': 'BilibiliTV/106500 (Android TV; TV; 4.4.4)' }, headers || {})
   } else {
     injectReferer(/bilivideo\.(com|cn)|edge\.mountaintoys\.cn|mcdn/i, 'https://www.bilibili.com/')
+    injectReferer(/^https?:\/\/[^/]*\.(?:douyucdn2?|douyuscdn)\.(?:com|cn)\//i, 'https://www.douyu.com/')
+    injectReferer(/^https?:\/\/[^/]*\.edgesrv\.com\//i, 'https://www.douyu.com/')
     // 抖音 CDN（play_addr 直链形如 www.douyin.com/aweme/v1/play/... 会 302 到 douyinvod/bytecdn 等最终 CDN，
     // 2026-08-25 实测：不带 douyin Referer + 浏览器 UA 时最终 CDN 返回 403，后续 302 会沿用注入的 Referer）
     injectReferer(/douyinvod\.com|bytecdn\.cn|ixigua\.com|byteimg\.com|douyinpic\.com|douyinstatic|(?:www\.)?douyin\.com\/aweme|snssdk\.com|iesdouyin\.com/i, 'https://www.douyin.com/')

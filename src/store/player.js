@@ -311,6 +311,21 @@ export const usePlayerStore = defineStore('player', {
                 if (ctx && ctx.state === 'suspended') await ctx.resume()
             }
         },
+        async _applyAudioDevice() {
+            // Once media is routed through Web Audio, the context owns its output.
+            // Changing only HTMLAudioElement's sink does not move that output.
+            const output = this.ctx?.setSinkId ? this.ctx : this.audio
+            if (!output?.setSinkId) return
+            const deviceId = this.currentDeviceId || ''
+            try {
+                await output.setSinkId(deviceId)
+            } catch (error) {
+                console.warn('Audio device unavailable; using the default output:', error.message)
+                await output.setSinkId('')
+                this.currentDeviceId = ''
+                localStorage.removeItem('audio_device_id')
+            }
+        },
         async _startAudioPlayback(audio, requestId) {
             this._applyVolume()
             await this._resumeAudioContexts()
@@ -372,6 +387,7 @@ export const usePlayerStore = defineStore('player', {
                 this.analyser.connect(this.volumeGain)
                 this.volumeGain.connect(this.ctx.destination)
                 this._applyVolume()
+                await this._applyAudioDevice()
             } catch (e) {
                 console.error('rebuildAudioGraph error:', e)
                 // Once attached, a media source must remain connected to an output.
@@ -487,16 +503,6 @@ export const usePlayerStore = defineStore('player', {
             this.playbackRate = savedRate
             this.audio.playbackRate = savedRate
             const audio = this.audio
-
-            // 设置音频设备（在 src 之后，load 之前）
-            if (this.currentDeviceId && this.audio.setSinkId) {
-                try {
-                    await this.audio.setSinkId(this.currentDeviceId)
-                    console.log(`--- [Audio] 设备已切换到: ${this.currentDeviceId}`)
-                } catch (e) {
-                    console.error('setSinkId error:', e)
-                }
-            }
 
             if (this.audio !== audio || this._playRequestId !== requestId) return
             this.audio.load()
@@ -975,18 +981,14 @@ export const usePlayerStore = defineStore('player', {
                 this.currentSong = normalized
                 // 切歌即推送新元数据：标题/歌手/专辑/封面发布给系统媒体会话（SMTC）
                 this._updateMediaSessionMetadata()
-                this.audio.crossOrigin = isLocal ? null : "anonymous"
+                // Web Audio requires a CORS-enabled response even for our local
+                // custom protocol. Without this Chromium silences the source.
+                this.audio.crossOrigin = "anonymous"
 
                 this.audio.src = url
                 this.audio.playbackRate = this.playbackRate
 
-                // 设置音频设备（在 src 之后，load 之前）
-                if (this.currentDeviceId && this.audio.setSinkId) {
-                    try {
-                        await this.audio.setSinkId(this.currentDeviceId)
-                        console.log(`--- [Audio] playSong 设备已切换到: ${this.currentDeviceId}`)
-                    } catch (e) { console.error('setSinkId:', e) }
-                }
+                await this._applyAudioDevice()
                 if (!isCurrentRequest()) return
 
                 this.audio.load()
@@ -2633,7 +2635,7 @@ export const usePlayerStore = defineStore('player', {
                 console.log('--- [Audio] 音频元素不存在，将在下次播放时应用')
                 return
             }
-            if (!this.audio.setSinkId) {
+            if (!this.ctx?.setSinkId && !this.audio.setSinkId) {
                 console.warn('--- [Audio] 浏览器不支持 setSinkId')
                 return
             }
@@ -2646,8 +2648,7 @@ export const usePlayerStore = defineStore('player', {
             
             // 立即应用设备切换
             try {
-                console.log(`--- [Audio] 正在重置音频元素以应用新设备...`)
-                await this.resetAudioElement()
+                await this._applyAudioDevice()
                 console.log(`--- [Audio] 设备切换完成`)
             } catch (e) {
                 console.error('--- [Audio] 设备切换失败:', e)

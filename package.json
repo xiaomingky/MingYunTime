@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "4.0.0-beta.1",
+  "version": "4.0.0-beta.2",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -11,8 +11,9 @@
     "dev:light": "set NODE_OPTIONS=--max-old-space-size=512 && vite",
     "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/clean-dist.cjs && node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && node scripts/prepare-api-dependencies.cjs && vite build && electron-builder",
     "preview": "vite preview",
+    "check:electron": "electron scripts/check-electron-functional.cjs",
     "postinstall": "node node_modules/electron/install.js",
-    "check": "node scripts/check-modernization.mjs && node scripts/check-player-queue.mjs && node scripts/check-download-stream.mjs && node scripts/check-apple-lyrics.mjs && node scripts/check-douyin-media.mjs && node scripts/check-douyin-browser.mjs && node scripts/check-interface-motion.mjs"
+    "check": "node scripts/check-modernization.mjs && node scripts/check-player-queue.mjs && node scripts/check-download-stream.mjs && node scripts/check-qq-search.mjs && node scripts/check-douyu-live.mjs && node scripts/check-apple-lyrics.mjs && node scripts/check-douyin-media.mjs && node scripts/check-douyin-browser.mjs && node scripts/check-interface-motion.mjs"
   },
   "dependencies": {
     "@applemusic-like-lyrics/core": "^0.5.0",

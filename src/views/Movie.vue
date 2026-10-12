@@ -126,11 +126,17 @@ const goToCategory = (cat) => {
 
 // ===== 数据加载 =====
 const fetchHome = async () => {
+    const requestedSource = currentSource.value
     loading.value = true
     searchMode.value = false
     try {
-        const res = await movieHome(currentSource.value)
+        const res = await movieHome(requestedSource)
+        if (currentSource.value !== requestedSource) return
         if (res?.success && res.data) {
+            if (res.source && res.source !== requestedSource) {
+                currentSource.value = res.source
+                messageStore.info('当前线路暂不可用，已切换到可用线路')
+            }
             const dedup = (arr) => {
                 const seen = new Set()
                 const out = []

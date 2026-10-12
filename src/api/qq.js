@@ -21,7 +21,7 @@ async function invoke(channel, params = {}) {
 }
 
 // ========== 搜索类(3) ==========
-export const qqSearch = (key, limit = 30, page = 1, catZhida = 1) => invoke('qq:search', { key, limit, page, catZhida })
+export const qqSearch = (key, limit = 30, page = 1, catZhida = 0) => invoke('qq:search', { key, limit, page, catZhida })
 export const qqSmartbox = (key) => invoke('qq:smartbox', { key })
 export const qqHotkey = () => invoke('qq:hotkey')
 
