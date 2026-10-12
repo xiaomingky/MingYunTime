@@ -68,7 +68,10 @@ html,
 
 /* Win7 性能降级：老机器跑 backdrop-filter(毛玻璃)合成极耗 GPU，
    html.win7 由 src/main.js 在 Windows NT 6.1 上自动挂载，整站关闭毛玻璃换半透明纯色 */
-html.win7 * {
+html.win7 *,
+html.light-visuals *,
+html.light-visuals *::before,
+html.light-visuals *::after {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
 }
@@ -780,13 +783,11 @@ select.compact {
 @keyframes check-draw {
     to { stroke-dashoffset: 0; }
 }
-/* 无障碍：用户系统启用“减少动态效果”时，跳过勾选动画 */
-@media (prefers-reduced-motion: reduce) {
-    .check-icon.active svg path:last-child,
-    .kugou-check-icon.active svg path:last-child {
-        animation: none;
-        stroke-dashoffset: 0;
-    }
+/* Reduced motion is controlled by the shared application preference. */
+html.reduce-motion .check-icon.active path:last-child,
+html.reduce-motion .kugou-check-icon.active path:last-child {
+    animation: none;
+    stroke-dashoffset: 0;
 }
 
 /* ===== 通用折叠展开（高度自适应动画，无 max-height 硬编码） =====
@@ -868,15 +869,15 @@ select.compact {
     100% { background-position: -200% 0; }
 }
 
-/* 无障碍：全局兜底——减少动态效果时压平所有过渡/动画 */
-@media (prefers-reduced-motion: reduce) {
-    *,
-    *::before,
-    *::after {
-        animation-duration: 0.01ms !important;
-        transition-duration: 0.01ms !important;
-        scroll-behavior: auto !important;
-    }
+/* Preserve animation end events so Vue transitions still clean up normally. */
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
 }
 /* ===== 长按选择复制开关（设置页控制）：关闭时全局禁止选中，输入类除外 ===== */
 .longpress-off,

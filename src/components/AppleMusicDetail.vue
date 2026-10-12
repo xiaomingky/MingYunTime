@@ -5,6 +5,8 @@ import '@applemusic-like-lyrics/core/style.css'
 import { Settings, X, Heart, Plus, Download, Share2, MessageSquare, Film, RefreshCw, ArrowUpToLine } from 'lucide-vue-next'
 import { usePlayerStore } from '../store/player'
 import { useSongDetailStore } from '../store/song-detail'
+import { useSettingsStore } from '../store/settings'
+import { useInterfaceMotion } from '../utils/interface-motion'
 import { toAppleLyrics } from '../utils/apple-lyrics'
 import AppleCoverArt from './AppleCoverArt.vue'
 import AppleAudioVisualizer from './AppleAudioVisualizer.vue'
@@ -20,7 +22,8 @@ const settingsOpen = ref(false)
 const renderer = ref(null)
 const background = ref(null)
 const visible = ref(!document.hidden)
-const reducedMotion = ref(false)
+const settings = useSettingsStore()
+const reducedMotion = useInterfaceMotion(settings)
 const manuallyScrolled = ref(false)
 const coverFailed = ref(false)
 const cover = computed(() => player.currentSong.al?.picUrl || '')
@@ -46,7 +49,6 @@ const typography = computed(() => ({
   '--apple-lyric-font': preferences.font === 'serif' ? '"Noto Serif SC", "Songti SC", serif' : '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif'
 }))
 let clockFrame = null
-let media
 let engine
 let lastFrame = 0
 let nextFrameTime = 0
@@ -94,7 +96,7 @@ watch([running, () => player.isPlaying], ([active, playing]) => {
 watch(() => player.currentTime, () => { if (clockFrame === null) { sampleTime(); wake() } })
 watch(cover, () => { coverFailed.value = false })
 watch(lines, loadLyrics)
-watch([reducedMotion, () => preferences.blur], configureEngine)
+watch([reducedMotion, () => preferences.blur, () => settings.lightVisuals], configureEngine)
 watch([() => preferences.performanceMode, () => preferences.nearbyLyrics, () => preferences.lyricFPS], configureEngine)
 watch([() => preferences.fontSize, () => preferences.font, () => preferences.translationSize, () => preferences.lineSpacing], async () => {
   await nextTick()
@@ -112,7 +114,7 @@ function configureEngine() {
   if (wasLimited && !preferences.performanceMode && player.isPlaying && running.value) engine.resume()
   engine.setEnableSpring(!reducedMotion.value)
   engine.setEnableScale(!reducedMotion.value)
-  engine.setEnableBlur(preferences.blur && !reducedMotion.value)
+  engine.setEnableBlur(preferences.blur && !reducedMotion.value && !settings.lightVisuals)
   engine.setAlignPosition(.46)
   engine.setWordFadeWidth(.65)
   engine.setLinePosYSpringParams({ mass: 1, stiffness: 110, damping: 22 })
@@ -167,7 +169,6 @@ function seekLine(event) {
   followCurrentLine()
 }
 function visibilityChange() { visible.value = !document.hidden }
-function motionChange() { reducedMotion.value = media.matches }
 function outsideClick(event) {
   if (!event.target.closest('.apple-settings, .apple-select-menu')) settingsOpen.value = false
 }
@@ -176,8 +177,6 @@ function escapeSettings(event) {
 }
 function selectClassic() { settingsOpen.value = false; preferences.style = 'classic' }
 onMounted(() => {
-  media = matchMedia('(prefers-reduced-motion: reduce)')
-  motionChange()
   // Keep the imperative animation engine outside Vue's deep reactive graph.
   engine = new AppleLyricPlayer()
   renderer.value.appendChild(engine.getElement())
@@ -189,7 +188,6 @@ onMounted(() => {
   if (player.isPlaying && running.value) engine.resume()
   else engine.pause()
   paintBackground()
-  media.addEventListener('change', motionChange)
   document.addEventListener('visibilitychange', visibilityChange)
   document.addEventListener('pointerdown', outsideClick)
   document.addEventListener('keydown', escapeSettings, true)
@@ -203,7 +201,6 @@ onUnmounted(() => {
   engine?.getElement().removeEventListener('touchmove', manualScroll)
   engine?.dispose()
   engine = null
-  media?.removeEventListener('change', motionChange)
   document.removeEventListener('visibilitychange', visibilityChange)
   document.removeEventListener('pointerdown', outsideClick)
   document.removeEventListener('keydown', escapeSettings, true)
@@ -353,10 +350,11 @@ onUnmounted(() => {
   .apple-lyric-engine { --amll-lp-font-size: min(var(--apple-lyric-size), 34px); }
   .apple-settings { right: 16px; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .apple-background-image { animation: none; }
-  .apple-cover, .apple-icon, .apple-settings-fade-enter-active, .apple-settings-fade-leave-active { transition: none; }
-  .apple-cover-change-enter-active, .apple-cover-change-leave-active,
-  .apple-background-change-enter-active, .apple-background-change-leave-active { transition: none; }
-}
+:global(html.reduce-motion) .apple-background-image { animation: none; }
+:global(html.reduce-motion) .apple-cover,
+:global(html.reduce-motion) .apple-icon,
+:global(html.reduce-motion) .apple-settings-fade-enter-active,
+:global(html.reduce-motion) .apple-settings-fade-leave-active { transition: none; }
+:global(html.light-visuals) .apple-background-image { animation: none; }
+
 </style>

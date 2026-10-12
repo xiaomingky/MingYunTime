@@ -2,19 +2,20 @@
 
 **三平台音乐、双风格歌词、视频与赛事，一款 Windows 桌面播放器。**
 
-[English](README_EN.md) · [下载 v3.6.1](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.1) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
+[English](README_EN.md) · [下载 v3.6.3](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.3) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
 [程序官网](https://music.xiaomingky.dpdns.org) · [作者网站](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-3.6.1-EC4141) ![Windows](https://img.shields.io/badge/Windows-7%20%2F%2010%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-22-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-3.6.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-7%20%2F%2010%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-22-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
 基于 Vue 3 + Electron 22 构建，集成网易云音乐、QQ 音乐、酷狗概念版。除了发现、搜索、歌单和专辑，还提供可排序播放队列、本地音乐、经典 / Apple Music 风格歌词、桌面歌词、均衡器和统一下载中心。视频专区包含 B站、动漫、影视、网页解析与直播；娱乐专区提供 CS / VAL 赛事；智慧教材支持阅读、批注与配套音频。
 
-> 本项目由 AI 辅助开发。英文 README 是文档翻译，不代表客户端具有英文界面。以下图片与 GIF 来自当前 v3.6.1 界面；在线推荐、榜单与赛事会随服务更新。歌词 GIF 演示界面动画，不含音频。本地音乐展示使用示例文件条目。
+> 本项目由 AI 辅助开发。英文 README 是文档翻译，不代表客户端具有英文界面。以下图片与 GIF 来自 v3.6.1 界面；在线推荐、榜单与赛事会随服务更新。歌词 GIF 演示界面动画，不含音频。本地音乐展示使用示例文件条目。
 
 ## 目录
 
 - [下载安装](#下载安装)
+- [v3.6.3 修复与设置](#v363-修复与设置)
 - [v3.6.1 播放体验](#v361-播放体验)
 - [三平台首页与登录](#三平台首页与登录)
 - [搜索、歌单与专辑](#搜索歌单与专辑)
@@ -35,7 +36,7 @@
 
 ## 下载安装
 
-1. 打开 [v3.6.1 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.1)，在 **Assets** 中选择 Windows 安装包 `.exe`；需要免安装方式时选择 `.7z`，完整解压后运行程序。
+1. 打开 [v3.6.3 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.3)，在 **Assets** 中选择 Windows 安装包 `.exe`；需要免安装方式时选择 `.7z`，完整解压后运行程序。
 2. 安装包使用原生 **NSIS 向导**，可选择安装目录，并创建桌面 / 开始菜单快捷方式。
 3. 启动后在左上角选择平台，再按需登录。普通使用无需安装 Node.js，音乐 API 服务与下载工具随客户端提供。
 4. 首次启动本地 API 服务需要时间，数据暂未出现时稍等后刷新页面。
@@ -43,6 +44,14 @@
 **系统：Windows 7 / 10 / 11，64 位。** 项目保留 Electron 22，并有 Windows 7 渲染兼容处理。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
 
 在线播放、下载、高音质和账号操作依赖对应平台的授权、会员、地区与资源可用性。
+
+## v3.6.3 修复与设置
+
+- **抖音解析**：可直接粘贴整段分享文案、短链接或作品完整链接。视频与图集统一结构化提取，按作品 ID 匹配结果；图集支持浏览、下载及图片加载状态提示。
+- **界面动画**：在「设置 → 播放器其他设置 → 界面动画」选择开启动画、跟随系统或减少动态效果。默认开启，即使 Windows 请求减少动态效果，应用仍保留切换动画。
+- **轻量视觉**：同一设置分区中开启，减少毛玻璃与歌词模糊开销，同时保留页面、抽屉的切换动画，适合核显和较旧电脑。
+- **渲染与缓存**：让 Chromium 根据显卡驱动选择合适的渲染方式，隐藏窗口时保留着色器与页面缓存，减少返回时的重复解码与重建。
+- **兼容性**：保留 Electron 22.3.27 与原生 NSIS 安装向导，继续支持 Windows 7 SP1。
 
 ## v3.6.1 播放体验
 
@@ -349,6 +358,9 @@
 | --- | --- |
 | 账号信息 | 看头像、昵称、统计、会员；QQ / 酷狗按可用项展示凭据与复制 |
 | 自定义快捷键 | 点记录区按新组合，Esc 取消，单项 / 全部恢复默认 |
+| 歌曲列表点击播放 | 选择单击或双击播放；播放按钮与立即播放菜单保持直接操作 |
+| 界面动画 | 默认开启，可选择开启动画、跟随系统、减少动态效果 |
+| 轻量视觉 | 减少毛玻璃与歌词模糊开销，保留切换动画，适合核显开启 |
 | 关闭行为 | 每次询问、托盘、直接退出 |
 | 网易云 API 线路 | 主 / 推荐 / 备用，切换刷新，仅网易云显示 |
 | 下载目录 | 选择目录 / 恢复默认 |

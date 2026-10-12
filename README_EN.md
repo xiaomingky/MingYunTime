@@ -2,19 +2,20 @@
 
 **Three music platforms, two lyric styles, videos and esports in a Windows desktop player.**
 
-[中文版](README.md) · [Download v3.6.1](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.1) · [Report an issue](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
+[中文版](README.md) · [Download v3.6.3](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.3) · [Report an issue](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
 [App website](https://music.xiaomingky.dpdns.org) · [Author website](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-3.6.1-EC4141) ![Windows](https://img.shields.io/badge/Windows-7%20%2F%2010%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-22-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-3.6.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-7%20%2F%2010%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-22-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
 Built with Vue 3 and Electron 22, MingYun Time integrates NetEase Cloud Music, QQ Music and KuGou Concept Edition. Discover music, search, open playlists and albums, arrange a playback queue, manage local music, switch between Classic and Apple Music-style lyrics, use desktop lyrics and EQ, and manage downloads in one place. The video area includes Bilibili, anime, movies, URL parsing and streams; the entertainment area covers CS / VAL esports; digital textbooks provide reading, annotation and companion audio.
 
-> This project is developed with AI assistance. This English README is a translation of the guide; it does not imply an English client interface. Screenshots and GIFs show the current v3.6.1 interface. Online recommendations, charts and esports information change with their sources. Lyric GIFs demonstrate interface animation without audio. The local music screenshot uses sample file entries.
+> This project is developed with AI assistance. This English README is a translation of the guide; it does not imply an English client interface. Screenshots and GIFs show the v3.6.1 interface. Online recommendations, charts and esports information change with their sources. Lyric GIFs demonstrate interface animation without audio. The local music screenshot uses sample file entries.
 
 ## Contents
 
 - [Download and installation](#download-and-installation)
+- [Fixes and settings in v3.6.3](#fixes-and-settings-in-v363)
 - [Playback improvements in v3.6.1](#playback-improvements-in-v361)
 - [Music platforms and login](#music-platforms-and-login)
 - [Search, playlists and albums](#search-playlists-and-albums)
@@ -35,7 +36,7 @@ Built with Vue 3 and Electron 22, MingYun Time integrates NetEase Cloud Music, Q
 
 ## Download and installation
 
-1. Open the [v3.6.1 release](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.1). Under **Assets**, choose the Windows installer `.exe`, or download the `.7z` archive for portable use, extract it completely and launch the application.
+1. Open the [v3.6.3 release](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.3). Under **Assets**, choose the Windows installer `.exe`, or download the `.7z` archive for portable use, extract it completely and launch the application.
 2. The installer uses a native **NSIS wizard**, with a selectable destination and desktop / Start menu shortcuts.
 3. After launch, choose a platform at the top left and sign in if needed. Regular use does not require Node.js: music API services and download utilities are included.
 4. Local API services take a little time to start. If the first page is empty, wait briefly and refresh.
@@ -43,6 +44,14 @@ Built with Vue 3 and Electron 22, MingYun Time integrates NetEase Cloud Music, Q
 **System: Windows 7 / 10 / 11, 64-bit.** The project retains Electron 22 and Windows 7 rendering compatibility handling. On older computers, enable performance mode and 30 FPS for Apple Music-style lyrics, and turn off unnecessary spectrum and cover motion. System media overlays, HEVC decoding and similar capabilities still depend on the Windows version, drivers and codecs.
 
 Online playback, downloads, audio quality and account operations depend on the platform's authorization, membership, regional restrictions and resource availability.
+
+## Fixes and settings in v3.6.3
+
+- **Douyin parsing:** paste the complete share text, a short link or a full item URL. Videos and image galleries use the same structured parser, with results matched to the requested item. Galleries support browsing and downloads with image loading feedback.
+- **Interface animation:** open Settings → Other player settings → Interface animation. The default enables transitions even if Windows requests reduced motion; you can also follow the system or reduce motion explicitly.
+- **Light visuals:** enable this in the same settings section on integrated graphics or older computers. It reduces backdrop blur and lyric blur while retaining page and drawer transitions.
+- **Rendering and cache:** allow Chromium to select a renderer compatible with the installed driver, and preserve shader and page caches when the window is hidden.
+- **Compatibility:** Electron 22.3.27 and the native NSIS installer are retained for Windows 7 SP1 compatibility.
 
 ## Playback improvements in v3.6.1
 
@@ -349,6 +358,9 @@ Sticky navigation at the top jumps to settings sections. Account options vary by
 | --- | --- |
 | Account information | Inspect avatar, name, statistics and membership; QQ / KuGou show supported credential and copy controls |
 | Custom shortcuts | Click the recording area and press a new combination; Esc cancels; reset one or all bindings |
+| Song-row playback | Choose single-click or double-click; play buttons and Play now actions remain direct |
+| Interface animation | Enabled by default; select Enable, Follow system or Reduce motion |
+| Light visuals | Reduce backdrop and lyric blur while retaining transitions; recommended for integrated graphics |
 | Window close behavior | Ask each time, minimize to tray or quit |
 | NetEase API routes | Main / recommended / backup; switching refreshes the app; shown for NetEase |
 | Download folder | Choose a destination or restore default |

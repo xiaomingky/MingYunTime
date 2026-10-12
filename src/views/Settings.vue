@@ -771,6 +771,31 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">界面动画</div>
+            <div class="setting-desc">控制页面切换、抽屉和歌词动效。选择开启时，Windows 的动画设置不会关闭应用动效</div>
+          </div>
+          <CustomSelect
+            :model-value="settingsStore.interfaceMotion"
+            :options="[{ value: 'on', label: '开启动画' }, { value: 'system', label: '跟随系统' }, { value: 'off', label: '减少动态效果' }]"
+            :width="160"
+            @change="settingsStore.setInterfaceMotion($event)"
+          />
+        </div>
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">轻量视觉</div>
+            <div class="setting-desc">适合核显和较旧电脑：减少毛玻璃与歌词模糊开销，保留切换和展开动画</div>
+          </div>
+          <button type="button" class="close-opt" role="switch"
+            :class="{ active: settingsStore.lightVisuals }"
+            :aria-checked="settingsStore.lightVisuals"
+            @click="settingsStore.setLightVisuals(!settingsStore.lightVisuals)">
+            {{ settingsStore.lightVisuals ? '已开启' : '已关闭' }}
+          </button>
+        </div>
+
         <!-- 网易云 API 线路（仅网易云平台显示，用美化下拉） -->
         <div v-if="platformStore.isNetease" class="setting-row">
           <div class="setting-info">

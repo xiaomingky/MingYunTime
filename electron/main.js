@@ -60,6 +60,7 @@ import { startQQMusicAPI, stopQQMusicAPI } from './qq-music.js'
 // 酷狗音乐 API 子进程(KuGouMusicApi,监听 3300 端口,platform=lite 概念版)
 import { startKugouMusicAPI, stopKugouMusicAPI } from './kugou-music.js'
 import { startNeteaseAPI, stopNeteaseAPI } from './netease-api.js'
+import { extractShareUrl, extractDouyinId as extractDouyinMediaId, extractDouyinPage, extractDouyinMedia, DOUYIN_MOBILE_UA } from './douyin-media.js'
 // 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）
 import './unlock.js'
 
@@ -68,14 +69,8 @@ import './unlock.js'
 // 老机器 + 老显卡驱动是 Win7 卡顿/黑屏的主要来源，这里用「稳健模式」：
 // 保留基本硬件加速（强制软件渲染会明显卡顿），但对 Win7 特有关闭高负载 GPU 特性。
 const isWin7 = process.platform === 'win32' && /^6\.1\./.test(os.release())
-if (process.platform === 'win32') {
-    // 强制使用软件渲染或特定的渲染限制会导致严重卡顿。
-    // 我们采取"稳健模式"：限制高负载 GL 特性，但保留基本硬件加速。
-    app.commandLine.appendSwitch('disable-software-rasterizer');
-    app.commandLine.appendSwitch('ignore-gpu-blacklist');
-    // 如果在极旧的 Win7 上崩溃，可以尝试取消注释下面这行进行彻底降级
-    // app.disableHardwareAcceleration();
-}
+// Keep hardware acceleration and Chromium's driver checks enabled on Windows.
+// Allow software fallback on drivers that cannot safely accelerate rendering.
 if (isWin7) {
     // Win7 老显卡驱动对 GPU 加速 2D canvas / GPU 栅格化支持差，容易黑屏、掉帧、占满 CPU：
     // 裁掉这两块高开销特性，渲染明显更稳定、更流畅。
@@ -85,15 +80,9 @@ if (isWin7) {
     // js-flags 复用下方全局设置（appendSwitch 同名只保留最后一个，这里不重复设置）
 }
 
-// --- 内存/CPU 优化：V8 和 Chromium 开关（激进省内存） ---
-// V8 堆上限 256MB（默认 4GB），gc-interval=500 避免频繁 GC 抢占主线程
-// expose-gc 允许手动调用 gc() 在窗口隐藏时强制回收
-app.commandLine.appendSwitch('js-flags', '--max-old-space-size=256 --gc-interval=500 --expose-gc')
-// 磁盘缓存降到 5MB（默认 100MB）
-app.commandLine.appendSwitch('disk-cache-size', '5242880')
-// 禁用站点隔离（单窗口应用不需要），大幅降低内存
-app.commandLine.appendSwitch('disable-site-isolation-trials')
-app.commandLine.appendSwitch('disable-features', 'IsolateOrigins,site-per-process')
+// Let V8 schedule collection and size its heap; forced frequent GC stalls UI transitions.
+// expose-gc is retained for the existing hidden-window cleanup.
+app.commandLine.appendSwitch('js-flags', '--expose-gc')
 // 禁用不必要的 Chromium 子系统，进一步降低基础内存
 app.commandLine.appendSwitch('disable-extensions')
 app.commandLine.appendSwitch('disable-plugins')
@@ -102,8 +91,6 @@ app.commandLine.appendSwitch('disable-bundled-ppapi-flash')
 app.commandLine.appendSwitch('disable-default-apps')
 app.commandLine.appendSwitch('disable-translate')
 app.commandLine.appendSwitch('disable-media-stream')  // 不用摄像头/麦克风（音频设备用 WebAudio 不依赖此）
-// 降低图片解码缓存内存（Chromium 默认会缓存大量解码后的图片位图）
-app.commandLine.appendSwitch('prune-to-zero', 'true')
 // 启用平台 HEVC/H.265 硬解码（Windows 安装了「HEVC 视频扩展」后，本地 H.265/MKV 视频可直接播放；
 // Chromium 官方构建默认不带 HEVC 软解，必须依赖系统 Media Foundation 解码器）
 app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport,PlatformHEVCDecoderSupportForHWDRM')
@@ -278,13 +265,7 @@ function createWindow() {
         if (_memoryReleaseTimer) clearTimeout(_memoryReleaseTimer)
         _memoryReleaseTimer = setTimeout(() => {
             try {
-                // 1. 清理 session 缓存（图片、CSS、JS 等解码后的资源位图）
-                session.defaultSession.clearCache().catch(() => {})
-                session.defaultSession.clearStorageData({
-                    storages: ['shadercache', 'serviceworkers', 'cachestorage']
-                }).catch(() => {})
-                // 2. 清理 song-cover 协议的 LRU 缓存（主进程侧）
-                ipcMain.emit('clear-cover-cache')
+                // Preserve disk, shader and cover caches to avoid rebuilding them on every return.
                 // 3. 通知渲染进程释放资源（暂停 RAF、清理 Audio 等）
                 win.webContents.send('window-hidden-release')
                 // 4. 强制 V8 GC（需要 --expose-gc 标志）
@@ -326,6 +307,8 @@ function createWindow() {
                 'https://*.douyinvod.com/*', 'http://*.douyinvod.com/*',
                 'https://*.bytecdn.cn/*', 'http://*.bytecdn.cn/*',
                 'https://*.byteimg.com/*', 'http://*.byteimg.com/*',
+                'https://*.douyinpic.com/*', 'http://*.douyinpic.com/*',
+                'https://*.douyinstatic.com/*', 'http://*.douyinstatic.com/*',
                 'https://*.ixigua.com/*', 'http://*.ixigua.com/*',
                 'https://*.snssdk.com/*', 'http://*.snssdk.com/*',
                 'https://*.iesdouyin.com/*', 'http://*.iesdouyin.com/*',
@@ -375,7 +358,7 @@ function createWindow() {
                 // 斗鱼 CDN：注入 Referer
                 details.requestHeaders['Referer'] = 'https://www.douyu.com/'
                 details.requestHeaders['User-Agent'] = PARSE_UA
-            } else if (/douyincdn\.com|amemv\.com|douyin\.com|douyinvod\.com|bytecdn\.cn|byteimg\.com|ixigua\.com|snssdk\.com|iesdouyin\.com/i.test(u)) {
+            } else if (/douyincdn\.com|amemv\.com|douyin\.com|douyinvod\.com|bytecdn\.cn|byteimg\.com|douyinpic\.com|douyinstatic\.com|ixigua\.com|snssdk\.com|iesdouyin\.com/i.test(u)) {
                 // 抖音点播 CDN：注入 www.douyin.com Referer + 浏览器 UA（否则 douyinvod 等最终 CDN 返回 403）
                 // 2026-08-25 实测：不带 Referer/UA 请求最终 CDN 返回 403 text/html，带上后返回 200 video/mp4
                 details.requestHeaders['Referer'] = 'https://www.douyin.com/'
@@ -1582,14 +1565,7 @@ function cookiesFromSetCookie(setCookie) {
     return parts.join('; ')
 }
 function extractDouyinId(url) {
-    if (!url) return ''
-    let m = String(url).match(/\/video\/(\d{10,20})/)
-    if (m) return m[1]
-    m = String(url).match(/\/note\/([A-Za-z0-9_-]+)/)
-    if (m) return m[1]
-    m = String(url).match(/douyin\.com\/(?:share\/)?(\d{10,20})/)
-    if (m) return m[1]
-    return ''
+    return extractDouyinMediaId(url)
 }
 function coverFromDouyin(video) {
     if (!video) return ''
@@ -1697,301 +1673,86 @@ function douyinRatioFrom(br, url) {
 }
 
 async function parseDouyin(target, addStream) {
-    let title = ''
-    let added = 0
-    let cover = ''
-
-    // —— 主路径：官方 detail 接口（硬编码真实浏览器 Cookie + 原始 a_bogus，忠实移植 video-parser）——
-    // 实测：带「Cookie 全家桶」才能过风控拿到无水印 play_addr；弱会话(仅 ttwid/msToken)会返回空包。
+    let awemeId = extractDouyinId(target)
+    const output = (media) => {
+        if (!media?.streams?.length) return null
+        for (const stream of media.streams) addStream(stream.url, stream.type, stream.title, stream)
+        return { title: media.title || '', cover: media.cover || '' }
+    }
+    // Reuse the resolved share HTML and URL; desktop pages often omit SSR data.
     try {
-        let awemeId = extractDouyinId(target)
-        if (!awemeId) {
-            // 短链/分享文案：跟随跳转拿最终 URL 再提取 aweme_id 与标题
-            const pageRes = await axios.get(target, {
-                headers: {
-                    'User-Agent': PARSE_UA,
-                    'Referer': 'https://www.douyin.com/',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'zh-CN,zh;q=0.9'
-                },
-                responseType: 'text',
-                timeout: 15000,
-                validateStatus: () => true,
-                maxRedirects: 10
+        const page = await axios.get(target, {
+            headers: { 'User-Agent': DOUYIN_MOBILE_UA, 'Referer': 'https://www.douyin.com/' },
+            responseType: 'text', timeout: 12000, maxRedirects: 10, validateStatus: () => true
+        })
+        const finalUrl = page.request?.res?.responseUrl || target
+        awemeId = extractDouyinId(finalUrl) || awemeId
+        const media = output(extractDouyinPage(page.data, awemeId))
+        if (media) return media
+        if (extractDouyinId(finalUrl)) target = finalUrl
+    } catch {}
+
+    if (awemeId) {
+        // Mobile share API handles both image posts and video posts when available.
+        try {
+            const response = await axios.get('https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/', {
+                params: { item_ids: awemeId }, headers: { 'User-Agent': DOUYIN_MOBILE_UA, 'Referer': target },
+                timeout: 8000, validateStatus: () => true
             })
-            const finalUrl = (pageRes.request && pageRes.request.res && pageRes.request.res.responseUrl) || pageRes.config.url || target
-            awemeId = extractDouyinId(finalUrl)
-            const tm = (pageRes.data || '').match(/<title>([^<]*)<\/title>/i)
-            if (tm) title = tm[1].replace(/ - 抖音.*$/, '').replace(/【.*?】/g, '').trim()
-        }
-        if (awemeId) {
-            // ===== 2026-08 实测：新版 a_bogus v2 + 新鲜注册 ttwid（移植 douyin_parse/DLWangSan abogus.py）=====
-            // 旧方案（硬编码 2024 Cookie + video-parser 旧 a_bogus）已被抖音风控整体拦截（detail 返回空包），
-            // 新版只需 ttwid（实时注册）+ 随机 msToken，配合 a_bogus v2 签名即可拿到完整 aweme_detail。
-            const msToken = genMsToken(107)
-            const referer = `https://www.douyin.com/video/${awemeId}`
+            const media = output(extractDouyinMedia(response.data, awemeId))
+            if (media) return media
+        } catch {}
+        // Signed desktop API remains a fallback; use a fresh session instead of expired cookies.
+        try {
             const ttwid = await douyinRegisterTtwid()
-            // 与 Python 版一致：a_bogus v2 需要 URL 编码后拼接到 URL，且必须带真实 ttwid cookie
             const baseParams = {
-                device_platform: 'webapp',
-                aid: '6383',
-                channel: 'channel_pc_web',
-                pc_client_type: '1',
-                version_code: '190500',
-                version_name: '19.5.0',
-                cookie_enabled: 'true',
-                browser_language: 'zh-CN',
-                browser_platform: 'Win32',
-                browser_name: 'Edge',
-                browser_online: 'true',
-                engine_name: 'Blink',
-                os_name: 'Windows',
-                os_version: '10',
-                platform: 'PC',
-                screen_width: '1920',
-                screen_height: '1080',
-                aweme_id: awemeId
+                device_platform: 'webapp', aid: '6383', channel: 'channel_pc_web', pc_client_type: '1',
+                version_code: '190500', version_name: '19.5.0', cookie_enabled: 'true',
+                browser_language: 'zh-CN', browser_platform: 'Win32', browser_name: 'Edge',
+                browser_online: 'true', engine_name: 'Blink', os_name: 'Windows', os_version: '10',
+                platform: 'PC', screen_width: '1920', screen_height: '1080', aweme_id: awemeId
             }
-            // 保持 Python urlencode 的参数顺序（参数值均为 URL 安全字符，直接拼接）
-            const paramStr = Object.entries(baseParams).map(([k, v]) => `${k}=${v}`).join('&')
-            const aBogusV2 = generateABogusV2(paramStr, 'GET')
-            const apiUrl = `https://www.douyin.com/aweme/v1/web/aweme/detail/?${paramStr}&a_bogus=${encodeURIComponent(aBogusV2)}`
-            const apiRes = await axios.get(apiUrl, {
-                headers: {
-                    'User-Agent': DOUYIN_UA,
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                    'Referer': referer,
-                    'Origin': 'https://www.douyin.com',
-                    'Sec-Fetch-Site': 'same-origin',
-                    'Sec-Fetch-Mode': 'cors',
-                    'Sec-Fetch-Dest': 'empty',
-                    'Cookie': `ttwid=${ttwid}; msToken=${msToken}`
-                },
-                responseType: 'text',
-                timeout: 15000,
-                validateStatus: () => true
+            const paramStr = new URLSearchParams(baseParams).toString()
+            const signature = generateABogusV2(paramStr, 'GET')
+            const response = await axios.get(`https://www.douyin.com/aweme/v1/web/aweme/detail/?${paramStr}&a_bogus=${encodeURIComponent(signature)}`, {
+                headers: { 'User-Agent': DOUYIN_UA, 'Accept': 'application/json, text/plain, */*',
+                    'Referer': `https://www.douyin.com/video/${awemeId}`, 'Origin': 'https://www.douyin.com',
+                    'Cookie': `ttwid=${ttwid}; msToken=${genMsToken(107)}` },
+                timeout: 12000, validateStatus: () => true
             })
-            let data = null
-            if (apiRes.data) {
-                try { data = typeof apiRes.data === 'string' ? JSON.parse(apiRes.data) : apiRes.data } catch (e) {}
-            }
-            const detail = data && data.aweme_detail
-            if (detail) {
-                if (detail.desc) title = detail.desc
-                // ===== 图文作品（aweme_type=68，抖音图文笔记）=====
-                // 图文没有 video 流，只有 images 图集 + music 背景音乐；
-                // 若不拦截，video.play_addr 会把背景音乐的 mp4 音频误当成“视频流”解析
-                const noteImages = (detail.aweme_type === 68 || detail.is_image_post === 1)
-                    && Array.isArray(detail.images) && detail.images.length
-                    ? detail.images : null
-                if (noteImages) {
-                    const imgUrls = []
-                    for (const img of noteImages) {
-                        if (!img || typeof img !== 'object') continue
-                        // 候选池：url_list 为无水印（tplv-dy-aweme-images），download_url_list 为带水印（tplv-dy-water-v2）
-                        const cands = []
-                        for (const arr of [img.url_list, img.download_url_list]) {
-                            if (Array.isArray(arr)) for (const x of arr) {
-                                const c = String(x || '').replace(/\\\//g, '/')
-                                if (c && !cands.includes(c)) cands.push(c)
-                            }
-                        }
-                        if (typeof img.url === 'string' && img.url && !cands.includes(img.url)) cands.push(img.url)
-                        // 优先选无水印的，实在没有才回退到带水印图
-                        let u = cands.find(c => !/~tplv-dy-water-v2/i.test(c)) || cands[0] || ''
-                        u = String(u || '').replace(/\\\//g, '/')
-                        if (u && /^https?:\/\//i.test(u) && !imgUrls.includes(u)) imgUrls.push(u)
-                    }
-                    // 每张图一个独立流（image 类型），整组共享 imageList 供前端图集浏览
-                    const coverUrl = imgUrls[0] || ''
-                    imgUrls.forEach((u, i) => {
-                        const label = imgUrls.length > 1 ? ` [图${i + 1}/${imgUrls.length}]` : ''
-                        addStream(u, 'image', `${title}${label}`, { cover: coverUrl, isImage: true, imageList: imgUrls })
-                        added++
-                    })
-                    // 背景音乐（原声 BGM）作为可选音频流，前端可直接播放
-                    const musicUrl = detail.music && detail.music.play_url && detail.music.play_url.url_list
-                        && detail.music.play_url.url_list[0]
-                    if (musicUrl && /^https?:/.test(String(musicUrl))) {
-                        addStream(String(musicUrl).replace(/\\\//g, '/'), 'mp3', `${title} [背景音乐]`, { cover: coverUrl })
-                    }
-                    if (added && coverUrl) cover = coverUrl
-                    if (added) return { title, cover }
-                }
-                const video = detail.video || {}
-                // 多画质提取：遍历 bit_rate，每个档位输出一个独立流（参考 douyin_parse extract_video_qualities）
-                // 优先 play_addr（无水印直链），down load_addr 才带水印；再 playwm->play 双保险
-                const qualities = []
-                const bitRate = video.bit_rate
-                if (Array.isArray(bitRate) && bitRate.length) {
-                    for (const br of bitRate) {
-                        const ul = (br.play_addr && br.play_addr.url_list) || []
-                        if (!ul.length) continue
-                        let u = ul.length > 2 ? ul[2] : ul[0]
-                        u = String(u || '').replace(/playwm/i, 'play')
-                        if (!u || qualities.find(q => q.url === u)) continue
-                        // 画质标签：尽力提取分辨率，实在拿不到再按码率估算；全失败才留空（输出时标注 Kbps）
-                        let ratio = douyinRatioFrom(br, u)
-                        const kbps = Math.floor((br.bit_rate || 0) / 1000)
-                        if (!ratio && kbps > 0) ratio = estimateRatioFromKbps(kbps)
-                        qualities.push({ url: u, ratio, kbps })
-                    }
-                }
-                // 兜底：bit_rate 为空时取 video.play_addr
-                if (!qualities.length) {
-                    const ul = (video.play_addr && video.play_addr.url_list) || []
-                    if (ul.length) {
-                        let u = ul.length > 2 ? ul[2] : ul[0]
-                        u = String(u || '').replace(/playwm/i, 'play')
-                        if (u) qualities.push({ url: u, ratio: '', kbps: 0 })
-                    }
-                }
-                // 兜底2：仍无直链时用 play_addr.uri 按常见画质构造 snssdk 播放地址（参考 douyin_parse Method 3）
-                if (!qualities.length && video.play_addr && video.play_addr.uri) {
-                    for (const ratio of ['1080p', '720p', '540p', '480p', '360p']) {
-                        qualities.push({ url: `https://aweme.snssdk.com/aweme/v1/play/?video_id=${video.play_addr.uri}&ratio=${ratio}&line=0`, ratio, kbps: 0 })
-                    }
-                }
-                // 排序：4K > 2K > 1440p > 1080p > ...，同档位码率高的优先
-                const ratioOrder = { '4K': 8, '2K': 7, '1440p': 6, '1080p': 5, '720p': 4, '540p': 3, '480p': 2, '360p': 1 }
-                qualities.sort((a, b) => {
-                    const ra = ratioOrder[a.ratio] || 0
-                    const rb = ratioOrder[b.ratio] || 0
-                    if (ra !== rb) return rb - ra
-                    return (b.kbps || 0) - (a.kbps || 0)
-                })
-                // 去重后输出；画质标签放进标题括号（如 ' [1080p]'），前端按括号识别并折叠分组
-                const coverUrl = coverFromDouyin(video)
-                const seen = new Set()
-                for (const q of qualities) {
-                    if (seen.has(q.url)) continue
-                    seen.add(q.url)
-                    // 画质括号：首选分辨率标签，否则用码率（如 4000Kbps）
-                    const qualityTag = q.ratio || (q.kbps ? `${q.kbps}Kbps` : '')
-                    addStream(q.url, 'mp4', qualityTag ? `${title} [${qualityTag}]` : title,
-                        { cover: coverUrl, watermarkFree: true, quality: qualityTag })
-                    added++
-                }
-                if (added && coverUrl) cover = coverUrl
-            }
-        }
-    } catch (e) {}
-
-    // —— 次路径：CDP 拦截浏览器自己发出的 detail 请求（浏览器自己签名 + 带 Cookie）——
-    if (added === 0) {
-        try {
-            const cdp = await parseViaCDP(target, 'douyin')
-            if (cdp && Array.isArray(cdp.streams) && cdp.streams.length) {
-                for (const s of cdp.streams) {
-                    addStream(s.url, s.type, s.title || title, { cover: s.cover, watermarkFree: true })
-                    added++
-                }
-                if (cdp.title) title = cdp.title
-                if (cdp.cover) cover = cdp.cover
-            }
-        } catch (e) {}
+            let data = response.data
+            if (typeof data === 'string') { try { data = JSON.parse(data) } catch { data = null } }
+            const media = output(extractDouyinMedia(data, awemeId))
+            if (media) return media
+        } catch {}
     }
-
-    // —— 回退：SSR 正则（旧版页面兜底）——
-    if (added === 0) {
-        try {
-            const res = await axios.get(target, {
-                headers: {
-                    'User-Agent': PARSE_UA,
-                    'Referer': 'https://www.douyin.com/',
-                    'Cookie': 'msToken=abcdef0123456789; ttwid=1',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'zh-CN,zh;q=0.9'
-                },
-                responseType: 'text',
-                timeout: 15000,
-                validateStatus: () => true,
-                maxRedirects: 10
-            })
-            const html = res.data || ''
-            if (html) {
-                if (!title) {
-                    const tm = html.match(/<title>([^<]*)<\/title>/i)
-                    if (tm) title = tm[1].replace(/ - 抖音.*$/, '').replace(/【.*?】/g, '').trim()
-                }
-                // 兼容旧版页面：尝试 _ROUTER_DATA / RENDER_DATA
-                let routerData = null
-                const m1 = html.match(/<script[^>]*id="_ROUTER_DATA"[^>]*>([\s\S]*?)<\/script>/i)
-                if (m1) { try { routerData = JSON.parse(m1[1].trim()) } catch (e) {} }
-                if (!routerData) {
-                    const m2 = html.match(/<script[^>]*id="RENDER_DATA"[^>]*>([\s\S]*?)<\/script>/i)
-                    if (m2) { try { routerData = JSON.parse(decodeURIComponent(m2[1].trim())) } catch (e) {} }
-                }
-                const tryAdd = (obj, depth) => {
-                    if (!obj || typeof obj !== 'object' || depth > 8) return
-                    if (typeof obj.url === 'string' && /^https?:\/\/.+/.test(obj.url) && /\.(mp4|m3u8|flv)(\?|$|#)/i.test(obj.url)) {
-                        const u = obj.url.replace(/\\\//g, '/')
-                        const type = /\.m3u8/i.test(u) ? 'm3u8' : (/\.flv/i.test(u) ? 'flv' : 'mp4')
-                        addStream(u, type, title, { watermarkFree: false })
-                        added++
-                    }
-                    if (Array.isArray(obj.url_list)) {
-                        for (const u of obj.url_list) {
-                            if (typeof u === 'string' && /^https?:\/\//.test(u)) tryAdd({ url: u }, depth + 1)
-                        }
-                    }
-                    if (typeof obj.play_addr === 'object') tryAdd(obj.play_addr, depth + 1)
-                    if (typeof obj.playApi === 'string' && /^https?:\/\//.test(obj.playApi)) tryAdd({ url: obj.playApi }, depth + 1)
-                    for (const k of Object.keys(obj)) {
-                        if (['url', 'url_list', 'play_addr', 'playApi'].includes(k)) continue
-                        const v = obj[k]
-                        if (v && typeof v === 'object') tryAdd(v, depth + 1)
-                    }
-                }
-                if (routerData) tryAdd(routerData, 0)
-                // 兜底：正则提取直链
-                if (added === 0) {
-                    const vm = html.match(/"(https?:\/\/[^"]*(?:douyinvod|douyin\.com|bytecdn|bytedance|ixigua)[^"]*\.(?:mp4|m3u8)[^"]*)"/i)
-                    if (vm) { addStream(vm[1].replace(/\\\//g, '/'), 'mp4', title, { watermarkFree: false }); added++ }
-                    if (added === 0) {
-                        const vm2 = html.match(/"(https?:\/\/[^"]+\.mp4[^"]*)"/i)
-                        if (vm2) { addStream(vm2[1].replace(/\\\//g, '/'), 'mp4', title, { watermarkFree: false }); added++ }
-                    }
-                }
-            }
-        } catch (e) {}
-    }
-
-    // —— 终极回退：隐藏 BrowserWindow 渲染（让 Chromium 完整执行 JS 抓取直链）——
-    if (added === 0) {
-        const renderResult = await parseByHiddenWindow(target, 'douyin')
-        if (renderResult?.title && !title) title = renderResult.title
-        for (const s of (renderResult?.streams || [])) {
-            addStream(s.url, s.type, title || renderResult.title, { watermarkFree: false })
-            added++
-        }
-    }
-    return added > 0 ? { title, cover } : null
+    // Navigate to the canonical desktop item so the browser requests the target detail.
+    // A mobile share landing page can contain only an open-app button and never request it.
+    const browserTarget = awemeId ? `https://www.douyin.com/video/${awemeId}` : target
+    return output(await parseViaCDP(browserTarget, 'douyin'))
 }
 
-// ===== 基于 CDP 请求拦截的解析（最稳：浏览器自己签名 + 带 Cookie）=====
-// 用隐藏窗口加载页面，挂上 DevTools 调试器拦截页面自己发出的接口请求响应体：
-//   - 抖音：拦截 .../aweme/detail 的响应，取 aweme_detail.video.bit_rate[0].play_addr（无水印直链）
-//   - 快手：等客户端把视频注入 window.__APOLLO_STATE__ 后读取（VisionVideoSetRepresentation 即无水印直链）
-// 不需要自己实现 a_bogus，也不用手动处理 Cookie 时效 —— 浏览器全程代劳，绝不会把推荐/广告流误判成目标视频。
+// Browser fallback: inspect actual detail responses and structured page state.
+// Douyin responses must match the requested item, including image posts.
+// Kuaishou retains its Apollo-state extractor.
 async function parseViaCDP(target, source) {
     return new Promise((resolve) => {
         const result = { streams: [], title: '', cover: '', timeout: false }
+        const resolvedId = () => extractDouyinId(target) || (bw && !bw.isDestroyed() ? extractDouyinId(bw.webContents.getURL()) : '')
         let bw = null, dbg = null, settled = false, timer = null, pollTimer = null
-        const reqUrl = {}
-        let triggerReqId = null
-        const finish = (r) => {
+        let pollBusy = false
+        const requests = new Set()
+        const finish = (media) => {
             if (settled) return
             settled = true
-            if (timer) clearTimeout(timer)
-            if (pollTimer) clearInterval(pollTimer)
-            try { if (dbg && dbg.isAttached()) dbg.detach() } catch (e) {}
-            try { if (bw && !bw.isDestroyed()) bw.destroy() } catch (e) {}
-            resolve(r || result)
+            clearTimeout(timer)
+            clearInterval(pollTimer)
+            requests.clear()
+            try { if (dbg?.isAttached()) dbg.detach() } catch {}
+            try { if (bw && !bw.isDestroyed()) bw.destroy() } catch {}
+            resolve(media || result)
         }
-        timer = setTimeout(() => { if (!result.streams.length) result.timeout = true; finish(result) }, 20000)
-
+        timer = setTimeout(() => { result.timeout = true; finish(result) }, 20000)
         const readApollo = async () => {
             if (!bw || bw.isDestroyed() || settled) return
             try {
@@ -2017,82 +1778,66 @@ async function parseViaCDP(target, source) {
             } catch (e) {}
         }
 
-        try {
-            bw = new BrowserWindow({
-                width: 1280, height: 800, show: false, frame: false,
-                webPreferences: {
-                    nodeIntegration: false, contextIsolation: true, sandbox: false,
-                    webSecurity: false, images: false,
-                    autoplayPolicy: 'no-user-gesture-required',
-                    partition: 'temp-parser-cdp'
-                }
-            })
-            dbg = bw.webContents.debugger
-            dbg.attach('1.3')
-            dbg.on('message', (event) => {
-                const { method, params } = event
-                if (method === 'Network.responseReceived') {
-                    const url = (params.response && params.response.url) || ''
-                    reqUrl[params.requestId] = url
-                    if (source === 'douyin' && /aweme\/detail|\/iteminfo\//.test(url)) {
-                        triggerReqId = params.requestId
-                    }
-                } else if (method === 'Network.loadingFinished') {
-                    const url = reqUrl[params.requestId] || ''
-                    if (source === 'douyin' && params.requestId === triggerReqId) {
+        const readPage = async () => {
+            if (!bw || bw.isDestroyed() || settled || pollBusy) return
+            pollBusy = true
+            try {
+                if (source === 'kuaishou') { await readApollo(); return }
+                const page = await bw.webContents.executeJavaScript(`(() => {
+                    const data = [window._ROUTER_DATA, window.__INITIAL_STATE__];
+                    return { data: JSON.stringify(data), html: document.documentElement.outerHTML };
+                })()`)
+                const targetId = resolvedId()
+                if (!targetId) return
+                const media = extractDouyinMedia(JSON.parse(page.data), targetId) || extractDouyinPage(page.html, targetId)
+                if (media) finish(media)
+            } catch {} finally { pollBusy = false }
+        }
+        ;(async () => {
+            try {
+                bw = new BrowserWindow({
+                    width: 1280, height: 800, show: false, frame: false,
+                    webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true,
+                        images: false, partition: 'temp-parser-cdp' }
+                })
+                bw.webContents.setAudioMuted(true)
+                // Electron 22 needs a live renderer before Network.enable can resolve.
+                await bw.webContents.loadURL('about:blank')
+                if (settled) return
+                dbg = bw.webContents.debugger
+                dbg.attach('1.3')
+                // Electron emits separate method/params arguments, not properties of event.
+                dbg.on('message', (_event, method, params) => {
+                    if (settled) return
+                    if (method === 'Network.responseReceived') {
+                        const url = params.response?.url || ''
+                        const isDetail = source === 'douyin'
+                            ? /aweme\/detail|\/iteminfo\//.test(url) && /(?:douyin|iesdouyin)\.com\//.test(url)
+                            : /kuaishou\.com\/graphql/.test(url)
+                        if (isDetail) requests.add(params.requestId)
+                    } else if (method === 'Network.loadingFailed') {
+                        requests.delete(params.requestId)
+                    } else if (method === 'Network.loadingFinished' && requests.delete(params.requestId)) {
                         ;(async () => {
                             try {
                                 const { body, base64Encoded } = await dbg.sendCommand('Network.getResponseBody', { requestId: params.requestId })
+                                if (source === 'kuaishou') { await readApollo(); return }
                                 const text = base64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body
-                                const json = JSON.parse(text)
-                                const d = json && json.aweme_detail
-                                if (!d) return
-                                if (d.desc) result.title = d.desc
-                                const video = d.video || {}
-                                const coverUrl = coverFromDouyin(video)
-                                if (coverUrl) result.cover = coverUrl
-                                let playUrl = ''
-                                const br = video.bit_rate
-                                if (Array.isArray(br) && br.length) {
-                                    const ul = (br[0].play_addr && br[0].play_addr.url_list) || []
-                                    playUrl = ul.length > 2 ? ul[2] : (ul[0] || '')
-                                }
-                                if (!playUrl) {
-                                    const ul = (video.play_addr && video.play_addr.url_list) || []
-                                    playUrl = ul.length > 2 ? ul[2] : (ul[0] || '')
-                                }
-                                if (playUrl) {
-                                    playUrl = playUrl.replace(/playwm/i, 'play')  // 双保险去水印
-                                    // 画质标签：优先分辨率，其次按码率估算，放进标题括号供前端分组
-                                    let ratio = ''
-                                    const br = video.bit_rate
-                                    if (Array.isArray(br) && br.length) {
-                                        ratio = douyinRatioFrom(br[0], playUrl)
-                                        const kbps = Math.floor((br[0].bit_rate || 0) / 1000)
-                                        if (!ratio && kbps > 0) ratio = estimateRatioFromKbps(kbps)
-                                    }
-                                    const titleTag = ratio ? `${result.title} [${ratio}]` : result.title
-                                    result.streams.push({ url: playUrl, type: 'mp4', title: titleTag, cover: coverUrl, watermarkFree: true })
-                                    finish(result)
-                                }
-                            } catch (e) {}
+                                const targetId = resolvedId()
+                                if (!targetId) return
+                                const media = extractDouyinMedia(JSON.parse(text), targetId)
+                                if (media) finish(media)
+                            } catch {}
                         })()
-                    } else if (source === 'kuaishou' && /kuaishou\.com\/graphql/.test(url)) {
-                        readApollo()
                     }
-                }
-            })
-            dbg.sendCommand('Network.enable')
-            // 抖音：页面加载后再等 12s 仍无 detail 响应就提前结束，让次级兜底（a_bogus/SSR/DOM）接管
-            bw.webContents.on('did-finish-load', () => {
-                if (source === 'douyin') {
-                    setTimeout(() => { if (!settled && !result.streams.length) finish(result) }, 12000)
-                }
-            })
-            // 快手兜底轮询：graphql 没命中时持续读 Apollo，直到出现 Vision 键
-            if (source === 'kuaishou') pollTimer = setInterval(readApollo, 600)
-            bw.webContents.loadURL(target, { userAgent: PARSE_UA }).catch(() => finish(result))
-        } catch (e) { finish(result) }
+                })
+                await dbg.sendCommand('Network.enable')
+                if (settled) return
+                bw.webContents.on('did-finish-load', readPage)
+                pollTimer = setInterval(readPage, 800)
+                await bw.webContents.loadURL(target, { userAgent: source === 'douyin' ? DOUYIN_UA : PARSE_UA })
+            } catch { finish(result) }
+        })()
     })
 }
 
@@ -2111,21 +1856,25 @@ async function parseByHiddenWindow(target, source) {
     return new Promise((resolve) => {
         let bw = null
         let settled = false
+        let checkInterval = null
+        let timer = null
         const networkUrls = []  // 监听到的视频流 URL（按域名过滤，有序）
 
         // 已知视频 CDN 域名正则（只收集这些域名的请求，排除广告）
         const cdnPattern = source === 'douyin'
-            ? /douyinvod\.com|bytecdn\.cn|bytedance\.com|ixigua\.com|byteimg\.com|douyinstatic/i
+            ? /douyinvod\.com|bytecdn\.cn|bytedance\.com|ixigua\.com|byteimg\.com|douyinpic\.com|douyinstatic/i
             : /kwaixia\.com|kwai\.com|gifshow\.com|kwimgs\.com|kwaicdn\.com|kscube\.com|ksapisrc\.com|yximgs\.com|kuaishou\.com|cloudshort\.live\.kuaishou\.com/i
 
         const finish = (result) => {
             if (settled) return
             settled = true
+            clearInterval(checkInterval)
+            clearTimeout(timer)
             try { if (bw) { bw.destroy(); bw = null } } catch (e) {}
             resolve(result)
         }
         // 超时保护：35 秒
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
             finish({ streams: [], title: '', timeout: true })
         }, 35000)
 
@@ -2173,6 +1922,8 @@ async function parseByHiddenWindow(target, source) {
             })
 
             bw.webContents.on('did-finish-load', () => {
+                if (settled) return
+                clearInterval(checkInterval)
                 // 自动静音播放视频，触发视频流网络请求
                 bw.webContents.executeJavaScript(`
                     try {
@@ -2192,7 +1943,8 @@ async function parseByHiddenWindow(target, source) {
                 // 等待 SPA 渲染完成（多轮检查，每轮 1.5 秒，最多 18 秒）
                 let attempts = 0
                 const maxAttempts = 12
-                const checkInterval = setInterval(async () => {
+                checkInterval = setInterval(async () => {
+                    if (settled || !bw || bw.isDestroyed()) return
                     attempts++
                     try {
                         const result = await bw.webContents.executeJavaScript(`
@@ -5175,9 +4927,9 @@ ipcMain.handle('video:transcode-file', async (_, { url }) => {
 
 ipcMain.handle('video:parse-url', async (_, { url }) => {
     try {
-        const target = String(url || '').trim()
+        const target = extractShareUrl(url)
         if (!/^https?:\/\//i.test(target)) {
-            return { success: false, message: '请输入以 http:// 或 https:// 开头的网址' }
+            return { success: false, message: '请输入有效网址，也可以直接粘贴包含网址的分享文案' }
         }
 
         // B站解析接口模式（web | tv）：全局持久化，可在解析界面切换
@@ -5325,6 +5077,7 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
                 const streams = Array.from(found.values())
                 return { success: true, streams, pageTitle: dyResult.title || '', pageUrl: target }
             }
+            return { success: false, message: '未能获取抖音作品。请确认链接可公开访问；若遇到平台验证，请稍后重试或使用作品完整链接。', pageUrl: target }
         }
 
         // === 通用 HTML 解析 ===

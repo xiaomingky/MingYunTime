@@ -64,7 +64,9 @@ export const useSettingsStore = defineStore('settings', {
             // 兼容旧配置：若新配置缺失，则回退读取原 'close_action' / 'api_line' 的本地值
             closePrefer: saved.closePrefer ?? localStorage.getItem('close_action') ?? 'ask',
             apiLine: saved.apiLine ?? localStorage.getItem('api_line') ?? null,
-            songClickMode: saved.songClickMode === 'double' ? 'double' : 'single'
+            songClickMode: saved.songClickMode === 'double' ? 'double' : 'single',
+            interfaceMotion: ['on', 'system', 'off'].includes(saved.interfaceMotion) ? saved.interfaceMotion : 'on',
+            lightVisuals: saved.lightVisuals === true
         }
     },
     actions: {
@@ -73,7 +75,9 @@ export const useSettingsStore = defineStore('settings', {
                 shortcuts: this.shortcuts,
                 closePrefer: this.closePrefer,
                 apiLine: this.apiLine,
-                songClickMode: this.songClickMode
+                songClickMode: this.songClickMode,
+                interfaceMotion: this.interfaceMotion,
+                lightVisuals: this.lightVisuals
             }))
             // 同步旧的独立键，方便旧逻辑/外部读取保持同步
             localStorage.setItem('close_action', this.closePrefer)
@@ -97,6 +101,14 @@ export const useSettingsStore = defineStore('settings', {
         },
         setSongClickMode(mode) {
             this.songClickMode = mode === 'double' ? 'double' : 'single'
+            this.persist()
+        },
+        setInterfaceMotion(mode) {
+            this.interfaceMotion = ['on', 'system', 'off'].includes(mode) ? mode : 'on'
+            this.persist()
+        },
+        setLightVisuals(value) {
+            this.lightVisuals = Boolean(value)
             this.persist()
         }
     }

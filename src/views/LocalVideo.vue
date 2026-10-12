@@ -22,7 +22,7 @@ import platformKick from '../assets/icons/kick.svg'
 import platformTwitch from '../assets/icons/twitch.svg'
 // 解析框上方滚动展示的平台与其用处说明
 const platformScrollItems = [
-    { id: 'douyin', name: '抖音', icon: platformDouyin, desc: '抖音：解析短视频与直播，官方接口无水印，支持播放与批量下载' },
+    { id: 'douyin', name: '抖音', icon: platformDouyin, desc: '抖音：支持视频、图集与直播，可粘贴整段分享文案，支持浏览、播放与下载' },
     { id: 'bilibili', name: 'B站', icon: platformBilibili, desc: 'B站：解析视频/番剧/电影/直播，TV 接口无水印片源，登录解锁高清' },
     { id: 'kuaishou', name: '快手', icon: platformKuaishou, desc: '快手：解析短视频与直播，官方接口无水印，支持播放与批量下载' },
     { id: 'huya', name: '虎牙', icon: platformHuya, desc: '虎牙：解析直播流（FLV/HLS），可播放与下载' },
@@ -496,6 +496,13 @@ async function resolveVideoDownloadDir() {
     } catch (e) {}
     return ''
 }
+function parsedMediaExtension(stream) {
+    if (stream.isImage) {
+        try { return new URL(stream.url).pathname.match(/\.(jpe?g|png|webp|gif|avif)(?:$|~)/i)?.[0].replace(/~$/, '').toLowerCase() || '.jpg' }
+        catch { return '.jpg' }
+    }
+    return stream.type === 'mp3' ? '.mp3' : '.mp4'
+}
 const batchDownloading = ref(false)
 const batchTotal = ref(0)
 const batchDone = ref(0)
@@ -527,8 +534,8 @@ async function downloadOne(input, title, tag) {
     }
     const safe = String(title || 'video').replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'video'
     const baseDir = await resolveVideoDownloadDir()
-    // 图文图片按 .jpg 保存，其余视频一律 .mp4
-    const filePath = baseDir ? `${baseDir}\\${safe}\\${safe}${input && input.isImage ? '.jpg' : '.mp4'}` : ''
+    // Preserve the image/audio extension instead of naming every result as a video.
+    const filePath = baseDir ? `${baseDir}\\${safe}\\${safe}${parsedMediaExtension(s)}` : ''
     const params = {
         url: s.url,
         name: safe,
@@ -587,8 +594,8 @@ function toggleParseAll() {
 }
 async function downloadParseBatch() {
     const items = parseResults.value.filter(x => parseSel.value.has(x.url))
-    if (!items.length) { messageStore.warning('请先勾选要下载的视频流', 2500); return }
-    if (!await messageStore.confirm(`将串行下载 ${items.length} 个视频流到下载专区（完成一个再下下一个），确定？`, '批量下载')) return
+    if (!items.length) { messageStore.warning('请先勾选要下载的媒体', 2500); return }
+    if (!await messageStore.confirm(`将串行下载 ${items.length} 个媒体到下载专区（完成一个再下下一个），确定？`, '批量下载')) return
     batchDownloading.value = true
     batchTotal.value = items.length
     batchDone.value = 0
@@ -936,7 +943,7 @@ const handleParseUrl = async () => {
             } else {
                 // 统一列出供用户选择，不自动播放
                 parseResults.value = list
-                messageStore.success(`解析到 ${list.length} 个视频流，请点击播放`)
+                messageStore.success(`解析到 ${list.length} 个媒体结果，可选择播放或浏览`)
             }
         } else {
             messageStore.error(res?.message || '解析失败')
@@ -1021,16 +1028,22 @@ const galleryList = ref([])      // 图片 URL 全列表
 const galleryIndex = ref(0)      // 当前图片下标
 const galleryTitle = ref('')     // 图集标题（剥离 [图N/M] 装饰）
 const galleryLoading = ref(false)
+const galleryFailed = ref(false)
+watch(() => galleryList.value[galleryIndex.value], () => {
+    galleryLoading.value = true
+    galleryFailed.value = false
+})
 const openParseGallery = (s) => {
     galleryList.value = (Array.isArray(s.imageList) && s.imageList.length) ? s.imageList : [s.url]
     galleryIndex.value = Math.max(0, galleryList.value.indexOf(s.url))
     galleryTitle.value = String(s.title || parsePageTitle.value || '图集').replace(/\s*\[图\d+\/\d+\]\s*/g, '').trim() || '图集'
-    galleryLoading.value = false
+    galleryLoading.value = true
+    galleryFailed.value = false
     galleryOpen.value = true
 }
 const galleryPrev = () => { galleryIndex.value = galleryIndex.value > 0 ? galleryIndex.value - 1 : galleryList.value.length - 1 }
 const galleryNext = () => { galleryIndex.value = galleryIndex.value < galleryList.value.length - 1 ? galleryIndex.value + 1 : 0 }
-const onGalleryImgError = () => { galleryLoading.value = false }
+const onGalleryImgError = () => { galleryLoading.value = false; galleryFailed.value = true }
 const downloadGalleryImage = async (u) => {
     const url = u || galleryList.value[galleryIndex.value] || ''
     if (!url) { messageStore.warning('图片地址无效'); return }
@@ -1043,7 +1056,7 @@ const downloadGalleryImage = async (u) => {
             name: `${safe}${idx}`,
             category: 'video',
             askPath: false,
-            savePath: `${baseDir}\\${safe}\\${safe}${idx}.jpg`
+            savePath: `${baseDir}\\${safe}\\${safe}${idx}${parsedMediaExtension({ url, isImage: true })}`
         })
         if (r?.success) messageStore.success('图片开始下载，进度见下载专区', 3000)
         else if (!r?.canceled) messageStore.error('图片下载失败：' + (r?.error || '未知错误'))
@@ -1165,8 +1178,8 @@ const downloadParsedStream = async (s) => {
             const baseDir = await resolveVideoDownloadDir()
             if (baseDir) {
                 const safe = String(name).replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim() || 'video'
-                // 图文图片按 .jpg 保存（图片直链下载，无需 ffmpeg 合并）
-                const ext = s.isImage ? '.jpg' : '.mp4'
+                // Images download directly without ffmpeg; retain their actual URL extension.
+                const ext = parsedMediaExtension(s)
                 return downloadStart({ ...params, askPath: false, savePath: `${baseDir}\\${safe}\\${safe}${ext}` })
             }
             // 拿不到目录时：走旧逻辑弹窗选择
@@ -1781,7 +1794,7 @@ const typeLabel = (s) => {
 
         <div v-if="parseResults.length > 0" class="parse-results">
             <div class="parse-results-title">
-                <span>共解析到 {{ parseResults.length }} 个视频流{{ parsePageTitle ? ` · ${parsePageTitle}` : '' }}</span>
+                <span>共解析到 {{ parseResults.length }} 个媒体结果{{ parsePageTitle ? ` · ${parsePageTitle}` : '' }}</span>
                 <span class="parse-batch-actions">
                     <label class="parse-check-all" @click.prevent="toggleParseAll">
                         <CheckSquare v-if="parseAllChecked" :size="16" class="check-icon active" />
@@ -1847,12 +1860,15 @@ const typeLabel = (s) => {
                     </div>
                     <div class="parse-gallery-body">
                         <button v-if="galleryList.length > 1" class="parse-gallery-nav prev" @click.stop="galleryPrev"><ChevronLeft :size="24" /></button>
+                        <span v-if="galleryLoading" class="parse-gallery-status">图片加载中…</span>
+                        <span v-if="galleryFailed" class="parse-gallery-status">图片加载失败，请重新解析获取最新地址</span>
                         <img
                             :src="galleryList[galleryIndex]"
                             :key="galleryList[galleryIndex]"
                             class="parse-gallery-img"
                             referrerpolicy="no-referrer"
-                            alt=""
+                            :alt="`${galleryTitle} · 第 ${galleryIndex + 1} 张`"
+                            @load="galleryLoading = false"
                             @error="onGalleryImgError"
                         />
                         <button v-if="galleryList.length > 1" class="parse-gallery-nav next" @click.stop="galleryNext"><ChevronRight :size="24" /></button>
@@ -3462,6 +3478,13 @@ const typeLabel = (s) => {
     object-fit: contain;
     user-select: none;
     -webkit-user-drag: none;
+}
+:global(.parse-gallery-status) {
+    position: absolute;
+    max-width: calc(100% - 100px);
+    color: #ddd;
+    text-align: center;
+    pointer-events: none;
 }
 :global(.parse-gallery-nav) {
     position: absolute;

@@ -39,5 +39,5 @@ defineEmits(['error'])
 .record-label { position: absolute; inset: 32%; border-radius: 50%; background: #97b7ae; background-size: cover; }
 .record-label::after { content: ''; position: absolute; inset: 42%; background: #171918; border: 1px solid #ffffff40; border-radius: 50%; }
 @keyframes disc-turn { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .cover-face, .sleeve-record { animation: none !important; transition: none !important; } }
+:global(html.reduce-motion) .cover-face, :global(html.reduce-motion) .sleeve-record { animation: none !important; transition: none !important; }
 </style>

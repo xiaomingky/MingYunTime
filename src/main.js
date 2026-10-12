@@ -4,6 +4,8 @@ import router from './router'
 import './style.css'
 import App from './App.vue'
 import reveal from './directives/reveal'
+import { useSettingsStore } from './store/settings'
+import { installInterfaceMotion } from './utils/interface-motion'
 
 // Win7（Windows NT 6.1）性能优化标记：
 // 老机器 + 老显卡驱动跑毛玻璃(backdrop-filter)合成特效很吃力，挂 html.win7 后在样式层整体禁用，
@@ -19,5 +21,6 @@ const pinia = createPinia()
 
 app.directive('reveal', reveal)
 app.use(pinia)
+installInterfaceMotion(useSettingsStore(pinia))
 app.use(router)
 app.mount('#app')

@@ -229,7 +229,7 @@ async function startDownload(params) {
     injectReferer(/bilivideo\.(com|cn)|edge\.mountaintoys\.cn|mcdn/i, 'https://www.bilibili.com/')
     // 抖音 CDN（play_addr 直链形如 www.douyin.com/aweme/v1/play/... 会 302 到 douyinvod/bytecdn 等最终 CDN，
     // 2026-08-25 实测：不带 douyin Referer + 浏览器 UA 时最终 CDN 返回 403，后续 302 会沿用注入的 Referer）
-    injectReferer(/douyinvod\.com|bytecdn\.cn|ixigua\.com|byteimg\.com|douyinstatic|(?:www\.)?douyin\.com\/aweme|snssdk\.com|iesdouyin\.com/i, 'https://www.douyin.com/')
+    injectReferer(/douyinvod\.com|bytecdn\.cn|ixigua\.com|byteimg\.com|douyinpic\.com|douyinstatic|(?:www\.)?douyin\.com\/aweme|snssdk\.com|iesdouyin\.com/i, 'https://www.douyin.com/')
     // 快手 CDN
     injectReferer(/kwaicdn\.com|kwai\.com|gifshow\.com|ksapisrc\.com|kwaixia\.com|kscube\.com/i, 'https://www.kuaishou.com/')
   }
