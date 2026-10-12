@@ -2,7 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 const bridgeAPI = {
     on: (channel, callback) => {
-        const subscription = (event, ...args) => callback(event, ...args)
+        const subscription = (event, ...args) => callback({}, ...args)
         ipcRenderer.on(channel, subscription)
         return () => ipcRenderer.removeListener(channel, subscription)
     },

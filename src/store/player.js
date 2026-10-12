@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { lyricIndexAt } from '../utils/lyric-timing'
 import request, { getSongUrl, getLyric, getNewLyric, cloudSearch } from '../api'
 import { qqSongPlay, qqLyric, qqDownload, qqSongInfo, qqBatchSongInfo, normalizeQQSong } from '../api/qq'
 import {
@@ -200,7 +201,8 @@ export const usePlayerStore = defineStore('player', {
                 .filter(({ index }) => index !== this.currentIndex)
             if (!candidates.length) return this.currentIndex
             const candidateIndexes = candidates.map(item => item.index)
-            const bag = this.shuffleBag.filter(index => candidateIndexes.includes(index))
+            const available = new Set(candidateIndexes)
+            const bag = this.shuffleBag.filter(index => available.has(index))
             this.shuffleBag = bag.length ? bag : [...candidateIndexes]
             const pick = Math.floor(Math.random() * this.shuffleBag.length)
             const nextIndex = this.shuffleBag.splice(pick, 1)[0]
@@ -2558,17 +2560,7 @@ export const usePlayerStore = defineStore('player', {
                 return
             }
 
-            let idx = -1
-            const time = this.currentTime + 0.2
-            for (let i = 0; i < useLyrics.length; i++) {
-                if (time < useLyrics[i].time) {
-                    idx = i - 1
-                    break
-                }
-            }
-            if (idx === -1 && time >= useLyrics[useLyrics.length - 1].time) {
-                idx = useLyrics.length - 1
-            }
+            const idx = lyricIndexAt(useLyrics, this.currentTime + 0.2)
 
             const currentLine = idx >= 0 ? useLyrics[idx] : null
             const nextLine = idx >= 0 ? (useLyrics[idx + 1] || null) : (useLyrics[0] || null)

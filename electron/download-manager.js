@@ -1,6 +1,6 @@
 // electron/download-manager.js
 // 统一下载管理器
-// - 直链（mp4/mp3 等）：内置 128 线程分片下载（不限速，不依赖 aria2c）
+// - 直链（mp4/mp3 等）：内置自适应分片下载（不限速，不依赖 aria2c）
 // - m3u8 流：ffmpeg 合并为 mp4
 // - 本地文件：直接复制
 // - 统一历史记录（持久化到磁盘），分类：music / movie / anime / mv / video
@@ -12,10 +12,13 @@ import path from 'node:path'
 import https from 'node:https'
 import http from 'node:http'
 import axios from 'axios'
+import { Transform } from 'node:stream'
+import { pipeline, finished } from 'node:stream/promises'
+import { once } from 'node:events'
 
-// 自定义 Agent：解除默认 maxSockets 限制，支持 128 路并发不限速
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: Infinity, maxFreeSockets: 256 })
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: Infinity, maxFreeSockets: 256 })
+// 自定义 Agent：解除默认 maxSockets 限制，支持 有界并发不限速
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8 })
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8 })
 
 // 动态解析 aria2c / ffmpeg 路径（打包进程序，不依赖外部路径）
 function resolveTool(name) {
@@ -305,7 +308,7 @@ async function startDownload(params) {
     // m3u8：并行分片下载 + ffmpeg 本地 concat 合并
     startM3u8SegmentsDownload(id, url, outputPath, headers, record)
   } else {
-    // 直链：内置 128 线程分片下载（不限速，不依赖 aria2c）
+    // 直链：内置自适应分片下载（不限速，不依赖 aria2c）
     startBuiltinMultithread(id, url, outputPath, headers, record, !!params.autoName, Number(params.threads) || 0)
   }
 
@@ -488,7 +491,7 @@ function startYoutubeDlpDownload(id, ytSrc, ytHeight, ytAuthed, outputPath, reco
   })
 }
 
-// ===== 内置 128 线程分片下载（直链统一入口，不限速，不依赖外部工具） =====
+// ===== 内置自适应分片下载（直链统一入口，不限速，不依赖外部工具） =====
 async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record, autoName = false, customThreads = 0) {
   const state = { canceled: false, paused: false, autoName, customThreads, startTime: Date.now() }
   record.engine = 'multi'
@@ -570,13 +573,13 @@ async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record
 }
 
 
-// ===== 多线程分片下载核心（128 线程封顶 / 分片级断点重试 / 流式合并） =====
-// 基于 axios + 自定义 Agent（maxSockets: Infinity + keepAlive），Range 分片不限速榨干带宽
-const DL_MAX_THREADS = 128              // 最大并发线程数
-const DL_MIN_PART = 4 * 1024 * 1024     // 最小分片 4MB（小文件自动减线程；4MB 起 128 并发对网盘/限流源过于激进易 403）
+// ===== 多线程分片下载核心（16 路并发封顶 / 分片级断点重试 / 流式合并） =====
+// Bounded connections and stream backpressure keep downloads from exhausting memory.
+const DL_MAX_THREADS = 16              // 最大并发线程数
+const DL_MIN_PART = 4 * 1024 * 1024     // 最小分片 4MB，小文件使用单连接
 
 // 探测文件大小与 Range 支持：HEAD 优先；被拒时用 GET Range: bytes=0-0 兜底
-// （B站 TV 签名 URL 等部分 CDN 拒绝 HEAD，GET 探测成功才能解锁 128 线程）
+// B站签名 URL 等部分 CDN 拒绝 HEAD，GET Range 探测作为兜底。
 async function probeDownload(url, headerObj) {
   const head = await axios.head(url, { headers: headerObj, timeout: 15000, maxRedirects: 5, httpsAgent, httpAgent, validateStatus: () => true }).catch(() => null)
   if (head && (head.status === 200 || head.status === 206)) {
@@ -642,23 +645,24 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
   }
 
   if (!total || !ranged) {
-    // 服务器不支持 Range / 未知大小 → 单线程直下
-    const res = await axios.get(url, { responseType: 'stream', headers: headerObj, timeout: 0, maxRedirects: 5, httpsAgent, httpAgent })
-    const ws = fs.createWriteStream(filePath)
-    for await (const chunk of res.data) {
-      if (state.canceled) { ws.destroy(); throw new Error('已取消') }
-      ws.write(chunk)
-      receivedTotal += chunk.length
-      maybeReport()
+    try {
+      const res = await axios.get(url, { responseType: 'stream', headers: headerObj, timeout: 0, maxRedirects: 5, httpsAgent, httpAgent, signal: ac.signal })
+      const progress = new Transform({ transform(chunk, _encoding, callback) {
+        receivedTotal += chunk.length
+        maybeReport()
+        callback(null, chunk)
+      } })
+      await pipeline(res.data, progress, fs.createWriteStream(filePath), { signal: ac.signal })
+      maybeReport(true)
+      return { size: receivedTotal }
+    } catch (error) {
+      if (state.paused) return { paused: true }
+      throw error
     }
-    await new Promise(r => ws.end(r))
-    maybeReport(true)
-    return { size: receivedTotal }
   }
 
-  // 128 线程自适应：大文件满 128 线程，小文件按 1MB/片 递减
-  // 并发线程：4MB/片自动递减，但下限 32（NDM 等下载器 32 线程即可稳定跑满网盘直链）
-  const threads = Math.min(DL_MAX_THREADS, Math.max(32, Math.floor(total / DL_MIN_PART)))
+  // Four MB per part, one connection for small files, at most sixteen for large files.
+  const threads = Math.min(DL_MAX_THREADS, Math.max(1, Math.ceil(total / DL_MIN_PART)))
   const partSize = Math.ceil(total / threads)
   const parts = []
   for (let i = 0; i < threads; i++) {
@@ -699,11 +703,13 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
     for (let attempt = 0; attempt < 5; attempt++) {
       if (state.canceled || abort.v) throw new Error('已取消')
       let wsError = null
+      let partWriter = null, partResponse = null
       try {
         const startByte = p.start + p.received
         if (startByte > p.end) return
         let res = null
         const ws = fs.createWriteStream(partPath, { flags: p.received > 0 ? 'a' : 'w' })
+        partWriter = ws
         ws.on('error', (err) => { wsError = err; try { res?.data?.destroy() } catch (e) {} })
         try {
           res = await axios.get(url, {
@@ -718,6 +724,12 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
             throw Object.assign(new Error('已暂停'), { paused: true })
           }
           throw e
+        }
+        if (res.status !== 206) { ws.destroy(); res.data.destroy(); throw new Error('服务器未按范围返回数据') }
+        partResponse = res
+        const range = String(res.headers?.['content-range'] || '').match(/^bytes (\d+)-(\d+)\/(\d+)$/i)
+        if (!range || Number(range[1]) !== startByte || Number(range[2]) !== p.end || Number(range[3]) !== total) {
+          throw new Error('服务器返回的分片范围不匹配')
         }
         // 分片 0 的响应头：Content-Disposition 真实文件名 + Content-Type 扩展名兜底
         if (p.index === 0 && !cdName) {
@@ -734,16 +746,24 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
         for await (const chunk of res.data) {
           if (wsError) throw wsError
           if (state.canceled || abort.v) { ws.destroy(); throw new Error('已取消') }
-          ws.write(chunk)
+          if (p.received + chunk.length > p.end - p.start + 1) { res.data.destroy(); throw new Error('服务器返回超出范围的数据') }
+          if (!ws.write(chunk)) await once(ws, 'drain', { signal: ac.signal })
           p.received += chunk.length
           receivedTotal += chunk.length
           maybeReport()
         }
+        if (p.received !== p.end - p.start + 1) throw new Error('分片数据不完整')
         if (wsError) throw wsError
-        await new Promise(r => ws.end(r))
+        await new Promise((resolve, reject) => { ws.once('error', reject); ws.end(resolve) })
         if (wsError) throw wsError
         return
       } catch (e) {
+        partWriter?.destroy()
+        partResponse?.data?.destroy()
+        if (partWriter) await finished(partWriter, { cleanup: true }).catch(() => {})
+        const priorReceived = p.received
+        try { p.received = Math.min((await fs.promises.stat(partPath)).size, p.end - p.start + 1) } catch { p.received = 0 }
+        receivedTotal += p.received - priorReceived
         if (state.paused && (e.code === 'ERR_CANCELED' || ac.signal.aborted || e.paused)) {
           throw Object.assign(new Error('已暂停'), { paused: true })
         }
@@ -1157,8 +1177,8 @@ async function startM3u8SegmentsDownload(id, m3u8Url, outputPath, extraHeaders, 
       }
     }
 
-    // 128 路并发
-    const CONCURRENCY = 128
+    // Bound segment concurrency to reduce buffer and socket pressure.
+    const CONCURRENCY = 12
     for (let i = 0; i < segCount; i += CONCURRENCY) {
       if (state.canceled) throw new Error('已取消')
       const batch = []

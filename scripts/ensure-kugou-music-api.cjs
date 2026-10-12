@@ -9,6 +9,7 @@
 // 打包目标:resources/kugou-music-api/(被 extraResources 带入安装包)
 const fs = require('node:fs')
 const path = require('node:path')
+const { execSync } = require('node:child_process')
 
 const projectRoot = path.join(__dirname, '..')
 const srcDir = path.join(projectRoot, 'resources', 'kugou-music-api-src')
@@ -18,7 +19,7 @@ const destDepsMarker = path.join(destDir, 'libs', 'express', 'package.json')
 
 // 递归复制目录(跳过明显无用的文件以减小安装包体积)
 function copyDirSync(from, to, opts = {}) {
-    const { skipTests = true } = opts
+    const { skipTests = true, copyDependencies = false } = opts
     fs.mkdirSync(to, { recursive: true })
     for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
         const s = path.join(from, entry.name)
@@ -28,7 +29,7 @@ function copyDirSync(from, to, opts = {}) {
             // 跳过测试/文档/示例/.git目录
             if (skipTests && (lower === 'test' || lower === 'tests' || lower === '__tests__' ||
                 lower === 'docs' || lower === 'examples' || lower === 'example' ||
-                lower === '.git' || lower === '.github' || lower === 'node_modules')) {
+                lower === '.git' || lower === '.github' || (!copyDependencies && lower === 'node_modules'))) {
                 continue
             }
             copyDirSync(s, d, opts)
@@ -50,6 +51,14 @@ function copyDirSync(from, to, opts = {}) {
     }
 }
 
+function ensureSourceDependencies() {
+    const modules = path.join(srcDir, 'node_modules')
+    if (!fs.existsSync(path.join(modules, 'express', 'package.json'))) {
+        execSync('npm install --omit=dev --ignore-scripts --no-audit --no-fund', { cwd: srcDir, stdio: 'inherit' })
+    }
+    return modules
+}
+
 // 主流程
 ;(function main() {
     // 1. 检查源码是否存在
@@ -62,6 +71,11 @@ function copyDirSync(from, to, opts = {}) {
 
     // 2. 若打包副本已就绪,跳过
     if (fs.existsSync(destMarker) && fs.existsSync(destDepsMarker)) {
+        const layoutMarker = path.join(destDir, '.nested-dependencies-v2')
+        if (!fs.existsSync(layoutMarker)) {
+            copyDirSync(ensureSourceDependencies(), path.join(destDir, 'libs'), { copyDependencies: true })
+            fs.writeFileSync(layoutMarker, '2')
+        }
         console.log('[ensure-kugou-music-api] 源码 + 依赖均已就绪,跳过同步')
         process.exit(0)
     }
@@ -80,14 +94,15 @@ function copyDirSync(from, to, opts = {}) {
     }
 
     // 5. 复制 node_modules 到 libs/(绕过 electron-builder 对 node_modules 的过滤)
-    const srcModules = path.join(srcDir, 'node_modules')
+    const srcModules = ensureSourceDependencies()
     const destLibs = path.join(destDir, 'libs')
     if (!fs.existsSync(srcModules)) {
         console.error('[ensure-kugou-music-api] node_modules 不存在,请先在 resources/kugou-music-api-src 运行 npm install --production')
         process.exit(1)
     }
     console.log('[ensure-kugou-music-api] 复制 node_modules 到 libs/ ...')
-    copyDirSync(srcModules, destLibs)
+    copyDirSync(srcModules, destLibs, { copyDependencies: true })
+    fs.writeFileSync(path.join(destDir, '.nested-dependencies-v2'), '2')
 
     if (!fs.existsSync(destDepsMarker)) {
         console.error('[ensure-kugou-music-api] 依赖复制后仍找不到 express,子进程将崩溃')

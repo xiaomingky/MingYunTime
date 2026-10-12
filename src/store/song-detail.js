@@ -18,7 +18,7 @@ export const useSongDetailStore = defineStore('song-detail', () => {
   const coverMotion = ref(localStorage.getItem('apple_detail_cover_motion') !== 'false')
   const performanceMode = ref(localStorage.getItem('apple_detail_performance') !== 'false')
   const savedFPS = Number(localStorage.getItem('apple_detail_fps'))
-  const lyricFPS = ref([30, 45].includes(savedFPS) ? savedFPS : 45)
+  const lyricFPS = ref([30, 45, 60].includes(savedFPS) ? savedFPS : 45)
   const nearbyLyrics = ref(localStorage.getItem('apple_detail_nearby') !== 'false')
   const visualizer = ref(localStorage.getItem('apple_detail_visualizer') === 'true')
 

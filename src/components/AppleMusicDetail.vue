@@ -35,7 +35,7 @@ const coverOptions = [
   { value: 'vinyl', label: '黑胶唱片' }, { value: 'sleeve', label: '唱片套' }
 ]
 const fontOptions = [{ value: 'system', label: '系统无衬线' }, { value: 'serif', label: '宋体' }]
-const fpsOptions = [{ value: 45, label: '均衡 · 45 FPS' }, { value: 30, label: '节能 · 30 FPS' }]
+const fpsOptions = [{ value: 60, label: '流畅 · 60 FPS' }, { value: 45, label: '均衡 · 45 FPS' }, { value: 30, label: '节能 · 30 FPS' }]
 const lines = computed(() => toAppleLyrics({
   lyrics: player.lyrics, yrcLyrics: player.yrcLyrics, duration: player.currentSong.duration,
   mode: preferences.mode, translation: preferences.translation
@@ -357,4 +357,8 @@ onUnmounted(() => {
 :global(html.reduce-motion) .apple-settings-fade-leave-active { transition: none; }
 :global(html.light-visuals) .apple-background-image { animation: none; }
 
+</style>
+
+<style scoped>
+:global(html.light-visuals) .apple-background-image { animation: none; }
 </style>

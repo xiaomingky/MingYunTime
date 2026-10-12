@@ -1,4 +1,4 @@
-; Native controls only. MUI2 and nsDialogs work on Windows 7 SP1.
+; Native controls only. MUI2 and nsDialogs work on Windows 10.
 !define MUI_TEXTCOLOR "24252A"
 !define MUI_BGCOLOR "F0F0F0"
 !define MUI_HEADER_TEXT_COLOR "24252A"
@@ -10,6 +10,7 @@
 !endif
 !include "MUI2.nsh"
 !include "nsDialogs.nsh"
+!include "WinVer.nsh"
 SetFont "Microsoft YaHei" 9
 
 Var NativeDialog
@@ -43,7 +44,7 @@ Function NativeWelcomeCreate
   !insertmacro NativeTitle "欢迎安装茗韵时光"
   ${NSD_CreateLabel} 0 56u 100% 42u "安装向导将帮助你选择安装范围与存放目录。$\r$\n点击「下一步」继续。"
   Pop $NativeLabel
-  ${NSD_CreateLabel} 0 114u 100% 36u "Windows 7 SP1 / 8.1 / 10 / 11 · 64 位$\r$\n安装包包含全部程序文件，安装过程无需联网。"
+  ${NSD_CreateLabel} 0 114u 100% 36u "Windows 10 / 11 · 64 位$\r$\n安装包包含全部程序文件，安装过程无需联网。"
   Pop $NativeLabel
   SetCtlColors $NativeLabel "70717A" "F0F0F0"
   nsDialogs::Show
@@ -89,6 +90,10 @@ FunctionEnd
 !macroend
 
 !macro customInit
+  ${IfNot} ${AtLeastWin10}
+    MessageBox MB_OK|MB_ICONSTOP "此版本需要 Windows 10 或 Windows 11（64 位）。"
+    Abort
+  ${EndIf}
   ; Keep the existing destination when upgrading.
   ${If} $installMode == "all"
     ${If} $perMachineInstallationFolder == ""

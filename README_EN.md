@@ -6,11 +6,23 @@
 
 [App website](https://music.xiaomingky.dpdns.org) · [Author website](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-3.6.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-7%20%2F%2010%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-22-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-3.6.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
-Built with Vue 3 and Electron 22, MingYun Time integrates NetEase Cloud Music, QQ Music and KuGou Concept Edition. Discover music, search, open playlists and albums, arrange a playback queue, manage local music, switch between Classic and Apple Music-style lyrics, use desktop lyrics and EQ, and manage downloads in one place. The video area includes Bilibili, anime, movies, URL parsing and streams; the entertainment area covers CS / VAL esports; digital textbooks provide reading, annotation and companion audio.
+Built with Vue 3 and Electron 44, MingYun Time integrates NetEase Cloud Music, QQ Music and KuGou Concept Edition. Discover music, search, open playlists and albums, arrange a playback queue, manage local music, switch between Classic and Apple Music-style lyrics, use desktop lyrics and EQ, and manage downloads in one place. The video area includes Bilibili, anime, movies, URL parsing and streams; the entertainment area covers CS / VAL esports; digital textbooks provide reading, annotation and companion audio.
 
 > This project is developed with AI assistance. This English README is a translation of the guide; it does not imply an English client interface. Screenshots and GIFs show the v3.6.1 interface. Online recommendations, charts and esports information change with their sources. Lyric GIFs demonstrate interface animation without audio. The local music screenshot uses sample file entries.
+
+## 4.0 beta modernization (current source, not published)
+
+The source branch now uses Electron **44.7.0** and electron-builder **26.15.3**, targeting Windows 10 / 11 x64. Published v3.6.3 downloads above remain the legacy version.
+
+- **Queue:** only visible rows are drawn, including for 10,000 tracks. Drag handles remain; move rows with up/down buttons or **Alt + ↑ / ↓**, use **Current song** to return to playback, and drag near the edges to scroll while arranging.
+- **Display & smoothness:** open Settings → Display & smoothness and select **Light & smooth** for integrated graphics or **Full visuals**. Both retain transitions and word lyrics. Fine-tune motion and light visuals independently; Apple lyrics offer 30 / 45 / 60 FPS.
+- **Startup / background:** pages, lyrics and the video engine load when needed. Music API services start at the first request, share concurrent startup, and release owned idle processes after three minutes. First requests await readiness; selected online lines are respected.
+- **Playback:** local media uses asynchronous streaming with full, partial and suffix range handling, HEAD and 416 responses. Covers share parsing requests and use a bounded cache. Backward seeking restores classic word highlighting.
+- **Cleanup:** leaving video playback destroys its player, streaming buffers and audio sync; queue order is persisted after in-place moves; window recovery preserves background playback.
+
+See [validation and measured results](docs/MODERNIZATION.md). Run `npm run check` for regression checks. Build with Node.js 22.12+; the Electron binary is installed by the project postinstall command.
 
 ## Contents
 
@@ -41,7 +53,7 @@ Built with Vue 3 and Electron 22, MingYun Time integrates NetEase Cloud Music, Q
 3. After launch, choose a platform at the top left and sign in if needed. Regular use does not require Node.js: music API services and download utilities are included.
 4. Local API services take a little time to start. If the first page is empty, wait briefly and refresh.
 
-**System: Windows 7 / 10 / 11, 64-bit.** The project retains Electron 22 and Windows 7 rendering compatibility handling. On older computers, enable performance mode and 30 FPS for Apple Music-style lyrics, and turn off unnecessary spectrum and cover motion. System media overlays, HEVC decoding and similar capabilities still depend on the Windows version, drivers and codecs.
+**Current source / 4.0 beta: Windows 10 / 11, 64-bit; Windows 7 / 8 / 8.1 are no longer supported.** The published v3.6.3 legacy release remains separate. On older computers, enable performance mode and 30 FPS for Apple Music-style lyrics, and turn off unnecessary spectrum and cover motion. System media overlays, HEVC decoding and similar capabilities still depend on the Windows version, drivers and codecs.
 
 Online playback, downloads, audio quality and account operations depend on the platform's authorization, membership, regional restrictions and resource availability.
 
@@ -51,7 +63,7 @@ Online playback, downloads, audio quality and account operations depend on the p
 - **Interface animation:** open Settings → Other player settings → Interface animation. The default enables transitions even if Windows requests reduced motion; you can also follow the system or reduce motion explicitly.
 - **Light visuals:** enable this in the same settings section on integrated graphics or older computers. It reduces backdrop blur and lyric blur while retaining page and drawer transitions.
 - **Rendering and cache:** allow Chromium to select a renderer compatible with the installed driver, and preserve shader and page caches when the window is hidden.
-- **Compatibility:** Electron 22.3.27 and the native NSIS installer are retained for Windows 7 SP1 compatibility.
+- **Compatibility:** The historical v3.6.3 release uses Electron 22.3.27 and supports Windows 7 SP1. The current 4.0 beta requires Windows 10 / 11.
 
 ## Playback improvements in v3.6.1
 
@@ -396,7 +408,7 @@ Media-session handling provides system media keys, with background availability 
 | Empty home page | Wait for services and refresh; change NetEase route; check network for other sources |
 | Playback failure / quality fallback | Sign in, check membership / region / rights and try lower quality |
 | Wrong lyrics / no translation / no word timing | Select another lyric source; styles cannot create missing data |
-| Slow animation on Win7 / older computers | Enable performance mode, 30 FPS and nearby lyrics; disable spectrum and cover motion |
+| Slow animation on integrated graphics / older computers | Enable performance mode, 30 FPS and nearby lyrics; disable spectrum and cover motion |
 | Download 403 / 429 | Reduce threads; check login, expired URLs and request headers before retrying |
 | Restricted Bilibili quality | Check the selected interface, matching Web / TV login and membership |
 | Video plays audio only | Check the actual codec; HEVC depends on system decoding, so try another encoding |
@@ -427,7 +439,7 @@ The script prepares three music API services, runs Vite and electron-builder, an
 | UI | Vue 3, Pinia, Vue Router, Lucide; src/views/, src/components/ |
 | Playback | HTML Audio / Web Audio; src/store/player.js |
 | Apple-style lyrics | Apple Music-like Lyrics and adapter; src/utils/apple-lyric-player.js |
-| Desktop / IPC | Electron 22; electron/ |
+| Desktop / IPC | Electron 44; electron/ |
 | Video | Artplayer, hls.js, mpegts.js / flv.js |
 | Metadata | music-metadata, node-id3 |
 | Downloads / APIs | aria2c, ffmpeg, yt-dlp, three platform services; resources/ |

@@ -1,6 +1,9 @@
 <script setup>
 import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue'
 import { usePlayerStore } from '../store/player'
+import { useSettingsStore } from '../store/settings'
+import { useInterfaceMotion } from '../utils/interface-motion'
+import { lyricIndexAt, wordProgressAt } from '../utils/lyric-timing'
 import { useSongDetailStore } from '../store/song-detail'
 import { ChevronDown, Heart, Share2, Download, MessageSquare, Minus, Plus, User, ListMusic, Check, X, Image, ImagePlay, Film, RefreshCw, Type, LayoutGrid, AlignLeft, Settings, ThumbsUp, MessageCircle, Trash2, CornerDownLeft } from 'lucide-vue-next'
 import CustomSelect from '../components/CustomSelect.vue'
@@ -15,6 +18,8 @@ import { useKugouUserStore } from '../store/kugou-user'
 import KugouComment from '../components/KugouComment.vue'
 
 const playerStore = usePlayerStore()
+const settings = useSettingsStore()
+const reducedMotion = useInterfaceMotion(settings)
 const detailPreferences = useSongDetailStore()
 const isAppleDetail = computed(() => detailPreferences.style === 'apple')
 const AppleMusicDetail = defineAsyncComponent(() => import('../components/AppleMusicDetail.vue'))
@@ -89,13 +94,18 @@ const getLineProgress = (index) => {
     const nextLine = playerStore.lyrics[index + 1]
     if (!line) return 0
     
-    const duration = nextLine ? (nextLine.time - line.time) : 5000
-    const progress = (playerStore.currentTime * 1000 - line.time) / duration
+    const duration = nextLine ? (nextLine.time - line.time) : 5
+    const progress = (playerStore.currentTime - line.time) / Math.max(0.001, duration)
     return Math.max(0.5, Math.min(100, progress * 100))
 }
 
 let animationId = null
-let frameCount = 0
+let lastSpectrum = -Infinity
+let lastWords = -Infinity
+let wordCache = []
+let wordLine = -2
+let wordRoot = null
+let lastWordTime = -Infinity
 const isPageVisible = ref(!document.hidden)
 
 const handleVisibilityChange = () => {
@@ -115,49 +125,27 @@ const handleVisibilityChange = () => {
 const updateYrcWordProgress = () => {
     if (!useYrcRender.value || !lyricContainer.value) return
     const nowMs = (playerStore.audio?.currentTime ?? playerStore.currentTime) * 1000
-    const activeLine = lyricContainer.value.querySelector('.lyric-line.active .yrc-text')
-    if (!activeLine) return
-    const wordSpans = activeLine.querySelectorAll('.yrc-word')
-    for (let i = 0; i < wordSpans.length; i++) {
-        const el = wordSpans[i]
-        // 已完成的 word 直接跳过（progress 已是 1）
-        if (el.dataset.done === '1') continue
-        const ws = parseFloat(el.dataset.ws) // word startTime ms
-        const wd = parseFloat(el.dataset.wd) // word duration ms
-        if (isNaN(ws) || isNaN(wd)) continue
-        let progress = 0
-        if (nowMs >= ws + wd) {
-            progress = 1
-            el.dataset.done = '1' // 标记完成，后续帧跳过
-        } else if (nowMs > ws && wd > 0) {
-            progress = (nowMs - ws) / wd
-        } else {
-            // 未开始，跳过（保持 0）
-            continue
-        }
-        // 缓存上次值，差值过小不更新（减少 DOM 写入）
-        const last = parseFloat(el.dataset.lastp)
-        if (!isNaN(last) && Math.abs(progress - last) < 0.008) continue
-        el.style.setProperty('--wp', progress)
-        el.dataset.lastp = progress
+    if (wordLine !== currentLyricIndex.value || wordRoot !== lyricContainer.value) resetYrcLineCache()
+    const backwards = nowMs < lastWordTime
+    lastWordTime = nowMs
+    for (const word of wordCache) {
+        if (!backwards && word.last === 1) continue
+        const progress = wordProgressAt(word.start, word.duration, nowMs)
+        if (Math.abs(progress - word.last) < 0.008 && progress !== 0 && progress !== 1) continue
+        if (progress === word.last) continue
+        word.el.style.setProperty('--wp', progress)
+        word.last = progress
     }
 }
 
-// 切换激活行时重置该行 word 的缓存标记，让新行能正常推进
 const resetYrcLineCache = () => {
-    if (!lyricContainer.value) return
-    const activeLine = lyricContainer.value.querySelector('.lyric-line.active .yrc-text')
-    if (!activeLine) return
-    const wordSpans = activeLine.querySelectorAll('.yrc-word')
-    for (let i = 0; i < wordSpans.length; i++) {
-        const el = wordSpans[i]
-        el.dataset.done = ''
-        el.dataset.lastp = ''
-        el.style.setProperty('--wp', '0')
-    }
+    wordLine = currentLyricIndex.value
+    wordRoot = lyricContainer.value
+    lastWordTime = -Infinity
+    wordCache = Array.from(wordRoot?.querySelectorAll('.lyric-line.active .yrc-word') || [], el => ({ el, start: Number(el.dataset.ws), duration: Number(el.dataset.wd), last: -1 }))
 }
 
-const updateVisualizer = () => {
+const updateVisualizer = (time) => {
   if (!playerStore.showSongDetail || isAppleDetail.value) {
     if (animationId) cancelAnimationFrame(animationId)
     animationId = null
@@ -172,15 +160,14 @@ const updateVisualizer = () => {
 
   // 逐词歌词动画更新（只刷新当前行）
   // YRC 逐字进度跟随 RAF 更新，但内部有差值<0.008 跳过机制，实际 DOM 写入很少
-  if (useYrcRender.value && playerStore.isPlaying) {
+  if (useYrcRender.value && playerStore.isPlaying && time - lastWords >= 1000 / (settings.lightVisuals ? 30 : 60) - 0.5) {
+      lastWords = time
       updateYrcWordProgress()
   }
 
   if (playerStore.isPlaying) {
-    frameCount++
-    // 频谱采样从 20fps(%3) 降到 12fps(%5)，视觉无感知差异但 CPU 显著降低
-    // 80 根 bar 的 DOM 写入是主要开销，降频后每秒少写 160 次 style 属性
-    if (frameCount % 5 === 0) {
+    if (!reducedMotion.value && time - lastSpectrum >= 1000 / 30 - 0.5) {
+        lastSpectrum = time
         const data = playerStore.updateFrequencyData()
         if (data) {
           const bars = rhythmBars.value
@@ -199,7 +186,7 @@ const updateVisualizer = () => {
             bars[i].opacity = 0.45 + (val / 255) * 0.55
             // 直接写 DOM，绕过 Vue 响应式重渲染
             if (els && els[i]) {
-              els[i].style.height = bars[i].height + 'px'
+              els[i].style.transform = `scaleY(${bars[i].height / 80})`
               els[i].style.opacity = bars[i].opacity
             }
           }
@@ -214,7 +201,7 @@ const updateVisualizer = () => {
           bars[i].height = Math.max(3, bars[i].height * 0.85)
           bars[i].opacity = Math.max(0.3, bars[i].opacity * 0.85)
           if (els && els[i]) {
-            els[i].style.height = bars[i].height + 'px'
+            els[i].style.transform = `scaleY(${bars[i].height / 80})`
             els[i].style.opacity = bars[i].opacity
           }
           // 还有明显高度的 bar 继续衰减一帧
@@ -238,14 +225,19 @@ const startVisualizer = () => {
 }
 
 onMounted(() => {
-  if (playerStore.showSongDetail) startVisualizer()
+  if (playerStore.showSongDetail) {
+    startVisualizer()
+    nextTick(() => { scrollToCenter(currentLyricIndex.value, true); resetYrcLineCache(); updateYrcWordProgress() })
+  }
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onUnmounted(() => {
   if (animationId) cancelAnimationFrame(animationId)
   animationId = null
-  _barEls = null    // 清理 DOM 引用缓存
+  _barEls = null
+  wordCache = []
+  wordRoot = null
   // 清理所有 leaving 定时器
   for (const [, timer] of _leavingTimers) {
     clearTimeout(timer)
@@ -263,6 +255,12 @@ watch(() => playerStore.showSongDetail, (val) => {
   }
 })
 
+watch(() => playerStore.currentTime, (time, previous) => {
+    if (playerStore.showSongDetail && !isAppleDetail.value && (!playerStore.isPlaying || time < previous)) {
+        nextTick(() => { resetYrcLineCache(); updateYrcWordProgress() })
+    }
+})
+
 // 播放状态变化时：播放→重启 RAF（暂停时已停止），暂停→无需额外操作（RAF 自然衰减停止）
 watch(() => playerStore.isPlaying, (playing) => {
   if (playing && playerStore.showSongDetail && !document.hidden && !animationId) {
@@ -271,15 +269,7 @@ watch(() => playerStore.isPlaying, (playing) => {
 })
 
 const currentLyricIndex = computed(() => {
-  const lrc = displayLyrics.value
-  if (!lrc || !lrc.length) return -1
-  const time = playerStore.currentTime + 0.2
-  for (let i = 0; i < lrc.length; i++) {
-    if (time < lrc[i].time) {
-      return i - 1
-    }
-  }
-  return lrc.length - 1
+  return lyricIndexAt(displayLyrics.value || [], playerStore.currentTime + 0.2)
 })
 
 const lyricContainer = ref(null)
@@ -356,7 +346,7 @@ const scrollToCenter = async (index, instant = false) => {
 
   lyricContainer.value.scrollTo({
     top: currentScroll + offset,
-    behavior: instant ? 'auto' : 'smooth'
+    behavior: instant || reducedMotion.value ? 'auto' : 'smooth'
   })
 }
 
@@ -414,6 +404,9 @@ watch(currentLyricIndex, (newIndex, oldIndex) => {
 
 // 歌词变化时（切歌加载新歌词）立即定位到当前行（通常为第一行），无动画
 watch(displayLyrics, () => {
+    wordLine = -2
+    wordCache = []
+    nextTick(() => { resetYrcLineCache(); updateYrcWordProgress() })
     if (isAppleDetail.value) return
     if (lyricContainer.value) {
         lyricContainer.value.scrollTo({ top: 0, behavior: 'auto' })
@@ -1269,6 +1262,10 @@ onMounted(() => {
      会导致 -webkit-app-region: drag 顶部拖动区域命中失效（时灵时不灵） */
   pointer-events: auto;
 }
+
+:global(html.light-visuals) .bg-blur { filter: none; opacity: .12; }
+:global(html.light-visuals) .cover-container::after { filter: none; }
+:global(html.light-visuals) .lyric-line { filter: none !important; }
 
 .bg-blur {
   position: absolute;
@@ -2674,7 +2671,9 @@ onMounted(() => {
     flex: 1;
     min-width: 2px;
     max-width: 4px;  /* 细条更精致 */
-    min-height: 3px;
+    height: 80px;
+    transform: scaleY(0.0375);
+    transform-origin: center bottom;
     /* 三色渐变 + 顶部高光：深红→亮红→暖白 */
     background:
         linear-gradient(to top,

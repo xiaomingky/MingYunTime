@@ -3,15 +3,16 @@
 // 渲染进程通过 window.bridge.invoke('qq:xxx', params) 调用本文件的 IPC 通道
 // 本文件内部用 axios 调用 http://localhost:3200/*,规避 CORS
 import { spawn } from 'node:child_process'
+import { createServiceLifecycle } from './service-lifecycle.js'
+import { apiRuntimePath } from './local-service.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import axios from 'axios'
 import { ipcMain, BrowserWindow, session } from 'electron'
 // Node16 兼容探测/就绪等待/日志/广播
-import { waitForPort, pipeChildLogs, broadcastServicesReady, serviceLog } from './local-service.js'
+import { httpProbe, waitForPort, pipeChildLogs, broadcastServicesReady, serviceLog } from './local-service.js'
 
-let qqProcess = null
 let registered = false
 const QQ_API_BASE = 'http://localhost:3200'
 
@@ -459,113 +460,61 @@ function resolveQQMusicAppPath() {
     return candidates[0]
 }
 
-// 启动 QQ 音乐 API 子进程
-export function startQQMusicAPI() {
-    if (qqProcess) return
-    const appPath = resolveQQMusicAppPath()
-    try {
-        if (!fs.existsSync(appPath)) {
-            console.error('[QQ API] app.js not found:', appPath)
-            return
-        }
-    } catch (e) {
-        console.error('[QQ API] check app.js error:', e.message)
-        return
-    }
-
-    // 解析 styleText polyfill 路径(与 qq-music.js 同目录)
-    // @sansenjian/qq-music-api 调用 node_util.styleText(Node 22.13+ API),
-    // Electron 22 内置 Node 16 缺失该 API 会导致子进程崩溃。
-    // 通过 NODE_OPTIONS=--require 预加载 polyfill,给 util.styleText 打补丁,
-    // 这样无论系统 Node 还是 Electron 内置 Node 都能正常运行。
-    const polyfillPath = (() => {
-        // 打包态(优先):extraResources 复制到 resources/qq-styletext-polyfill.cjs
-        const packedPath = path.join(process.resourcesPath || '', 'qq-styletext-polyfill.cjs')
-        if (fs.existsSync(packedPath)) return packedPath
-        // 开发态:与 qq-music.js 同目录(electron/)
-        const devPath = path.join(process.cwd(), 'electron', 'qq-styletext-polyfill.cjs')
-        if (fs.existsSync(devPath)) return devPath
-        // 兜底:__dirname(打包后 main.js 在 app.asar 内)
+const service = createServiceLifecycle({
+    probe: async () => {
+        const status = await httpProbe(`${QQ_API_BASE}/`, 1000)
+        return status !== null && status < 500
+    },
+    launch: () => {
+        const appPath = resolveQQMusicAppPath()
+        if (!fs.existsSync(appPath)) throw new Error('Missing QQ API entry')
+        const polyfillPath = (() => {
+            // 打包态(优先):extraResources 复制到 resources/qq-styletext-polyfill.cjs
+            const packedPath = path.join(process.resourcesPath || '', 'qq-styletext-polyfill.cjs')
+            if (fs.existsSync(packedPath)) return packedPath
+            // 开发态:与 qq-music.js 同目录(electron/)
+            const devPath = path.join(process.cwd(), 'electron', 'qq-styletext-polyfill.cjs')
+            if (fs.existsSync(devPath)) return devPath
+            // 兜底:__dirname(打包后 main.js 在 app.asar 内)
+            try {
+                const dirPath = path.dirname(fileURLToPath(import.meta.url))
+                const sameDir = path.join(dirPath, 'qq-styletext-polyfill.cjs')
+                if (fs.existsSync(sameDir)) return sameDir
+            } catch (e) { /* ignore */ }
+            return packedPath
+        })()
+        // Launch with our bundled Node runtime; argument arrays preserve spaced paths.
+        const env = { ...process.env, PORT: '3200', ELECTRON_RUN_AS_NODE: '1', MINGYUN_API_ROOT: path.dirname(path.dirname(appPath)), MINGYUN_API_LIBS: path.join(process.resourcesPath || '', 'qq-music-api', 'libs') }
+        // 打包态:设置 NODE_PATH 指向 libs 目录
+        const libsPath = path.join(process.resourcesPath || '', 'qq-music-api', 'libs')
         try {
-            const dirPath = path.dirname(fileURLToPath(import.meta.url))
-            const sameDir = path.join(dirPath, 'qq-styletext-polyfill.cjs')
-            if (fs.existsSync(sameDir)) return sameDir
+            if (fs.existsSync(libsPath)) {
+                env.NODE_PATH = libsPath
+            }
         } catch (e) { /* ignore */ }
-        return packedPath
-    })()
-    // 统一用 Electron 内置 Node(process.execPath)+ polyfill 启动子进程。
-    // 不再依赖系统 Node,原因:
-    //   1. 用户机器可能装了旧版 Node(如 v18)不支持 styleText,不加 polyfill 会崩溃
-    //   2. 系统 Node 路径探测不稳定(可能返回空字符串或超时)
-    //   3. 行为一致,便于排查问题
-    // 关键:打包后 process.execPath 指向"茗韵时光.exe"(Electron 主程序),
-    // 直接 spawn 会启动整个 Electron 应用而非纯 Node 进程。
-    // 设置 ELECTRON_RUN_AS_NODE=1 强制 Electron 以纯 Node 模式运行(只执行脚本,不启 GUI)。
-    //
-    // 重要:--require 必须作为 spawn 参数数组元素传递,不能用 NODE_OPTIONS。
-    // 原因:NODE_OPTIONS 会被 Node 按空格分词,安装路径含空格(如 "C:\Program Files\...")
-    // 或中文时,polyfill 路径会被切断,导致子进程崩溃、QQ API 服务起不来。
-    // 作为 args 数组元素时,Node 直接拿到完整字符串,不会被空格分词。
-    //
-    // NODE_PATH 设置:打包态依赖放在 resources/qq-music-api/libs/(非 node_modules,
-    // 因为 electron-builder 会忽略 node_modules 目录)。Node 默认只从 node_modules 查找
-    // 模块,必须通过 NODE_PATH 环境变量指向 libs,否则 require('axios') 会 MODULE_NOT_FOUND。
-    // dev 态不设 NODE_PATH,Node 从项目根 node_modules 正常查找。
-    const nodeBin = process.execPath
-    const env = { ...process.env, PORT: '3200', ELECTRON_RUN_AS_NODE: '1' }
-    // 打包态:设置 NODE_PATH 指向 libs 目录
-    const libsPath = path.join(process.resourcesPath || '', 'qq-music-api', 'libs')
-    try {
-        if (fs.existsSync(libsPath)) {
-            env.NODE_PATH = libsPath
-        }
-    } catch (e) { /* ignore */ }
 
-    qqProcess = spawn(nodeBin, [`--require=${polyfillPath}`, appPath], {
-        env,
-        stdio: 'pipe',
-        windowsHide: true
-    })
+        const child = spawn(process.execPath, [`--require=${apiRuntimePath()}`, `--require=${polyfillPath}`, appPath], {
+            env, stdio: 'pipe', windowsHide: true
+        })
+        pipeChildLogs(child, 'qq')
+        return child
+    },
+    wait: signal => waitForPort(QQ_API_BASE, '/', { signal }),
+    ready: () => broadcastServicesReady({ qq: true }),
+    log: message => serviceLog('qq', message)
+})
 
-    // 子进程输出落盘到 userData/logs/local-api-qq.log（崩溃根因可查）
-    pipeChildLogs(qqProcess, 'qq')
-
-    qqProcess.on('exit', (code) => {
-        serviceLog('qq', `子进程退出 code=${code}`)
-        qqProcess = null
-        // 异常退出自动重启(5 秒后)
-        if (code !== 0 && code !== null) {
-            setTimeout(() => startQQMusicAPI(), 5000)
-        }
-    })
-    qqProcess.on('error', (err) => {
-        serviceLog('qq', 'spawn error: ' + (err?.message || err))
-        qqProcess = null
-    })
-
-    // 等待端口就绪：就绪后广播给渲染进程（统一体验，与其他两个本地服务一致）
-    waitForPort(QQ_API_BASE, '/getHotkey', { timeoutMs: 25000 }).then((ok) => {
-        serviceLog('qq', ok ? '服务已就绪 localhost:3200' : '25s 内未就绪,子进程可能启动失败(查看上方日志)')
-        if (ok) broadcastServicesReady({ qq: true })
-    }).catch(() => {})
-
-    // 注册 IPC 通道(只注册一次)
-    if (!registered) {
-        registerQQIpcHandlers()
-        registered = true
-    }
-}
-
-// 停止子进程
-export function stopQQMusicAPI() {
-    if (qqProcess) {
-        try { qqProcess.kill() } catch (e) { /* ignore */ }
-        qqProcess = null
-    }
+export const startQQMusicAPI = () => service.ensure()
+export const stopQQMusicAPI = () => service.stop()
+export function registerQQMusicIPC() {
+    if (registered) return
+    registerQQIpcHandlers()
+    registered = true
 }
 
 // 统一请求封装
 async function qqGet(endpoint, params = {}, cookie = '') {
+    await service.ensure()
     const headers = {}
     if (cookie) headers['X-Custom-Cookie'] = cookie
     const res = await axios.get(`${QQ_API_BASE}${endpoint}`, { params, headers, timeout: 10000 })
@@ -577,6 +526,7 @@ async function qqGet(endpoint, params = {}, cookie = '') {
 }
 
 async function qqPost(endpoint, data = {}, cookie = '') {
+    await service.ensure()
     const headers = { 'Content-Type': 'application/json' }
     if (cookie) headers['X-Custom-Cookie'] = cookie
     const res = await axios.post(`${QQ_API_BASE}${endpoint}`, data, { headers, timeout: 10000 })

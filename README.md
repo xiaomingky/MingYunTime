@@ -6,11 +6,23 @@
 
 [程序官网](https://music.xiaomingky.dpdns.org) · [作者网站](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-3.6.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-7%20%2F%2010%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-22-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-3.6.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
-基于 Vue 3 + Electron 22 构建，集成网易云音乐、QQ 音乐、酷狗概念版。除了发现、搜索、歌单和专辑，还提供可排序播放队列、本地音乐、经典 / Apple Music 风格歌词、桌面歌词、均衡器和统一下载中心。视频专区包含 B站、动漫、影视、网页解析与直播；娱乐专区提供 CS / VAL 赛事；智慧教材支持阅读、批注与配套音频。
+基于 Vue 3 + Electron 44 构建，集成网易云音乐、QQ 音乐、酷狗概念版。除了发现、搜索、歌单和专辑，还提供可排序播放队列、本地音乐、经典 / Apple Music 风格歌词、桌面歌词、均衡器和统一下载中心。视频专区包含 B站、动漫、影视、网页解析与直播；娱乐专区提供 CS / VAL 赛事；智慧教材支持阅读、批注与配套音频。
 
 > 本项目由 AI 辅助开发。英文 README 是文档翻译，不代表客户端具有英文界面。以下图片与 GIF 来自 v3.6.1 界面；在线推荐、榜单与赛事会随服务更新。歌词 GIF 演示界面动画，不含音频。本地音乐展示使用示例文件条目。
+
+## 4.0 测试版优化（当前源码，尚未发布）
+
+当前开发分支升级至 Electron **44.7.0**、electron-builder **26.15.3**，面向 Windows 10 / 11 x64。上方 v3.6.3 下载仍为历史版本。
+
+- **队列排列**：长队列只绘制可见行，支持 1 万首歌曲；拖动手柄、上下移动按钮和 **Alt + ↑ / ↓** 都能排列。点击「当前歌曲」快速定位，拖到列表边缘会自动滚动，便于跨屏拖动。
+- **显示与流畅度**：「设置 → 显示与流畅度」选择「轻盈流畅」或「完整视觉」，两者均保留过渡和逐字歌词；还可分别调整界面动画、轻量视觉。Apple 歌词支持 30 / 45 / 60 FPS。
+- **启动与后台**：页面、歌词详情和视频引擎按需加载。音乐 API 首次请求时启动，同一平台的并发请求共用启动过程；自有进程空闲三分钟后释放。首次请求等待就绪，用户选择的在线线路不会被自动覆盖。
+- **播放稳定性**：本地文件异步流式读取，支持完整、部分、尾部范围请求及 HEAD / 416；封面请求合并解析并使用容量限制缓存。经典逐字歌词向后拖动进度后恢复正确高亮。
+- **资源清理**：离开视频时销毁播放器、流缓冲和音频同步；队列原地排序也会保存；窗口隐藏和恢复保留后台听歌。
+
+[验证记录与实测数据](docs/MODERNIZATION.md)。运行 `npm run check` 执行回归检查；构建需 Node.js 22.12+，项目 postinstall 会安装 Electron 运行文件。
 
 ## 目录
 
@@ -41,7 +53,7 @@
 3. 启动后在左上角选择平台，再按需登录。普通使用无需安装 Node.js，音乐 API 服务与下载工具随客户端提供。
 4. 首次启动本地 API 服务需要时间，数据暂未出现时稍等后刷新页面。
 
-**系统：Windows 7 / 10 / 11，64 位。** 项目保留 Electron 22，并有 Windows 7 渲染兼容处理。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
+**当前源码 / 4.0 测试版：Windows 10 / 11，64 位；不再支持 Windows 7 / 8 / 8.1。** 上方已发布的 v3.6.3 属于旧版兼容分支。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
 
 在线播放、下载、高音质和账号操作依赖对应平台的授权、会员、地区与资源可用性。
 
@@ -51,7 +63,7 @@
 - **界面动画**：在「设置 → 播放器其他设置 → 界面动画」选择开启动画、跟随系统或减少动态效果。默认开启，即使 Windows 请求减少动态效果，应用仍保留切换动画。
 - **轻量视觉**：同一设置分区中开启，减少毛玻璃与歌词模糊开销，同时保留页面、抽屉的切换动画，适合核显和较旧电脑。
 - **渲染与缓存**：让 Chromium 根据显卡驱动选择合适的渲染方式，隐藏窗口时保留着色器与页面缓存，减少返回时的重复解码与重建。
-- **兼容性**：保留 Electron 22.3.27 与原生 NSIS 安装向导，继续支持 Windows 7 SP1。
+- **兼容性**：历史 v3.6.3 使用 Electron 22.3.27，支持 Windows 7 SP1；当前 4.0 测试版要求 Windows 10 / 11。
 
 ## v3.6.1 播放体验
 
@@ -396,7 +408,7 @@
 | 首页无内容 | 等服务启动刷新；网易云换线路；其他来源检查网络 |
 | 不能播放 / 音质回退 | 登录，确认会员 / 地区 / 版权，尝试较低音质 |
 | 歌词错版 / 无翻译 / 无逐词 | 换歌词源；没有的数据无法由风格生成 |
-| Win7 / 旧机动画慢 | 性能模式、30 FPS、附近歌词，关频谱与封面运动 |
+| 核显 / 旧机动画慢 | 性能模式、30 FPS、附近歌词，关频谱与封面运动 |
 | 下载 403 / 429 | 减线程，检查登录、过期链接与请求头后重试 |
 | B站画质受限 | 检查接口及对应 Web / TV 登录与会员 |
 | 视频只有声音 | 检查实际编码；HEVC 依系统解码，可换编码版本 |
@@ -427,7 +439,7 @@ npm run build
 | UI | Vue 3、Pinia、Vue Router、Lucide；src/views/、src/components/ |
 | 播放 | HTML Audio / Web Audio；src/store/player.js |
 | Apple 歌词 | Apple Music-like Lyrics 与适配；src/utils/apple-lyric-player.js |
-| 桌面 / IPC | Electron 22；electron/ |
+| 桌面 / IPC | Electron 44；electron/ |
 | 视频 | Artplayer、hls.js、mpegts.js / flv.js |
 | 元数据 | music-metadata、node-id3 |
 | 下载 / API | aria2c、ffmpeg、yt-dlp、三平台服务；resources/ |

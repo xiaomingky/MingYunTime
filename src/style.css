@@ -66,9 +66,6 @@ html,
     color: var(--text-main);
 }
 
-/* Win7 性能降级：老机器跑 backdrop-filter(毛玻璃)合成极耗 GPU，
-   html.win7 由 src/main.js 在 Windows NT 6.1 上自动挂载，整站关闭毛玻璃换半透明纯色 */
-html.win7 *,
 html.light-visuals *,
 html.light-visuals *::before,
 html.light-visuals *::after {

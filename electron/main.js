@@ -2,8 +2,7 @@ import { app, BrowserWindow, shell, ipcMain, dialog, protocol, Tray, Menu, nativ
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
-import { Readable } from 'node:stream'
-// music-metadata 是 ESM-only，Electron 22 CJS 环境用动态 import 懒加载
+// music-metadata 是 ESM-only，主进程 CJS 环境用动态 import 懒加载
 let mm = null
 async function getMM() {
     if (!mm) {
@@ -16,7 +15,6 @@ import axios from 'axios'
 import { exec, execFile, spawn } from 'node:child_process'
 import https from 'node:https'
 import crypto from 'node:crypto'
-import os from 'node:os'
 
 // 解析打包内 ffmpeg 路径（与 download-manager.js 的 resolveTool 一致）
 function getFfmpegPath() {
@@ -39,47 +37,21 @@ import './esports.js'
 import { getSmartEduHeaders, getMediaInjectionHeaders } from './smart-edu.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
 import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload, getYtDlpPath } from './download-manager.js'
-// 抖音 a_bogus 签名：逐字加载 video-parser 原始 a_bogus.js（sloppy mode，vm 执行），
-// 与 Python 版（py-mini-racer 执行同一文件）签名逐位一致；?raw 打包时把源码内联进 bundle。
-import vm from 'node:vm'
-import abogusSource from './a_bogus.origin.js?raw'
-import { generateABogus as generateABogusPort } from './douyin-abogus.js'
-// 2026-07 新版 a_bogus（移植自 douyin_parse/DLWangSan abogus.py）：旧版(video-parser)算法已被抖音风控拦截
+// Current Douyin request signature.
 import { generateABogusV2 } from './douyin-abogus-v2.js'
-let generateABogus = null
-try {
-    const _abogusCtx = vm.createContext({ console })
-    vm.runInContext(abogusSource, _abogusCtx)
-    if (typeof _abogusCtx.generate_a_bogus === 'function') generateABogus = _abogusCtx.generate_a_bogus
-} catch (e) { generateABogus = null }
-if (!generateABogus) generateABogus = generateABogusPort  // 兜底：本地移植版（算法一致）
 // 多平台歌词搜索（QQ + 酷狗）—— 必须用静态 import，否则 vite 打包后 dist-electron 下找不到模块
 import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ, getKugouLyric } from './lyric-providers.js'
 // QQ 音乐 API 子进程(@sansenjian/qq-music-api,监听 3200 端口)
-import { startQQMusicAPI, stopQQMusicAPI } from './qq-music.js'
+import { startQQMusicAPI, stopQQMusicAPI, registerQQMusicIPC } from './qq-music.js'
 // 酷狗音乐 API 子进程(KuGouMusicApi,监听 3300 端口,platform=lite 概念版)
 import { startKugouMusicAPI, stopKugouMusicAPI } from './kugou-music.js'
 import { startNeteaseAPI, stopNeteaseAPI } from './netease-api.js'
 import { extractShareUrl, extractDouyinId as extractDouyinMediaId, extractDouyinPage, extractDouyinMedia, DOUYIN_MOBILE_UA } from './douyin-media.js'
 // 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）
 import './unlock.js'
+import { localFileResponse, createCoverHandler } from './local-protocol.js'
 
-// --- Win7 兼容性初始化 ---
-// Win7 = Windows NT 6.1（os.release() 以 6.1 开头）。
-// 老机器 + 老显卡驱动是 Win7 卡顿/黑屏的主要来源，这里用「稳健模式」：
-// 保留基本硬件加速（强制软件渲染会明显卡顿），但对 Win7 特有关闭高负载 GPU 特性。
-const isWin7 = process.platform === 'win32' && /^6\.1\./.test(os.release())
-// Keep hardware acceleration and Chromium's driver checks enabled on Windows.
-// Allow software fallback on drivers that cannot safely accelerate rendering.
-if (isWin7) {
-    // Win7 老显卡驱动对 GPU 加速 2D canvas / GPU 栅格化支持差，容易黑屏、掉帧、占满 CPU：
-    // 裁掉这两块高开销特性，渲染明显更稳定、更流畅。
-    app.commandLine.appendSwitch('disable-accelerated-2d-canvas')
-    app.commandLine.appendSwitch('disable-gpu-rasterization')
-    // Win7 上进一步压低 Chromium 各子系统的进程/内存开销（老机器内存小）
-    // js-flags 复用下方全局设置（appendSwitch 同名只保留最后一个，这里不重复设置）
-}
-
+// Windows 10/11: retain Chromium driver checks and hardware/software fallback.
 // Let V8 schedule collection and size its heap; forced frequent GC stalls UI transitions.
 // expose-gc is retained for the existing hidden-window cleanup.
 app.commandLine.appendSwitch('js-flags', '--expose-gc')
@@ -185,7 +157,7 @@ function createWindow() {
         minHeight: 720,
         frame: false,
         title: '茗韵时光', // 系统级窗口标题（任务栏 tooltip、Alt+Tab 等）
-        backgroundColor: '#ffffff', // Win7 下防止透明窗口闪烁
+        backgroundColor: '#ffffff', // 防止窗口载入时闪烁
         icon: path.join(process.env.VITE_PUBLIC, 'icon.png'), // 设置图标
         webPreferences: {
             preload: preloadPath,
@@ -5262,221 +5234,17 @@ function checkForUpdates() {
 }
 
 app.whenReady().then(() => {
-    // --- 启动 QQ 音乐 API 子进程(监听 3200 端口) ---
-    startQQMusicAPI()
-    // --- 启动酷狗音乐 API 子进程(监听 3300 端口,概念版 platform=lite) ---
-    startKugouMusicAPI()
-    // --- 启动网易云 API 子进程(NeteaseCloudMusicApiEnhanced,监听 3100 端口) ---
-    startNeteaseAPI()
-
-    // --- Electron 22 兼容性协议注册 (Win7 支持) ---
-
-    // 1. local-file 协议 (支持 Range 请求)
-    protocol.registerStreamProtocol('local-file', (request, callback) => {
-        try {
-            const urlStr = request.url
-            // 改进路径解析：解决双斜杠/三斜杠路径匹配问题
-            let filePath = decodeURIComponent(urlStr.replace('local-file://', ''))
-            // 兼容有些系统传入的是 /C:/... 格式
-            if (process.platform === 'win32' && filePath.startsWith('/')) {
-                filePath = filePath.substring(1)
-            }
-
-            // Windows 路径规范化
-            if (process.platform === 'win32') {
-                filePath = path.normalize(filePath)
-            }
-
-            if (!fs.existsSync(filePath)) {
-                return callback({ statusCode: 404, data: 'Not Found' })
-            }
-
-            const stats = fs.statSync(filePath)
-            const range = request.headers['Range'] || request.headers['range']
-
-            const ext = path.extname(filePath).toLowerCase()
-            const mimeMap = {
-                '.mp3': 'audio/mpeg',
-                '.wav': 'audio/wav',
-                '.flac': 'audio/flac',
-                '.ogg': 'audio/ogg',
-                '.oga': 'audio/ogg',
-                '.m4a': 'audio/mp4',
-                '.aac': 'audio/aac',
-                '.wma': 'audio/x-ms-wma',
-                '.ape': 'audio/ape',
-                '.opus': 'audio/opus',
-                '.wv': 'audio/x-wavpack',
-                '.tta': 'audio/tta',
-                '.dsf': 'audio/dsf',
-                '.dff': 'audio/dff',
-                '.mp2': 'audio/mpeg',
-                '.ac3': 'audio/ac3',
-                '.amr': 'audio/amr',
-                '.aiff': 'audio/aiff',
-                '.au': 'audio/basic',
-                '.ra': 'audio/vnd.rn-realaudio',
-                '.ram': 'audio/vnd.rn-realaudio',
-                '.mpc': 'audio/x-musepack',
-                '.mka': 'audio/x-matroska',
-                '.weba': 'audio/webm',
-                '.ttf': 'font/ttf',
-                '.otf': 'font/otf',
-                '.woff': 'font/woff',
-                '.woff2': 'font/woff2',
-                '.jpg': 'image/jpeg',
-                '.jpeg': 'image/jpeg',
-                '.png': 'image/png',
-                '.gif': 'image/gif',
-                '.webp': 'image/webp',
-                '.mp4': 'video/mp4',
-                '.mkv': 'video/x-matroska',
-                '.webm': 'video/webm',
-                '.avi': 'video/x-msvideo',
-                '.mov': 'video/quicktime',
-                '.flv': 'video/x-flv',
-                '.wmv': 'video/x-ms-wmv'
-            }
-            const contentType = mimeMap[ext] || 'application/octet-stream'
-
-            if (!range) {
-                return callback({
-                    statusCode: 200,
-                    headers: {
-                        'Content-Length': stats.size.toString(),
-                        'Accept-Ranges': 'bytes',
-                        'Content-Type': contentType,
-                        'Access-Control-Allow-Origin': '*'
-                    },
-                    data: fs.createReadStream(filePath)
-                })
-            }
-
-            const parts = range.replace(/bytes=/, "").split("-")
-            const start = parseInt(parts[0], 10)
-            const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1
-            const chunksize = (end - start) + 1
-
-            callback({
-                statusCode: 206,
-                headers: {
-                    'Content-Range': `bytes ${start}-${end}/${stats.size}`,
-                    'Accept-Ranges': 'bytes',
-                    'Content-Length': chunksize.toString(),
-                    'Content-Type': contentType,
-                    'Access-Control-Allow-Origin': '*'
-                },
-                data: fs.createReadStream(filePath, { start, end })
-            })
-        } catch (e) {
-            console.error('Local protocol error:', e)
-            callback({ statusCode: 500 })
-        }
+    registerQQMusicIPC()
+    const services = { netease: startNeteaseAPI, qq: startQQMusicAPI, kugou: startKugouMusicAPI }
+    ipcMain.handle('local-service:ensure', async (_event, name) => {
+        if (!Object.hasOwn(services, name)) throw new Error('Unknown music service')
+        return services[name]()
     })
 
-    // 2. song-cover 协议 (带 LRU 缓存 + 兜底逻辑)
-    // 缓存已解析的封面 Buffer，避免每次切歌都重新 parseFile 音频元数据
-    const _coverCache = new Map()    // key: filePath → { data, mimeType, ts }
-    const _COVER_CACHE_MAX = 8       // 最多缓存 8 首歌的封面（省内存，旧值 30 占用过多）
-    const _COVER_CACHE_TTL = 300000  // 5 分钟过期（旧值 10 分钟，缩短以加速释放）
-
-    protocol.registerBufferProtocol('song-cover', async (request, callback) => {
-        try {
-            const urlStr = request.url
-            // 健壮解析：兼容 Chromium 对 song-cover:/// 规范化后的各种形式
-            // 原始: song-cover:///C:/path/file.mp3  规范化后可能: song-cover://C:/path/file.mp3
-            let filePath = urlStr.replace(/^song-cover:\/+/i, '').replace(/\?param=.*$/, '')
-            filePath = decodeURIComponent(filePath)
-
-            if (process.platform === 'win32') {
-                // 规范化路径（处理 / 转为 \），但 path.normalize 会把 / 转成 \，下面 fs 调用都兼容
-                filePath = path.normalize(filePath)
-            }
-
-            if (!fs.existsSync(filePath)) return callback({ statusCode: 404 })
-
-            // LRU 缓存检查：命中则直接返回，避免重复 parseFile
-            const cacheKey = filePath
-            const cached = _coverCache.get(cacheKey)
-            if (cached && (Date.now() - cached.ts < _COVER_CACHE_TTL)) {
-                return callback({ mimeType: cached.mimeType, data: cached.data })
-            }
-
-            // 提取内嵌
-            try {
-                const metadata = await (await getMM()).parseFile(filePath)
-                if (metadata.common.picture && metadata.common.picture.length > 0) {
-                    const pic = metadata.common.picture[0]
-                    // music-metadata 11.x 的 pic.data 是 Uint8Array，Electron registerBufferProtocol 需要 Buffer
-                    const buf = Buffer.isBuffer(pic.data) ? pic.data : Buffer.from(pic.data)
-                    // 写入 LRU 缓存
-                    if (_coverCache.size >= _COVER_CACHE_MAX) {
-                        // 删除最早的条目（Map 保持插入顺序）
-                        const firstKey = _coverCache.keys().next().value
-                        _coverCache.delete(firstKey)
-                    }
-                    _coverCache.set(cacheKey, { data: buf, mimeType: pic.format, ts: Date.now() })
-                    return callback({ mimeType: pic.format, data: buf })
-                }
-            } catch (e) { }
-
-            // 提取同目录图片（依次尝试：同名 → cover/folder/album/front → 目录内任意图片）
-            const dir = path.dirname(filePath)
-            const baseName = path.basename(filePath, path.extname(filePath))
-            const exts = ['.gif', '.png', '.jpg', '.jpeg', '.webp']
-            const mimeOf = (ext) => ext === '.gif' ? 'image/gif' : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
-
-            // 1. 与音乐同名的图片（GIF 动图优先）
-            for (const ext of exts) {
-                const imgPath = path.join(dir, baseName + ext)
-                if (fs.existsSync(imgPath)) {
-                    return callback({ mimeType: mimeOf(ext), data: fs.readFileSync(imgPath) })
-                }
-            }
-
-            // 2. 通用封面文件名（cover / folder / album / front）
-            const coverNames = ['cover', 'Cover', 'folder', 'Folder', 'album', 'Album', 'front', 'Front']
-            for (const cn of coverNames) {
-                for (const ext of exts) {
-                    const imgPath = path.join(dir, cn + ext)
-                    if (fs.existsSync(imgPath)) {
-                        return callback({ mimeType: mimeOf(ext), data: fs.readFileSync(imgPath) })
-                    }
-                }
-            }
-
-            // 3. 目录内任意图片文件（最后兜底）
-            try {
-                const files = fs.readdirSync(dir)
-                for (const f of files) {
-                    const ext = path.extname(f).toLowerCase()
-                    if (exts.includes(ext)) {
-                        const imgPath = path.join(dir, f)
-                        const stat = fs.statSync(imgPath)
-                        if (stat.isFile()) {
-                            return callback({ mimeType: mimeOf(ext), data: fs.readFileSync(imgPath) })
-                        }
-                    }
-                }
-            } catch (e) { }
-
-            // 最终兜底：使用应用内置 icon.png（避免依赖网络图片 404）
-            const iconPath = path.join(process.env.VITE_PUBLIC, 'icon.png')
-            if (fs.existsSync(iconPath)) {
-                return callback({ mimeType: 'image/png', data: fs.readFileSync(iconPath) })
-            }
-            // 超级兜底：1x1 透明像素
-            const transparentPixel = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
-            callback({ mimeType: 'image/png', data: transparentPixel })
-        } catch (e) {
-            callback({ statusCode: 500 })
-        }
-    })
-
-    // 清理 song-cover LRU 缓存（窗口隐藏时触发，释放封面图片占用的内存）
-    ipcMain.on('clear-cover-cache', () => {
-        try { _coverCache.clear() } catch (e) {}
-    })
+    protocol.handle('local-file', localFileResponse)
+    const covers = createCoverHandler({ metadata: getMM, fallback: path.join(process.env.VITE_PUBLIC, 'icon.png') })
+    protocol.handle('song-cover', request => covers.handle(request))
+    ipcMain.on('clear-cover-cache', () => covers.clear())
 
     createWindow()
     createTray()
@@ -5634,7 +5402,7 @@ ipcMain.handle('download-song', async (_, { url, name, artist, picUrl }) => {
 })
 
 ipcMain.on('open-osk', () => {
-    // 针对 Win7-Win11 的虚拟键盘
+    // 针对 Windows 10/11 的虚拟键盘
     exec('osk.exe', (err) => {
         if (err) {
             // 如果普通 exec 失败，尝试全路径

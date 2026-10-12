@@ -1,16 +1,16 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import { useUserStore } from '../store/user'
-import Discovery from '../views/Discovery.vue'
-import PlaylistDetail from '../views/PlaylistDetail.vue'
-import Video from '../views/Video.vue'
-import Search from '../views/Search.vue'
-import LocalMusic from '../views/LocalMusic.vue'
-import RecentPlay from '../views/RecentPlay.vue'
-import LocalVideo from '../views/LocalVideo.vue'
-import AlbumDetail from '../views/AlbumDetail.vue'
-import Downloads from '../views/Downloads.vue'
-import NetEaseCloud from '../views/NetEaseCloud.vue'
-import Settings from '../views/Settings.vue'
+const Discovery = () => import('../views/Discovery.vue')
+const PlaylistDetail = () => import('../views/PlaylistDetail.vue')
+const Video = () => import('../views/Video.vue')
+const Search = () => import('../views/Search.vue')
+const LocalMusic = () => import('../views/LocalMusic.vue')
+const RecentPlay = () => import('../views/RecentPlay.vue')
+const LocalVideo = () => import('../views/LocalVideo.vue')
+const AlbumDetail = () => import('../views/AlbumDetail.vue')
+const Downloads = () => import('../views/Downloads.vue')
+const NetEaseCloud = () => import('../views/NetEaseCloud.vue')
+const Settings = () => import('../views/Settings.vue')
 
 // QQ 音乐模块（懒加载，与网易云路由隔离）
 const QQDiscovery = () => import('../views/qq/Discovery.vue')

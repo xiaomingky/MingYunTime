@@ -36,6 +36,9 @@ const artContainerEl = ref(null)
 const playerEl = ref(null)
 
 let art = null
+let playerVersion = 0
+let disposed = false
+let destroying = Promise.resolve()
 const playerError = ref('')
 
 const showEpPanel = ref(false)
@@ -126,6 +129,7 @@ let flvTimer = null
 // 此时暂停视频、显示转圈，等音频就绪且误差收敛后再恢复播放，避免"画面走了没声"。
 const syncBuffering = ref(false)
 let isResyncing = false
+let resyncTimer = null
 // 失步判定阈值：超过 1.5s 视为"跨越远了"，走转圈等待流程；0.5~1.5s 内仍静默快贴
 const RESYNC_DRIFT_THRESHOLD = 1.5
 
@@ -146,6 +150,8 @@ function requestResync() {
     align()
     let waited = 0
     function finish() {
+        clearTimeout(resyncTimer)
+        resyncTimer = null
         isResyncing = false
         syncBuffering.value = false
         if (art?.video && !art.video.ended) art.video.play().catch(() => {})
@@ -159,9 +165,9 @@ function requestResync() {
         waited += 150
         // 兜底：8 秒仍未对齐则强制恢复，宁可短暂不同声也不把用户卡死在转圈上
         if (waited >= 8000) { finish(); return }
-        setTimeout(poll, 150)
+        resyncTimer = setTimeout(poll, 150)
     }
-    setTimeout(poll, 150)
+    resyncTimer = setTimeout(poll, 150)
 }
 
 function showError(msg) {
@@ -274,8 +280,8 @@ function playM3u8(video, url, artInstance) {
             enableWorker: true,
             lowLatencyMode: false, // YouTube 直播关闭低延迟模式，避免音频丢失
             // 直播低延迟：播放头贴近直播边缘（liveSyncDurationCount=2 ≈ 4-6s 延迟，20→8 收紧最大容忍）
-            maxBufferLength: isLive ? 20 : 60,
-            backBufferLength: isLive ? 20 : 30,
+            maxBufferLength: isLive ? 20 : 30,
+            backBufferLength: isLive ? 10 : 15,
             liveSyncDurationCount: isLive ? 2 : undefined,
             liveMaxLatencyDurationCount: isLive ? 8 : undefined,
             liveDurationInfinity: false,
@@ -421,9 +427,9 @@ function playFlv(video, url, artInstance) {
     })
     flvPlayer.on(mpegts.Events.LOADING_COMPLETE, () => {
         if (flvTimer) { clearTimeout(flvTimer); flvTimer = null }
-        // 直播流收到 LOADING_COMPLETE 多为 seek 追赶最新时读到缓冲边界，并非结束；
-        // 真正的下播是服务器断开连接，会走 ERROR 分支。故仅点播才视为播放完毕。
-        if (!isLiveStream) showError('播放完毕')
+        // Download completion means bytes arrived, not that buffered playback ended.
+        // Native video:ended handles the actual end of playback.
+
     })
     flvPlayer.on(mpegts.Events.MEDIA_INFO, (info) => {
         if (flvTimer) { clearTimeout(flvTimer); flvTimer = null }
@@ -578,20 +584,24 @@ function resolveArtType(url) {
 
 async function destroyPlayer() {
     liveBadge.value = false
-    if (!art) return
+    if (!art) return destroying
     const inst = art
-    art = null
-    // 先解除 Teleport（遮罩层回到 wrapper 内），再销毁 ArtPlayer DOM
-    playerEl.value = null
-    await nextTick()
-    if (flvTimer) { clearTimeout(flvTimer); flvTimer = null }
+    clearTimeout(resyncTimer)
+    resyncTimer = null
+    isResyncing = false
+    syncBuffering.value = false
     destroyDashAudio()
-    try { inst.destroy() } catch (e) {}
+    art = null
+    playerEl.value = null
+    if (flvTimer) { clearTimeout(flvTimer); flvTimer = null }
+    destroying = nextTick().then(() => { try { inst.destroy() } catch {} })
+    return destroying
 }
 
 async function createPlayer(src) {
+    const version = ++playerVersion
     await destroyPlayer()
-    if (!src || !artContainerEl.value) return
+    if (disposed || version !== playerVersion || !src || !artContainerEl.value) return
     playerError.value = ''
     showEpPanel.value = false
     showQualityPanel.value = false
@@ -680,7 +690,6 @@ async function createPlayer(src) {
             } catch (e) {}
         }
     })
-    art.on('video:volumechange', () => { artVol.value = art.volume || 0 })
     // 点击播放器空白处时收起各面板
 
     // 跳转进度后（拖进度条/续播/点选集）：清掉上一时间戳仍在飘的旧弹幕，
@@ -706,16 +715,19 @@ async function createPlayer(src) {
     })
     // 续播位置记录：5 秒节流（片头 20s 内/片尾 15s 内不记）
     let resumeSaveTimer = 0
+    const resumeInstance = art
+    const resumeKey = props.resumeKey
+    art.on('destroy', () => clearTimeout(resumeSaveTimer))
     art.on('video:timeupdate', () => {
-        if (!props.resumeKey || resumeSaveTimer) return
+        if (!resumeKey || resumeSaveTimer) return
         resumeSaveTimer = setTimeout(() => {
             resumeSaveTimer = 0
             try {
-                const v = art?.video
+                const v = resumeInstance?.video
                 if (!v || !v.duration || v.duration === Infinity) return
                 const cur = v.currentTime || 0
-                if (cur > 20 && cur < v.duration - 15) localStorage.setItem('art-resume:' + props.resumeKey, String(Math.floor(cur)))
-                else localStorage.removeItem('art-resume:' + props.resumeKey)
+                if (cur > 20 && cur < v.duration - 15) localStorage.setItem('art-resume:' + resumeKey, String(Math.floor(cur)))
+                else localStorage.removeItem('art-resume:' + resumeKey)
             } catch (e) {}
         }, 5000)
     })
@@ -731,6 +743,7 @@ async function createPlayer(src) {
 // 监听 src 变化（切集 / 换源）
 watch(() => props.src, (newSrc) => {
     if (!newSrc) {
+        playerVersion++
         destroyPlayer()
         return
     }
@@ -764,6 +777,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+    disposed = true
+    playerVersion++
+    destroyPlayer()
 
     // 清理 Web Audio API
     if (videoSourceNode) { try { videoSourceNode.disconnect() } catch (e) {} videoSourceNode = null }
@@ -774,7 +790,7 @@ onBeforeUnmount(() => {
     graphDashEl = null
 })
 
-defineExpose({ art })
+defineExpose({ get art() { return art } })
 </script>
 
 <template>

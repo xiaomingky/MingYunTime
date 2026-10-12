@@ -1,10 +1,13 @@
 <script setup>
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { usePlayerStore } from '../store/player'
+import { useSettingsStore } from '../store/settings'
 
 const props = defineProps({ active: Boolean })
 
 const player = usePlayerStore()
+const settings = useSettingsStore()
+let gradient = null
 const canvas = ref(null)
 let frame = null
 let resizeObserver = null
@@ -19,11 +22,14 @@ function resizeCanvas() {
   const rect = el.getBoundingClientRect()
   width = rect.width
   height = rect.height
-  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  const dpr = Math.min(window.devicePixelRatio || 1, settings.lightVisuals ? 1 : 2)
   el.width = Math.max(1, Math.round(rect.width * dpr))
   el.height = Math.max(1, Math.round(rect.height * dpr))
   const context = el.getContext('2d')
   context.setTransform(dpr, 0, 0, dpr, 0, 0)
+  gradient = context.createLinearGradient(0, 0, 0, height)
+  gradient.addColorStop(0, palette.accent)
+  gradient.addColorStop(1, palette.soft)
 }
 
 function clear(context, width, height) {
@@ -39,9 +45,6 @@ function drawBars(context, data, width, height) {
     const sample = data[Math.floor((i / count) * data.length * 0.72)] || 0
     const barHeight = Math.max(3, (sample / 255) * height * 0.85)
     const x = i * (barWidth + gap)
-    const gradient = context.createLinearGradient(0, base - barHeight, 0, base)
-    gradient.addColorStop(0, palette.accent)
-    gradient.addColorStop(1, palette.soft)
     context.fillStyle = gradient
     context.beginPath()
     context.fillRect(x, base - barHeight, barWidth, barHeight)
@@ -77,6 +80,7 @@ onMounted(() => {
   restart()
 })
 watch(() => props.active, restart)
+watch(() => settings.lightVisuals, resizeCanvas)
 onUnmounted(() => {
   if (frame !== null) cancelAnimationFrame(frame)
   frame = null

@@ -1,15 +1,15 @@
 <script setup>
-import { ref, onMounted, computed, onUnmounted, watch, provide, h, nextTick } from 'vue'
+import { ref, onMounted, computed, onUnmounted, watch, provide, h, nextTick, defineAsyncComponent } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getPendingLockTarget } from './router'
 import { usePlayerStore } from './store/player'
 import { useSongDetailStore } from './store/song-detail'
 import { useUserStore } from './store/user'
 import { useMessageStore } from './store/message'
-import SongDetail from './views/SongDetail.vue'
-import LoginModal from './components/LoginModal.vue'
-import LockModal from './components/LockModal.vue'
-import MvPlayer from './components/MvPlayer.vue'
+const SongDetail = defineAsyncComponent(() => import('./views/SongDetail.vue'))
+const LoginModal = defineAsyncComponent(() => import('./components/LoginModal.vue'))
+const LockModal = defineAsyncComponent(() => import('./components/LockModal.vue'))
+const MvPlayer = defineAsyncComponent(() => import('./components/MvPlayer.vue'))
 import VideoDownloadToast from './components/VideoDownloadToast.vue'
 import Toast from './components/Toast.vue'
 import ConfirmModal from './components/ConfirmModal.vue'
@@ -62,6 +62,7 @@ import {
   ListPlus
 } from 'lucide-vue-next'
 import SearchSuggest from './components/SearchSuggest.vue'
+import QueueList from './components/QueueList.vue'
 import { useSearchHistoryStore } from './store/searchHistory'
 import { usePlatformStore } from './store/platform'
 import { useQQUserStore } from './store/qq-user'
@@ -76,6 +77,7 @@ import {
 } from './api/kugou'
 import CustomSelect from './components/CustomSelect.vue'
 
+const bridgeDisposers = []
 const router = useRouter()
 const route = useRoute()
 const playerStore = usePlayerStore()
@@ -87,6 +89,15 @@ const platformStore = usePlatformStore()
 const qqUserStore = useQQUserStore()
 const kugouUserStore = useKugouUserStore()
 const settingsStore = useSettingsStore()
+const routeLoading = ref(false)
+const stopRouteStart = router.beforeEach(() => { routeLoading.value = true })
+const stopRouteFinish = router.afterEach(() => { routeLoading.value = false })
+const stopRouteError = router.onError(error => {
+    routeLoading.value = false
+    console.error('Cannot open page:', error)
+    messageStore.error('页面打开失败，请重试')
+})
+onUnmounted(() => { stopRouteStart(); stopRouteFinish(); stopRouteError() })
 const playModeLabel = computed(() => ({ 0: '列表循环', 1: '单曲循环', 2: '随机播放' }[playerStore.playMode] || '列表循环'))
 
 // 当前平台的登录态（根据平台自动选择 userStore / qqUserStore / kugouUserStore）
@@ -588,21 +599,31 @@ watch(
     }
 )
 
-// 持久化保存播放状态 — 精确订阅 4 个字段，避免 currentTime 高频更新触发全量写入
+// Persist only changed fields; array-level watching also catches in-place reordering.
 let _persistTimer = null
-function persistPlayState() {
-    if (_persistTimer) return
-    _persistTimer = setTimeout(() => {
-        _persistTimer = null
-        localStorage.setItem('current_song', JSON.stringify(playerStore.currentSong))
-        localStorage.setItem('playlist', JSON.stringify(playerStore.playlist))
-        localStorage.setItem('current_index', playerStore.currentIndex)
-        localStorage.setItem('play_mode', playerStore.playMode)
-    }, 1000)
+const _dirtyPlayState = new Set()
+const _playStateFields = { current_song: () => playerStore.currentSong, playlist: () => playerStore.playlist, current_index: () => playerStore.currentIndex, play_mode: () => playerStore.playMode }
+function flushPlayState() {
+    clearTimeout(_persistTimer)
+    _persistTimer = null
+    for (const key of _dirtyPlayState) {
+        try {
+            const value = _playStateFields[key]()
+            localStorage.setItem(key, typeof value === 'object' ? JSON.stringify(value) : String(value))
+            _dirtyPlayState.delete(key)
+        } catch (error) { console.warn('Cannot persist playback state:', key, error.message) }
+    }
 }
-watch(() => playerStore.currentSong, persistPlayState)
-watch(() => playerStore.playlist, persistPlayState, { deep: false })
-watch([() => playerStore.currentIndex, () => playerStore.playMode], persistPlayState)
+function persistPlayState(key) {
+    _dirtyPlayState.add(key)
+    if (!_persistTimer) _persistTimer = setTimeout(flushPlayState, 600)
+}
+watch(() => playerStore.currentSong, () => persistPlayState('current_song'), { deep: 1 })
+watch(() => playerStore.playlist, () => persistPlayState('playlist'), { deep: 1 })
+watch(() => playerStore.currentIndex, () => persistPlayState('current_index'))
+watch(() => playerStore.playMode, () => persistPlayState('play_mode'))
+onMounted(() => window.addEventListener('pagehide', flushPlayState))
+onUnmounted(() => { flushPlayState(); window.removeEventListener('pagehide', flushPlayState) })
 
 // ===== 全局核心播放快捷键（可在"设置"专区自定义）=====
 const SHORTCUT_ACTIONS = {
@@ -651,16 +672,20 @@ onMounted(() => {
   }
 
   const b = getBridge()
+  const subscribe = (channel, callback) => {
+    const dispose = b.on(channel, callback)
+    if (typeof dispose === 'function') bridgeDisposers.push(dispose)
+  }
   if (b && b.on) {
-    b.on('window-maximize-status', handleMaximize)
-    b.on('player-command', (event, cmd) => {
+    subscribe('window-maximize-status', handleMaximize)
+    subscribe('player-command', (event, cmd) => {
         if (cmd === 'prev') playerStore.prev()
         else if (cmd === 'next') playerStore.next()
         else if (cmd === 'togglePlay') playerStore.togglePlay()
     })
 
     // 系统级"打开方式"：通过文件关联启动时接收音频文件并播放
-    b.on('open-audio-file', (event, song) => {
+    subscribe('open-audio-file', (event, song) => {
         if (song && song.url) {
             // 加入本地曲库并立即播放
             playerStore.addLocalSongs([song])
@@ -669,23 +694,23 @@ onMounted(() => {
     })
 
     // 系统级"打开方式"：通过文件关联启动时接收视频文件并播放
-    b.on('open-video-file', (event, video) => {
+    subscribe('open-video-file', (event, video) => {
         if (video && video.url) {
             playerStore.playVideoFile(video)
         }
     })
 
-    b.on('request-lyric-sync', () => {
+    subscribe('request-lyric-sync', () => {
         playerStore.updateDesktopLyricsState()
     })
 
     // 更新检测事件
-    b.on('update-checking', () => { useMessageStore().info('正在检查更新...', 2000) })
-    b.on('update-available', (_, version, notes, downloadUrl) => { updateInfo.value = { available: true, version, notes: notes || '', downloadUrl: downloadUrl || '' } })
-    b.on('update-not-available', (_, currentVersion) => { useMessageStore().success(`已是最新版本 v${currentVersion}`, 3000) })
-    b.on('update-error', (_, msg) => { useMessageStore().error(msg, 3000) })
-    b.on('update-download-progress', (_, pct) => { updateInfo.value.progress = pct })
-    b.on('update-downloaded', () => { updateInfo.value = { ...updateInfo.value, downloading: false, downloaded: true } })
+    subscribe('update-checking', () => { useMessageStore().info('正在检查更新...', 2000) })
+    subscribe('update-available', (_, version, notes, downloadUrl) => { updateInfo.value = { available: true, version, notes: notes || '', downloadUrl: downloadUrl || '' } })
+    subscribe('update-not-available', (_, currentVersion) => { useMessageStore().success(`已是最新版本 v${currentVersion}`, 3000) })
+    subscribe('update-error', (_, msg) => { useMessageStore().error(msg, 3000) })
+    subscribe('update-download-progress', (_, pct) => { updateInfo.value.progress = pct })
+    subscribe('update-downloaded', () => { updateInfo.value = { ...updateInfo.value, downloading: false, downloaded: true } })
 
     // 初始化桌面歌词窗口状态
     if (playerStore.showDesktopLyrics) {
@@ -695,7 +720,7 @@ onMounted(() => {
 
     // 窗口隐藏时释放渲染进程非必要资源（降低后台内存）
     // 注意：不暂停 Audio（用户可能在后台听歌），只释放可视化/图片缓存
-    b.on('window-hidden-release', () => {
+    subscribe('window-hidden-release', () => {
         try {
             // 1. 通知 player store 释放频谱分析器等非必要资源
             if (typeof playerStore.releaseVisualizerResources === 'function') {
@@ -709,7 +734,7 @@ onMounted(() => {
     })
 
     // 窗口重新显示时恢复资源（重建 analyser）
-    b.on('window-shown-recover', () => {
+    subscribe('window-shown-recover', () => {
         try {
             if (typeof playerStore.rebuildAudioGraph === 'function' && playerStore.audio) {
                 playerStore.rebuildAudioGraph()
@@ -723,10 +748,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onGlobalKeydown)
-  const b = getBridge()
-  if (b && b.off) {
-    b.off('window-maximize-status', handleMaximize)
-  }
+  bridgeDisposers.splice(0).forEach(dispose => dispose())
 })
 
 const formatTime = (seconds) => {
@@ -922,57 +944,6 @@ const onLockVerified = () => {
     }
 }
 
-let drawerListRef = ref(null)
-
-watch(() => playerStore.currentIndex, () => {
-    if (playerStore.showPlaylist && drawerListRef.value) {
-        setTimeout(() => {
-            const active = drawerListRef.value.querySelector('.list-item.active')
-            if (active) {
-                active.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-            }
-        }, 100)
-    }
-})
-
-let draggedPlaylistIndex = -1
-// 插入位置范围为 0..playlist.length，支持明确拖到某行前/后以及队列末尾。
-let dragOverPlaylistIndex = -1
-
-const onDragStart = (index, e) => {
-    draggedPlaylistIndex = index
-    dragOverPlaylistIndex = -1
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', index)
-}
-
-const getPlaylistInsertionIndex = (index, e) => {
-    const row = e.currentTarget
-    if (!row?.getBoundingClientRect) return index
-    const rect = row.getBoundingClientRect()
-    return e.clientY >= rect.top + rect.height / 2 ? index + 1 : index
-}
-
-const onDragOver = (index, e) => {
-    e.preventDefault()
-    if (draggedPlaylistIndex === -1) return
-    dragOverPlaylistIndex = getPlaylistInsertionIndex(index, e)
-}
-
-const onDrop = (index, e) => {
-    e.preventDefault()
-    const fromIndex = draggedPlaylistIndex
-    const insertionIndex = getPlaylistInsertionIndex(index, e)
-    const toIndex = insertionIndex > fromIndex ? insertionIndex - 1 : insertionIndex
-    if (fromIndex !== -1 && toIndex !== fromIndex) playerStore.movePlaylistItem(fromIndex, toIndex)
-    onDragEnd()
-}
-
-const onDragEnd = () => {
-    draggedPlaylistIndex = -1
-    dragOverPlaylistIndex = -1
-}
-
 const playQueueSong = (song, event) => playerStore.handleSongClick(song, [], event)
 const playQueueSongNext = (song) => playerStore.playNext(song)
 const removeQueueSong = (index) => playerStore.removeFromQueue(index)
@@ -1157,10 +1128,10 @@ const openGithub = () => {
     </Transition>
 
     <div v-if="route.path !== '/desktop-lyrics'" class="normal-layout-wrapper">
-      <SongDetail />
-      <LoginModal :show="showLogin" @close="showLogin = false" />
+      <Transition name="song-panel"><SongDetail v-if="playerStore.showSongDetail" /></Transition>
+      <LoginModal v-if="showLogin" :show="showLogin" @close="showLogin = false" />
       <LockModal :show="showLockModal" @close="showLockModal = false" @verified="onLockVerified" />
-      <MvPlayer />
+      <MvPlayer v-if="playerStore.showMvPlayer" />
 
       <!-- Custom Create Playlist Modal -->
     <Transition name="modal-pop">
@@ -1259,6 +1230,7 @@ const openGithub = () => {
     </div>
     </Transition>
 
+<div v-if="routeLoading" class="route-loading" role="progressbar" aria-label="正在打开页面"><span /></div>
 <header class="header" v-show="!playerStore.showSongDetail && !playerStore.showMvPlayer">
         <div class="header-left no-drag">
           <div class="logo clickable" @click="navigateTo(platformStore.isQQ ? '/qq' : platformStore.isKugou ? '/kugou' : '/')">
@@ -1773,32 +1745,8 @@ const openGithub = () => {
           <strong>队列是空的</strong>
           <span>在歌曲的更多操作中加入队列</span>
         </div>
-        <div v-else class="drawer-list" ref="drawerListRef">
-          <template v-for="(song, index) in playerStore.playlist" :key="song.queueItemId || `${song.id}-${index}`">
-            <div v-if="index === 0 && playerStore.currentIndex > 0" class="queue-section-title">播放记录</div>
-            <div v-else-if="index === playerStore.currentIndex" class="queue-section-title">正在播放</div>
-            <div v-else-if="index === 0 || (playerStore.currentIndex >= 0 && index === playerStore.currentIndex + 1)" class="queue-section-title">接下来</div>
-            <div
-              class="list-item"
-              :class="{ active: index === playerStore.currentIndex, dragging: draggedPlaylistIndex === index, 'drag-over-before': dragOverPlaylistIndex === index && draggedPlaylistIndex !== index, 'drag-over-after': dragOverPlaylistIndex === index + 1 && draggedPlaylistIndex !== index }"
-              @click="playQueueSong(song, $event)"
-              @dragover="onDragOver(index, $event)"
-              @drop="onDrop(index, $event)"
-            >
-              <span class="drag-handle no-drag" draggable="true" title="拖动排序" @click.stop @dragstart.stop="onDragStart(index, $event)" @dragend="onDragEnd"><GripVertical :size="16" /></span>
-              <span class="queue-index">{{ index === playerStore.currentIndex ? '♫' : String(index + 1).padStart(2, '0') }}</span>
-              <div class="queue-song-copy">
-                <span class="song-name truncate">{{ song.name }}</span>
-                <span class="artist truncate">{{ song.ar ? (song.ar.length > 0 ? song.ar.map(a => a.name).join('/') : '未知歌手') : (song.artists ? song.artists.map(a => a.name).join('/') : (song.artist || '未知歌手')) }}</span>
-              </div>
-              <span class="duration">{{ formatTime(getQueueSongDuration(song)) }}</span>
-              <div class="queue-item-actions" @click.stop>
-                <button class="queue-action-btn" title="下一首播放" @click="playQueueSongNext(song)"><ListPlus :size="15" /></button>
-                <button v-if="index !== playerStore.currentIndex" class="queue-action-btn danger" title="移出队列" @click="removeQueueSong(index)"><X :size="15" /></button>
-              </div>
-            </div>
-          </template>
-        </div>
+        <QueueList v-else :items="playerStore.playlist" :current-index="playerStore.currentIndex" :duration="getQueueSongDuration" :format-time="formatTime"
+          @play="playQueueSong" @next="playQueueSongNext" @remove="removeQueueSong" @move="playerStore.movePlaylistItem" />
       </aside>
     </div>
     </Transition>
@@ -3007,4 +2955,16 @@ const openGithub = () => {
     color: var(--primary-color);
     font-weight: bold;
 }
+</style>
+
+<style scoped>
+.route-loading { position: absolute; top: var(--header-height); left: var(--sidebar-width); right: 0; height: 2px; z-index: 100; overflow: hidden; background: color-mix(in srgb, var(--primary-color) 10%, transparent); pointer-events: none; }
+.route-loading span { display: block; width: 36%; height: 100%; background: var(--primary-color); animation: route-progress 1s ease-in-out infinite; }
+@keyframes route-progress { from { transform: translateX(-100%); } to { transform: translateX(380%); } }
+:global(html.reduce-motion) .route-loading span { animation: none; width: 100%; }
+</style>
+
+<style scoped>
+.song-panel-enter-active, .song-panel-leave-active { transition: opacity .22s ease; }
+.song-panel-enter-from, .song-panel-leave-to { opacity: 0; }
 </style>

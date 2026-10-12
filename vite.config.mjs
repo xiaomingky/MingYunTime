@@ -20,9 +20,9 @@ export default defineConfig({
       name: 'apple-lyrics-css',
       enforce: 'pre',
       async transform(code, id) {
-        // AMLL ships nested CSS; Electron 22 needs it flattened in development too.
+        // AMLL ships nested CSS; Keep vendor CSS consistent between development and production.
         if (id.replaceAll('\\', '/').includes('@applemusic-like-lyrics/core/dist/style.css')) {
-          return (await transform(code, { loader: 'css', target: 'chrome108' })).code
+          return (await transform(code, { loader: 'css', target: 'chrome152' })).code
         }
       }
     },
@@ -32,7 +32,7 @@ export default defineConfig({
         entry: 'electron/main.js',
         vite: {
             build: {
-              // 为 Electron 22 强制输出 CJS 格式，iconv-lite/music-metadata 走 node_modules 运行时加载
+              // 主进程输出 CJS 格式，iconv-lite/music-metadata 走 node_modules 运行时加载
               rollupOptions: {
                 external: ['electron', 'node:fs', 'node:path', 'node:url', 'node:stream', 'node:crypto', 'cheerio', 'iconv-lite', 'music-metadata'],
                 output: {
@@ -54,6 +54,8 @@ export default defineConfig({
     renderer(),
   ],
   build: {
+    target: 'chrome152',
+    cssTarget: 'chrome152',
     // 沙箱/安全删除保护会拦截 vite 清空 dist 的大批量删除(≥50 文件导致构建失败)，
     // 关闭自动清空改为覆盖写入（旧 hash 文件残留不影响功能；如需彻底清理可手动清 dist 后构建）
     emptyOutDir: false

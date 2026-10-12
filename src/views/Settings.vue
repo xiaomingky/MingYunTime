@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import { usePlayerStore } from '../store/player'
+import { useSongDetailStore } from '../store/song-detail'
 import { usePlatformStore } from '../store/platform'
 import { useMessageStore } from '../store/message'
 import { useUserStore } from '../store/user'
@@ -544,6 +545,15 @@ async function handleLocalNamingChange(val) {
 }
 loadMusicNaming()
 
+function applyVisualPreset(light) {
+    settingsStore.setLightVisuals(light)
+    settingsStore.setInterfaceMotion('on')
+    const lyrics = useSongDetailStore()
+    lyrics.performanceMode = true
+    lyrics.lyricFPS = light ? 45 : 60
+    messageStore.success(light ? '已切换轻盈流畅方案，动画保持开启' : '已切换完整视觉方案', 2000)
+}
+
 onMounted(() => {
     window.addEventListener('keydown', onShortcutKeydown)
     loadBiliAuth()
@@ -585,6 +595,46 @@ onUnmounted(() => {
             @click="gotoSection(s)"
         >{{ s.label }}</button>
       </div>
+
+      <section class="settings-card display-card">
+        <div class="card-head"><div class="card-title"><Sparkles :size="16" /><span>显示与流畅度</span></div></div>
+        <p class="display-intro">先选适合电脑的视觉方案，再按自己的习惯微调。两种方案都保留页面过渡和逐字歌词。</p>
+        <div class="visual-presets">
+          <button type="button" :class="{ selected: settingsStore.lightVisuals && settingsStore.interfaceMotion === 'on' }" @click="applyVisualPreset(true)">
+            <span class="preset-heading">轻盈流畅 <small>核显推荐</small></span>
+            <span>减少大面积模糊，歌词 45 FPS，保留频谱与交互动画</span>
+          </button>
+          <button type="button" :class="{ selected: !settingsStore.lightVisuals && settingsStore.interfaceMotion === 'on' }" @click="applyVisualPreset(false)">
+            <span class="preset-heading">完整视觉</span>
+            <span>保留毛玻璃和氛围背景，歌词 60 FPS</span>
+          </button>
+        </div>
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">界面动画</div>
+            <div class="setting-desc">控制页面切换、抽屉和歌词动效。选择开启时，Windows 的动画设置不会关闭应用动效</div>
+          </div>
+          <CustomSelect
+            :model-value="settingsStore.interfaceMotion"
+            :options="[{ value: 'on', label: '开启动画' }, { value: 'system', label: '跟随系统' }, { value: 'off', label: '减少动态效果' }]"
+            :width="160"
+            @change="settingsStore.setInterfaceMotion($event)"
+          />
+        </div>
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">轻量视觉</div>
+            <div class="setting-desc">适合核显和较旧电脑：减少毛玻璃与歌词模糊开销，保留切换和展开动画</div>
+          </div>
+          <button type="button" class="close-opt" role="switch"
+            :class="{ active: settingsStore.lightVisuals }"
+            :aria-checked="settingsStore.lightVisuals"
+            @click="settingsStore.setLightVisuals(!settingsStore.lightVisuals)">
+            {{ settingsStore.lightVisuals ? '已开启' : '已关闭' }}
+          </button>
+        </div>
+
+      </section>
 
       <!-- 账号与登录信息 -->
       <section class="settings-card account-card">
@@ -769,31 +819,6 @@ onUnmounted(() => {
               {{ opt.label }}
             </button>
           </div>
-        </div>
-
-        <div class="setting-row">
-          <div class="setting-info">
-            <div class="setting-label">界面动画</div>
-            <div class="setting-desc">控制页面切换、抽屉和歌词动效。选择开启时，Windows 的动画设置不会关闭应用动效</div>
-          </div>
-          <CustomSelect
-            :model-value="settingsStore.interfaceMotion"
-            :options="[{ value: 'on', label: '开启动画' }, { value: 'system', label: '跟随系统' }, { value: 'off', label: '减少动态效果' }]"
-            :width="160"
-            @change="settingsStore.setInterfaceMotion($event)"
-          />
-        </div>
-        <div class="setting-row">
-          <div class="setting-info">
-            <div class="setting-label">轻量视觉</div>
-            <div class="setting-desc">适合核显和较旧电脑：减少毛玻璃与歌词模糊开销，保留切换和展开动画</div>
-          </div>
-          <button type="button" class="close-opt" role="switch"
-            :class="{ active: settingsStore.lightVisuals }"
-            :aria-checked="settingsStore.lightVisuals"
-            @click="settingsStore.setLightVisuals(!settingsStore.lightVisuals)">
-            {{ settingsStore.lightVisuals ? '已开启' : '已关闭' }}
-          </button>
         </div>
 
         <!-- 网易云 API 线路（仅网易云平台显示，用美化下拉） -->
@@ -1656,4 +1681,15 @@ onUnmounted(() => {
     font-size: 12px;
     color: #aaa;
 }
+</style>
+
+<style scoped>
+.display-intro { padding: 0 20px; color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
+.visual-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 16px 20px; }
+.visual-presets button { border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-main); padding: 16px; cursor: pointer; color: var(--text-secondary); text-align: left; font-family: inherit; transition: border-color .18s, background-color .18s; }
+.visual-presets button.selected { border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 4%, var(--bg-main)); }
+.visual-presets button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 3px; }
+.preset-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 15px; font-weight: 600; color: var(--text-main); }
+.preset-heading small { font-size: 10px; font-weight: 500; padding: 3px 7px; border-radius: 4px; color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 10%, transparent); }
+.visual-presets button > span:last-child { display: block; font-size: 11px; line-height: 1.7; }
 </style>

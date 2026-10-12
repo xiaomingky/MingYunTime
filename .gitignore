@@ -76,3 +76,9 @@ release-v342/
 
 installer/bin/
 installer/obj/
+
+# Generated nested API dependencies (prepared during builds)
+/resources/*-api/.nested-dependencies-v2
+/resources/*-api/libs/**/libs/
+
+/resources/.netease-build-dependencies/
