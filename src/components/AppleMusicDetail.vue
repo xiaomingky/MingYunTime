@@ -1,4 +1,5 @@
 <script setup>
+import SongVipBadge from './SongVipBadge.vue'
 import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { AppleLyricPlayer } from '../utils/apple-lyric-player'
 import '@applemusic-like-lyrics/core/style.css'
@@ -11,6 +12,7 @@ import { toAppleLyrics } from '../utils/apple-lyrics'
 import AppleCoverArt from './AppleCoverArt.vue'
 import AppleAudioVisualizer from './AppleAudioVisualizer.vue'
 import CustomSelect from './CustomSelect.vue'
+import { appleFontPresets, listAppleFonts, loadAppleFont, importAppleFont } from '../utils/apple-fonts'
 
 const props = defineProps({
   source: String, qqSong: Boolean, isNonNetease: Boolean, commentsOpen: Boolean
@@ -34,7 +36,41 @@ const coverOptions = [
   { value: 'album', label: '专辑封面' }, { value: 'cd', label: 'CD 光碟' },
   { value: 'vinyl', label: '黑胶唱片' }, { value: 'sleeve', label: '唱片套' }
 ]
-const fontOptions = [{ value: 'system', label: '系统无衬线' }, { value: 'serif', label: '宋体' }]
+const localFonts = ref([])
+const desktopFonts = ref([{ value: '', label: '默认字体' }])
+async function loadDesktopFonts() {
+  try {
+    const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
+    const fonts = await bridge?.invoke?.('scan-fonts')
+    if (Array.isArray(fonts)) desktopFonts.value = [{ value: '', label: '默认字体' }, ...fonts.map(font => ({ value: font.name, label: font.name }))]
+  } catch { /* Desktop controls remain available with the default font. */ }
+}
+const fontOptions = computed(() => [...appleFontPresets, ...localFonts.value])
+const fontInput = ref(null), fontLoading = ref(false), fontError = ref('')
+let fontRevision = 0
+async function activateFont() {
+  const revision = ++fontRevision
+  fontLoading.value = true; fontError.value = ''
+  try {
+    await loadAppleFont(fontOptions.value.find(f => f.value === preferences.font))
+    if (revision !== fontRevision) return
+    await nextTick(); engine?.calcLayout(true); wake()
+  } catch(e) { if(revision === fontRevision) fontError.value=e.message }
+  finally { if(revision === fontRevision)fontLoading.value=false }
+}
+async function importFont(event) {
+  const file=event.target.files?.[0]
+  event.target.value=''
+  if(!file)return
+  fontLoading.value=true; fontError.value=''
+  try {
+    const font=await importAppleFont(file)
+    localFonts.value=await listAppleFonts()
+    preferences.font=font.value
+    await activateFont()
+  } catch(e) {fontError.value=e.message}
+  finally {fontLoading.value=false}
+}
 const fpsOptions = [{ value: 60, label: '流畅 · 60 FPS' }, { value: 45, label: '均衡 · 45 FPS' }, { value: 30, label: '节能 · 30 FPS' }]
 const lines = computed(() => toAppleLyrics({
   lyrics: player.lyrics, yrcLyrics: player.yrcLyrics, duration: player.currentSong.duration,
@@ -46,7 +82,7 @@ const typography = computed(() => ({
   // Store half the requested gap so the CSS remains compatible with older Chromium
   // versions that do not support division inside calc().
   '--apple-line-spacing': `${preferences.lineSpacing / 2}px`,
-  '--apple-lyric-font': preferences.font === 'serif' ? '"Noto Serif SC", "Songti SC", serif' : '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif'
+  '--apple-lyric-font': fontOptions.value.find(f => f.value === preferences.font)?.family || appleFontPresets[0].family
 }))
 let clockFrame = null
 let engine
@@ -103,6 +139,7 @@ watch([() => preferences.fontSize, () => preferences.font, () => preferences.tra
   engine?.calcLayout(true)
   wake()
 })
+watch(() => preferences.font, activateFont)
 watch(cover, paintBackground)
 
 function configureEngine() {
@@ -176,6 +213,11 @@ function escapeSettings(event) {
   if (event.key === 'Escape' && settingsOpen.value) { settingsOpen.value = false; event.stopPropagation() }
 }
 function selectClassic() { settingsOpen.value = false; preferences.style = 'classic' }
+onMounted(async () => {
+  loadDesktopFonts()
+  try { localFonts.value=await listAppleFonts(); await activateFont() }
+  catch(e) { fontError.value=e.message }
+})
 onMounted(() => {
   // Keep the imperative animation engine outside Vue's deep reactive graph.
   engine = new AppleLyricPlayer()
@@ -193,6 +235,7 @@ onMounted(() => {
   document.addEventListener('keydown', escapeSettings, true)
 })
 onUnmounted(() => {
+  fontRevision++
   stopClock()
   clearTimeout(followTimer)
   backgroundRequest++
@@ -219,7 +262,7 @@ onUnmounted(() => {
       </div>
       <div class="apple-song-heading">
         <div class="apple-title-row">
-          <h1>{{ player.currentSong.name }}</h1>
+          <h1>{{ player.currentSong.name }}<SongVipBadge :song="player.currentSong" /><small v-if="player.currentSong.isPreview" style="font-size:13px;opacity:.7"> · 试听 {{ Math.round(player.currentSong.duration) }} 秒</small></h1>
           <button class="apple-icon apple-like" :class="{ liked: player.isLiked }" :aria-pressed="player.isLiked" title="喜欢" aria-label="喜欢" @click="player.toggleLike()"><Heart :size="25" :fill="player.isLiked ? 'currentColor' : 'none'" /></button>
         </div>
         <p class="apple-artist">{{ player.currentSong.artist }}</p>
@@ -227,9 +270,9 @@ onUnmounted(() => {
         <div class="apple-song-meta">
         <button class="apple-album-name" @click="emit('album')">{{ player.currentSong.al?.name }}</button>
         <div class="apple-actions">
-          <button v-if="!qqSong" class="apple-icon" title="收藏到歌单" aria-label="收藏到歌单" @click="emit('playlist')"><Plus :size="22" /></button>
+          <button class="apple-icon" title="收藏到歌单" aria-label="收藏到歌单" @click="emit('playlist')"><Plus :size="22" /></button>
           <button class="apple-icon" title="下载" aria-label="下载" @click="emit('download')"><Download :size="21" /></button>
-          <button v-if="!isNonNetease" class="apple-icon" title="分享" aria-label="分享" @click="emit('share')"><Share2 :size="21" /></button>
+          <button v-if="!isNonNetease || player.currentSong.platform === 'qishui'" class="apple-icon" title="分享" aria-label="分享" @click="emit('share')"><Share2 :size="21" /></button>
           <button class="apple-icon" :aria-pressed="commentsOpen" title="评论" aria-label="评论" @click="emit('comment')"><MessageSquare :size="21" /></button>
         </div>
         </div>
@@ -245,8 +288,9 @@ onUnmounted(() => {
     <div class="apple-settings no-drag">
       <button class="apple-icon apple-settings-trigger" title="歌词设置" aria-label="歌词设置" :aria-expanded="settingsOpen" aria-controls="apple-detail-settings" @click="settingsOpen = !settingsOpen"><Settings :size="21" /></button>
       <Transition name="apple-settings-fade">
-        <section v-if="settingsOpen" id="apple-detail-settings" class="apple-settings-panel" aria-label="歌词设置">
+        <section v-if="settingsOpen" id="apple-detail-settings" class="apple-settings-panel detail-liquid-panel" :style="{ '--detail-glass-blur': preferences.glassBlur + 'px' }" aria-label="歌词设置">
           <div class="apple-settings-heading"><strong>歌词设置</strong><button class="apple-icon" title="关闭设置" aria-label="关闭设置" @click="settingsOpen = false"><X :size="18" /></button></div>
+          <label class="apple-setting-row"><span>玻璃朦胧</span><div class="apple-size-control"><input v-model.number="preferences.glassBlur" type="range" min="0" max="60" step="1" aria-label="玻璃朦胧程度" /><output>{{ preferences.glassBlur }} px</output></div></label>
           <div class="apple-setting-row"><span>页面风格</span><div class="apple-segment" role="group" aria-label="页面风格"><button @click="selectClassic">经典</button><button class="selected" aria-pressed="true">Apple Music</button></div></div>
           <div class="apple-setting-row"><span>封面样式</span><CustomSelect v-model="preferences.coverStyle" :options="coverOptions" apple label="封面样式" /></div>
           <label class="apple-setting-row"><span>唱片旋转</span><input v-model="preferences.coverMotion" type="checkbox" /></label>
@@ -263,6 +307,14 @@ onUnmounted(() => {
           <label class="apple-setting-row"><span>远处歌词模糊</span><input v-model="preferences.blur" type="checkbox" /></label>
           <label class="apple-setting-row"><span>字号</span><div class="apple-size-control"><input v-model.number="preferences.fontSize" type="range" min="24" max="64" step="2" /><output>{{ preferences.fontSize }}</output></div></label>
           <div class="apple-setting-row"><span>字体</span><CustomSelect v-model="preferences.font" :options="fontOptions" apple label="字体" /></div>
+          <div class="apple-setting-row"><span>自定义字体</span><button class="apple-setting-command" :disabled="fontLoading" @click="fontInput?.click()">导入字体文件</button><input ref="fontInput" hidden type="file" accept=".ttf,.otf,.woff,.woff2" @change="importFont" /></div>
+          <p v-if="fontLoading || fontError" class="apple-font-status" :role="fontError ? 'alert' : 'status'">{{ fontError || '正在加载字体…' }}<button v-if="fontError" class="apple-setting-command" @click="activateFont">重试</button></p>
+          <h3 class="apple-desktop-heading">桌面歌词</h3>
+          <label class="apple-setting-row"><span>显示桌面歌词</span><input type="checkbox" :checked="player.showDesktopLyrics" aria-label="显示桌面歌词" @change="player.toggleDesktopLyrics()" /></label>
+          <div class="apple-setting-row"><span>桌面歌词字体</span><CustomSelect :model-value="player.desktopLyricFont" :options="desktopFonts" apple label="桌面歌词字体" @update:model-value="player.setFont" /></div>
+          <label class="apple-setting-row"><span>桌面歌词颜色</span><input type="color" :value="player.desktopLyricColor" aria-label="桌面歌词颜色" @input="player.setColor($event.target.value)" /></label>
+          <div class="apple-setting-row"><span>桌面歌词模式</span><div class="apple-segment" role="group" aria-label="桌面歌词模式"><button :class="{ selected: player.desktopLyricMode === 'complex' }" :aria-pressed="player.desktopLyricMode === 'complex'" @click="player.setDesktopLyricMode('complex')">完整</button><button :class="{ selected: player.desktopLyricMode === 'simple' }" :aria-pressed="player.desktopLyricMode === 'simple'" @click="player.setDesktopLyricMode('simple')">简约</button></div></div>
+          <label class="apple-setting-row"><span>桌面背景透明度</span><div class="apple-size-control"><input type="range" min="0" max="100" :value="100 - player.desktopLyricOpacity" aria-label="桌面歌词背景透明度" @input="player.setDesktopLyricOpacity(100 - Number($event.target.value))" /><output>{{ 100 - player.desktopLyricOpacity }}%</output></div></label>
         </section>
       </Transition>
     </div>
@@ -270,6 +322,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.apple-desktop-heading { margin: 20px 0 6px; font-size: 14px; font-weight: 650; }
+.apple-font-status { margin: 4px 0; color: #e6ecf5; font-size:12px; line-height:1.6; }
 .apple-detail { display: contents; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif; letter-spacing: 0; }
 .apple-background { position: absolute; inset: 0; z-index: 0; background: #252a28; pointer-events: none; overflow: hidden; }
 .apple-background-image { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .72; }

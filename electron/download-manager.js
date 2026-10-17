@@ -5,7 +5,7 @@
 // - 本地文件：直接复制
 // - 统一历史记录（持久化到磁盘），分类：music / movie / anime / mv / video
 // - 同时发送新事件（download:*）和旧事件（video-download-*）以兼容 VideoDownloadToast
-import { ipcMain, app, dialog } from 'electron'
+import { ipcMain, app, dialog, nativeImage } from 'electron'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -15,10 +15,11 @@ import axios from 'axios'
 import { Transform } from 'node:stream'
 import { pipeline, finished } from 'node:stream/promises'
 import { once } from 'node:events'
+import { resolveDownloadLink, responseDownloadName, safeDownloadName } from './download-resolver.js'
 
 // 自定义 Agent：解除默认 maxSockets 限制，支持 有界并发不限速
-const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8 })
-const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 32, maxFreeSockets: 8 })
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 32 })
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 128, maxFreeSockets: 32 })
 
 // 动态解析 aria2c / ffmpeg 路径（打包进程序，不依赖外部路径）
 function resolveTool(name) {
@@ -52,6 +53,123 @@ const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const activeDownloads = new Map()
 // 全部下载历史（含进行中）：id -> record
 const downloadHistory = new Map()
+const musicDownloadProviders = new Map()
+// Providers resolve fresh account-authorized media in the main process. Only
+// song IDs, quality and an opaque account scope are retained for retry.
+export function registerMusicDownloadProvider(name, resolve, scope) {
+  musicDownloadProviders.set(name, { resolve, scope })
+}
+
+function providerEvent(record, phase, data = {}) {
+  emit(`download:${phase}`, { ...record, ...data })
+  emit(`video-download-${phase}`, { ...record, ...data, downloadId: record.id, category: 'music' })
+}
+function musicDownloadName(media, fallback) {
+  let format = 'song-artist'
+  try { format = JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'music-naming.json'), 'utf8')).download } catch {}
+  const title = media.trackName || fallback, artist = media.artist
+  const name = artist ? format === 'artist-song' ? `${artist} - ${title}` : `${title} - ${artist}` : title
+  return String(name).replace(/[\\\/:*?"<>|\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').slice(0, 180) || '汽水歌曲'
+}
+async function providerArtwork(url, signal) {
+  const parsed = new URL(url)
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) throw new Error('封面地址无效')
+  const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000, maxContentLength: 12 * 1024 * 1024, maxBodyLength: 12 * 1024 * 1024, signal })
+  const image = nativeImage.createFromBuffer(Buffer.from(response.data))
+  if (image.isEmpty()) throw new Error('封面图片无法解码')
+  const data = image.toJPEG(95)
+  if (!data.length) throw new Error('封面图片内容为空')
+  return data
+}
+
+export function startProviderMusicDownload(provider, params) {
+  loadHistory()
+  const source = musicDownloadProviders.get(provider)
+  if (!source) throw new Error('音乐下载服务尚未就绪')
+  const record = { id:genId(), type:'music', typeLabel:'音乐', provider,
+    source:{ id:String(params.id), quality:String(params.quality || 'auto'), scope:source.scope() },
+    name:String(params.name || '汽水歌曲').replace(/[\\/:*?"<>|\x00-\x1f]/g,'_').slice(0,110),
+    url:'', urlMasked:`qishui://track/${encodeURIComponent(params.id)}`, path:'', status:'pending', percent:0,
+    received:0, total:0, speed:0, error:'', startTime:Date.now(), endTime:0, engine:'provider' }
+  downloadHistory.set(record.id, record)
+  const state = { canceled:false, controller:new AbortController() }
+  activeDownloads.set(record.id, state)
+  saveHistory()
+  providerEvent(record, 'started')
+  setImmediate(async () => {
+    let partial = '', partialCover = ''
+    const assertActive = () => {
+      if (state.canceled || state.controller.signal.aborted) throw new Error('下载已取消')
+      if (source.scope() !== record.source.scope) throw new Error('账号已切换，请使用原账号重试下载')
+    }
+    try {
+      assertActive()
+      record.status = 'downloading'
+      providerEvent(record, 'progress')
+      const media = await source.resolve(record.source, { signal:state.controller.signal, onResolved:({url,preview,quality}) => {
+        assertActive()
+        record.url = url; record.urlMasked = url; record.preview = preview; record.quality = quality
+        providerEvent(record, 'progress')
+      }, progress:({received,total,connections,ranged,transferMs}) => {
+        record.received=received; record.total=total
+        record.percent=total ? Math.min(95,Math.round(received/total*95)) : 0
+        record.speed=Math.round(received/Math.max(.1,(Date.now()-record.startTime)/1000))
+        record.connections=connections; record.ranged=ranged; record.transferMs=transferMs
+        providerEvent(record, 'progress')
+      } })
+      assertActive()
+      if (!Buffer.isBuffer(media.data) || !media.data.length || !['mp3','m4a','flac'].includes(media.extension)) throw new Error('音乐音源内容无效')
+      const dir=resolveDownloadDir()
+      await fs.promises.mkdir(dir,{recursive:true})
+      record.preview=!!media.preview; record.quality=media.quality
+      record.name = musicDownloadName(media, record.name) + (record.preview ? '（试听片段）' : '')
+      // Reserve a unique destination atomically; never replace an older song.
+      const base=record.name.replace(/[. ]+$/g,'') || '汽水歌曲'
+      let target, reserved
+      for(let n=0;n<10000;n++) {
+        target=path.join(dir,`${base}${n ? ` (${n})` : ''}.${media.extension}`)
+        if (fs.existsSync(path.join(dir, path.basename(target, path.extname(target)) + '.jpg'))) continue
+        try { reserved=await fs.promises.open(target,'wx'); break } catch(e) { if(e.code!=='EEXIST')throw e }
+      }
+      if(!reserved)throw new Error('无法分配下载文件名')
+      partial=target
+      try { assertActive(); await reserved.writeFile(media.data) } finally { await reserved.close() }
+      assertActive()
+      if (media.coverUrl) {
+        try {
+          const artwork = await providerArtwork(media.coverUrl, state.controller.signal)
+          assertActive()
+          const coverPath = path.join(dir, path.basename(target, path.extname(target)) + '.jpg')
+          const file = await fs.promises.open(coverPath, 'wx')
+          partialCover = coverPath
+          try { await file.writeFile(artwork) } finally { await file.close() }
+          assertActive()
+          record.coverPath = coverPath
+        } catch (error) {
+          assertActive()
+          if (partialCover) await fs.promises.unlink(partialCover).catch(() => {})
+          partialCover = ''
+          record.coverError = '封面保存失败，音频已保留，可重试下载'
+        }
+      } else record.coverError = '平台未返回封面，音频已保留'
+      assertActive()
+      partialCover = ''
+      record.path=target; partial=''; record.total=media.data.length; record.received=record.total
+      record.status='done'; record.percent=100; record.endTime=Date.now()
+      record.speed=Math.round(record.total/Math.max(.1,(record.endTime-record.startTime)/1000))
+      saveHistory()
+      providerEvent(record, 'progress')
+      providerEvent(record, 'done')
+    } catch(e) {
+      if(partial)await fs.promises.unlink(partial).catch(()=>{})
+      if(partialCover)await fs.promises.unlink(partialCover).catch(()=>{})
+      record.status=state.canceled ? 'canceled' : 'error'; record.error=e.message; record.endTime=Date.now()
+      saveHistory()
+      providerEvent(record, 'error')
+    } finally { activeDownloads.delete(record.id) }
+  })
+  return {success:true,queued:true,downloadId:record.id}
+}
 // 类别 -> 中文标签
 const CATEGORY_LABELS = {
   music: '音乐',
@@ -160,6 +278,7 @@ function saveHistory() {
     const arr = Array.from(downloadHistory.values())
       .sort((a, b) => (b.startTime || 0) - (a.startTime || 0))
       .slice(0, 200)
+      .map(item => item.provider ? { ...item, url: '', urlMasked: `qishui://track/${encodeURIComponent(item.source?.id || '')}` } : item)
     fs.writeFileSync(f, JSON.stringify(arr, null, 2), 'utf8')
   } catch (e) {
     console.error('[DownloadManager] 保存历史失败:', e.message)
@@ -215,7 +334,7 @@ function parseSize(s) {
 // ===== 启动下载（核心入口） =====
 async function startDownload(params) {
   loadHistory()
-  const { url, name, type, category, savePath, askPath, audioUrl, ytSrc, ytHeight, ytAuthed } = params
+  let { url, name, type, category, savePath, askPath, audioUrl, ytSrc, ytHeight, ytAuthed } = params
   if (!url) return { success: false, error: '缺少下载地址' }
 
   // 自动为各平台 CDN 注入 Referer（视频流需要对应 Referer 才能访问，否则 403）
@@ -244,10 +363,19 @@ async function startDownload(params) {
     headers = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\r\n')
   }
 
+  let resolvedExtension = ''
+  if (params.resolveLink) {
+    const resolved = await resolveDownloadLink({url, headers}, DEFAULT_UA)
+    url = resolved.url
+    resolvedExtension = path.extname(resolved.name || '')
+    headers = Object.entries(resolved.headers).map(([k,v]) => `${k}: ${v}`).join('\r\n')
+    if (params.autoName && resolved.name) name = resolved.name
+  }
+
   const id = genId()
   const cat = category || 'video'
-  const safeName = String(name || 'download').replace(/[\\/:*?"<>|]/g, '_').trim()
-  const ext = deriveExt(url, cat)
+  const safeName = safeDownloadName(name || 'download') || 'download'
+  const ext = params.resolveLink && /\.[a-z0-9]{1,8}$/i.test(safeName) ? '' : resolvedExtension || deriveExt(url, cat)
 
   // 选择保存路径：仅当调用方显式 askPath === true 时才弹窗选择；
   // 其余一律按"统一下载目录"直接下载（设置页"下载专区"配置，未配置用系统下载区）
@@ -275,6 +403,8 @@ async function startDownload(params) {
     name: safeName,
     url,
     urlMasked: maskUrl(url),
+    audioUrl,
+    headers,
     path: outputPath,
     status: 'pending',
     percent: 0,
@@ -321,8 +451,8 @@ async function startDownload(params) {
 function startLocalCopy(id, url, outputPath, record) {
   setImmediate(async () => {
     try {
-      const localPath = url.replace(/^local-file:\/\//, '').replace(/^file:\/\//, '')
-      const decoded = decodeURIComponent(localPath)
+      const localPath = url.replace(/^local-file:\/\//, '').replace(/^file:\/\//, '').replace(/^localhost\//i, '')
+      const decoded = decodeURIComponent(localPath).replace(/^\/+(?=[a-z]:)/i, '')
       await fs.promises.copyFile(decoded, outputPath)
       record.status = 'done'
       record.percent = 100
@@ -335,7 +465,7 @@ function startLocalCopy(id, url, outputPath, record) {
       saveHistory()
       emit('download:progress', { id, percent: 100, done: true })
       emit('video-download-progress', { downloadId: id, percent: 100, done: true })
-      emit('download:done', { id, path: outputPath, speed: record.speed })
+      emit('download:done', { id, name: record.name, path: outputPath, speed: record.speed })
       emit('video-download-done', { downloadId: id, path: outputPath, name: record.name, category: record.type, speed: record.speed })
     } catch (e) {
       record.status = 'error'
@@ -526,8 +656,8 @@ async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record
         continue
       }
       // Content-Disposition 实际文件名（未手动命名时采用）：合并前已在函数内改写目标路径
-      if (r?.name) {
-        outputPath = path.join(path.dirname(outputPath), r.name)
+      if (r?.path) {
+        outputPath = r.path
         record.name = path.basename(outputPath)
         record.path = outputPath
         saveHistory()
@@ -556,17 +686,11 @@ async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record
     activeDownloads.delete(id)
     // 清理半成品与分片临时目录（分片目录带随机后缀，按 前缀 扫描删除；暂停的任务保留目录供续传）
     try {
-      if (!state.paused && fs.existsSync(outputPath)) fs.unlinkSync(outputPath)
+      if (!state.paused && state.outputPath && fs.existsSync(state.outputPath)) fs.unlinkSync(state.outputPath)
     } catch (er) {}
     if (!state.paused) {
       try {
-        const pdir = path.dirname(outputPath)
-        const pbase = path.basename(outputPath)
-        for (const f of fs.readdirSync(pdir)) {
-          if (f.startsWith(pbase + '.parts')) {
-            try { fs.rmSync(path.join(pdir, f), { recursive: true, force: true }) } catch (er) {}
-          }
-        }
+        for (const partDir of state.partDirs?.values() || []) fs.rmSync(partDir, { recursive: true, force: true })
       } catch (er) {}
     }
     emit('download:error', { id, error: record.error })
@@ -575,10 +699,24 @@ async function startBuiltinMultithread(id, url, outputPath, extraHeaders, record
 }
 
 
-// ===== 多线程分片下载核心（16 路并发封顶 / 分片级断点重试 / 流式合并） =====
+// ===== 多线程分片下载核心（32～128 路 / 分片级断点重试 / 流式合并） =====
 // Bounded connections and stream backpressure keep downloads from exhausting memory.
-const DL_MAX_THREADS = 16              // 最大并发线程数
-const DL_MIN_PART = 4 * 1024 * 1024     // 最小分片 4MB，小文件使用单连接
+const DL_MAX_THREADS = 128
+const DL_MIN_THREADS = 32
+
+function createDownloadOutput(filePath, state) {
+  // Atomically reserve each completed target; never overwrite an existing download.
+  if (state.outputPath) return { path: state.outputPath, writer: fs.createWriteStream(state.outputPath) }
+  const ext = path.extname(filePath), base = filePath.slice(0, filePath.length - ext.length)
+  for (let n = 0; n < 1000; n++) {
+    const target = base + (n ? ` (${n})` : '') + ext
+    let fd
+    try { fd = fs.openSync(target, 'wx') } catch (error) { if (error.code === 'EEXIST') continue; throw error }
+    state.outputPath = target
+    return { path: target, writer: fs.createWriteStream(target, { fd, autoClose: true }) }
+  }
+  throw new Error('无法分配下载文件名')
+}
 
 // 探测文件大小与 Range 支持：HEAD 优先；被拒时用 GET Range: bytes=0-0 兜底
 // B站签名 URL 等部分 CDN 拒绝 HEAD，GET Range 探测作为兜底。
@@ -588,7 +726,9 @@ async function probeDownload(url, headerObj) {
     const total = parseInt(head.headers?.['content-length'] || '0', 10)
     const ranged = (head.headers?.['accept-ranges'] || '').toLowerCase() === 'bytes'
     if (total > 0 && ranged) return { total, ranged: true }
-    if (total > 0) return { total, ranged: false }
+    // Missing Accept-Ranges does not mean Range is unsupported (several CDNs
+    // omit it on HEAD). Probe once and reuse a full 200 response below.
+    if (total > 0 && String(head.headers?.['accept-ranges']).toLowerCase() === 'none') return { total, ranged: false }
   }
   const res = await axios.get(url, {
     headers: { ...headerObj, Range: 'bytes=0-0' },
@@ -596,18 +736,22 @@ async function probeDownload(url, headerObj) {
     validateStatus: () => true, responseType: 'stream'
   }).catch(() => null)
   if (res) {
-    try { res.data?.destroy?.() } catch (e) {}
     const m = String(res.headers?.['content-range'] || '').match(/\/(\d+)\s*$/)
-    if (res.status === 206 && m) return { total: parseInt(m[1], 10), ranged: true }
+    if (res.status === 206 && m) {
+      res.data?.destroy?.()
+      return { total: parseInt(m[1], 10), ranged: true }
+    }
     if (res.status > 0 && res.status < 300) {
       const total = parseInt(res.headers?.['content-length'] || '0', 10)
-      if (total > 0) return { total, ranged: false }
+      return { total: total > 0 ? total : 0, ranged: false, response: res }
     }
+    res.data?.destroy?.()
   }
   return { total: 0, ranged: false }
 }
 
 async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, state) {
+  const startedAt = Date.now()
   // 暂停/取消统一经 AbortController 中止在途请求；partDir 挂在 state 上供暂停-恢复复用
   const ac = new AbortController()
   state.abortAll = () => { try { ac.abort() } catch (e) {} }
@@ -619,7 +763,8 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
     }
   }
 
-  const { total, ranged } = await probeDownload(url, headerObj)
+  const { total, ranged, response: probeResponse } = await probeDownload(url, headerObj)
+  state.diagnostics = { probeMs: Date.now() - startedAt, ranged, connections: 1 }
 
   // 滑动窗口实时速度（500ms 窗口，比平均值更贴近真实带宽）
   let winT = Date.now()
@@ -648,28 +793,36 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
 
   if (!total || !ranged) {
     try {
-      const res = await axios.get(url, { responseType: 'stream', headers: headerObj, timeout: 0, maxRedirects: 5, httpsAgent, httpAgent, signal: ac.signal })
+      const res = probeResponse || await axios.get(url, { responseType: 'stream', headers: headerObj, timeout: 0, maxRedirects: 5, httpsAgent, httpAgent, signal: ac.signal })
+      const actualName = state.autoName ? responseDownloadName(res, url) : ''
+      if (actualName) filePath = path.join(path.dirname(filePath), actualName)
+      const output = createDownloadOutput(filePath, state)
       const progress = new Transform({ transform(chunk, _encoding, callback) {
         receivedTotal += chunk.length
         maybeReport()
         callback(null, chunk)
       } })
-      await pipeline(res.data, progress, fs.createWriteStream(filePath), { signal: ac.signal })
+      await pipeline(res.data, progress, output.writer, { signal: ac.signal })
+      const expected = Number(res.headers?.['content-length']) || 0
+      if (expected && receivedTotal !== expected) throw new Error('下载文件长度不完整')
       maybeReport(true)
-      return { size: receivedTotal }
+      return { size: receivedTotal, name: path.basename(output.path), path: output.path }
     } catch (error) {
       if (state.paused) return { paused: true }
       throw error
     }
   }
 
-  // Four MB per part, one connection for small files, at most sixteen for large files.
-  const threads = Math.min(DL_MAX_THREADS, Math.max(1, Math.ceil(total / DL_MIN_PART)))
-  const partSize = Math.ceil(total / threads)
+  // Respect the selected connection count; only files smaller than the count use fewer ranges.
+  // No byte-rate limit. Non-Range servers retain the single-stream fallback above.
+  const requestedThreads = Math.trunc(Number(state.customThreads)) || DL_MIN_THREADS
+  const threads = Math.min(total, DL_MAX_THREADS, Math.max(DL_MIN_THREADS, requestedThreads))
+  state.diagnostics.connections = threads
+  const transferStartedAt = Date.now()
   const parts = []
   for (let i = 0; i < threads; i++) {
-    const start = i * partSize
-    const end = Math.min(total - 1, start + partSize - 1)
+    const start = Math.floor(i * total / threads)
+    const end = Math.floor((i + 1) * total / threads) - 1
     if (start > end) break
     parts.push({ index: i, start, end, received: 0 })
   }
@@ -696,6 +849,7 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
     }
   }
   state.resumable = true
+  receivedTotal = parts.reduce((sum, part) => sum + part.received, 0)
 
   // 分片下载：失败重试 3 次，重试时从已收字节续传（分片内断点）。
   // ws 必须挂 error 监听：目录被清理/磁盘异常时 createWriteStream 的错误走事件，
@@ -710,7 +864,7 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
         const startByte = p.start + p.received
         if (startByte > p.end) return
         let res = null
-        const ws = fs.createWriteStream(partPath, { flags: p.received > 0 ? 'a' : 'w' })
+        const ws = fs.createWriteStream(partPath, { flags: p.received > 0 ? 'a' : 'w', highWaterMark: 1024 * 1024 })
         partWriter = ws
         ws.on('error', (err) => { wsError = err; try { res?.data?.destroy() } catch (e) {} })
         try {
@@ -735,15 +889,7 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
         }
         // 分片 0 的响应头：Content-Disposition 真实文件名 + Content-Type 扩展名兜底
         if (p.index === 0 && !cdName) {
-          cdName = parseCDName(res.headers?.['content-disposition'])
-          if (!cdName) {
-            try {
-              const ct = String(res.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase()
-              const base = decodeURIComponent(new URL(url).pathname.split('/').pop() || '')
-              const ext = DL_CT_EXT_MAP[ct]
-              if (ext && base && !base.match(/\\.[A-Za-z0-9]{1,8}$/)) cdName = base + ext
-            } catch (e) {}
-          }
+          cdName = responseDownloadName(res, url)
         }
         for await (const chunk of res.data) {
           if (wsError) throw wsError
@@ -800,44 +946,61 @@ async function downloadFileMultithread(url, filePath, extraHeaders, onProgress, 
     throw firstErr
   }
   maybeReport(true)
+  state.diagnostics.transferMs = Date.now() - transferStartedAt
+  const mergeStartedAt = Date.now()
 
   // 流式按序合并（内存峰值仅为管道缓冲，不整块读入分片）
   if (cdName && state.autoName) {
     const renamed = path.join(path.dirname(filePath), cdName)
     if (path.resolve(renamed) !== path.resolve(filePath)) filePath = renamed
   }
-  const out = fs.createWriteStream(filePath)
-  for (const p of parts) {
-    await new Promise((resolve, reject) => {
-      const rs = fs.createReadStream(partFiles[p.index])
-      rs.on('error', reject)
-      out.on('error', reject)
-      rs.on('end', resolve)
-      rs.pipe(out, { end: false })
-    })
+  const output = createDownloadOutput(filePath, state)
+  const out = output.writer
+  let outputError
+  out.on('error', error => { outputError = error })
+  try {
+    for (const p of parts) {
+      if (outputError) throw outputError
+      if (state.canceled) throw new Error('已取消')
+      await new Promise((resolve, reject) => {
+        const rs = fs.createReadStream(partFiles[p.index], { highWaterMark: 1024 * 1024 })
+        const onError = error => { rs.destroy(); out.off('error', onError); reject(error) }
+        rs.once('error', onError)
+        out.once('error', onError)
+        rs.on('end', () => { out.off('error', onError); resolve() })
+        rs.pipe(out, { end: false })
+      })
+    }
+    if (outputError) throw outputError
+    await new Promise((resolve, reject) => { out.once('error', reject); out.end(resolve) })
+  } catch (error) {
+    out.destroy()
+    await finished(out, {cleanup:true}).catch(() => {})
+    throw error
   }
-  await new Promise(r => out.end(r))
   // 分片合并完成，整体清理临时目录
   try { fs.rmSync(partDir, { recursive: true, force: true }) } catch (e) {}
-  return { size: total, name: (cdName && state.autoName) ? cdName : null }
+  state.diagnostics.mergeMs = Date.now() - mergeStartedAt
+  return { size: total, name: path.basename(output.path), path: output.path }
 }
 
 // ===== DASH 音视频分离下载 + ffmpeg 合并（B站高画质专用）=====
 // 流程：并行多线程下载 video.m4s + audio.m4s → ffmpeg 流复制合并为 mp4（极快）
 async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraHeaders, record) {
   const state = { canceled: false, _lastReport: 0, startTime: Date.now() }
+  const videoState = Object.create(state), audioState = Object.create(state)
+  let mergeProcess
   activeDownloads.set(id, {
     canceled: false,
-    cancel: () => { state.canceled = true }
+    cancel: () => { state.canceled = true; videoState.abortAll?.(); audioState.abortAll?.(); mergeProcess?.kill() }
   })
   record.status = 'downloading'
 
   // 临时目录（下载完成后清理）
-  const tmpDir = outputPath + '.tmpdir'
-  try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (e) {}
-  try { fs.mkdirSync(tmpDir, { recursive: true }) } catch (e) {}
+  const tmpDir = outputPath + '.' + id + '.tmpdir'
   const videoFile = path.join(tmpDir, 'video.m4s')
   const audioFile = path.join(tmpDir, 'audio.m4s')
+  const mergedFile = path.join(tmpDir, 'merged.mp4')
 
   // B站 audio 流也在 bilivideo/mcdn CDN，需要相同的 Referer 头
   let audioHeaders = extraHeaders
@@ -872,19 +1035,26 @@ async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraH
 
 
   try {
+    fs.mkdirSync(tmpDir, { recursive: true })
     // 并行下载 video + audio
     const videoPromise = downloadFileMultithread(videoUrl, videoFile, extraHeaders, (r, t) => {
       vSize = r; vTotal = t; reportProgress()
-    }, state)
+    }, videoState)
     const audioPromise = downloadFileMultithread(audioUrl, audioFile, audioHeaders, (r, t) => {
       aSize = r; aTotal = t; reportProgress()
-    }, state)
+    }, audioState)
 
     // 全部收敛后才继续：视频失败时音频可能仍在写入，立即清理 tmpdir 会引发 ENOENT/EPERM
     const settled = await Promise.allSettled([videoPromise, audioPromise])
     if (state.canceled) throw new Error('已取消')
     const firstErr = settled.find(r => r.status === 'rejected')
     if (firstErr) throw firstErr.reason
+    const [videoResult, audioResult] = settled.map(result => result.value)
+    const videoInput = videoResult.path || videoFile
+    const audioInput = audioResult.path || audioFile
+    for (const input of [videoInput, audioInput]) {
+      if (!fs.statSync(input).size) throw new Error('音视频流为空，请重新下载')
+    }
 
     // 进度推进到合并阶段
     record.percent = 99
@@ -893,8 +1063,11 @@ async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraH
 
     // ffmpeg 合并：-i video -i audio → mp4（流复制，不重编码，极快）
     await new Promise((resolve, reject) => {
-      const args = ['-y', '-i', videoFile, '-i', audioFile, '-c', 'copy', outputPath]
+      // Keep MP4's sample index before media data so local/HTTP players can
+      // initialize immediately instead of seeking through a large DASH remux.
+      const args = ['-y', '-i', videoInput, '-i', audioInput, '-map', '0:v:0', '-map', '1:a:0', '-c', 'copy', '-movflags', '+faststart', mergedFile]
       const proc = spawn(FFMPEG_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+      mergeProcess = proc
       const errBuf = []
       proc.stderr?.on('data', (chunk) => { errBuf.push(chunk.toString()) })
       proc.on('close', (code) => {
@@ -905,6 +1078,16 @@ async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraH
     })
 
     if (state.canceled) throw new Error('已取消')
+    if (!fs.statSync(mergedFile).size) throw new Error('合并文件为空，请重试下载')
+    // Publish without overwriting an existing file, including concurrent tasks.
+    const ext = path.extname(outputPath), base = outputPath.slice(0, outputPath.length - ext.length)
+    for (let n = 0; ; n++) {
+      if (n >= 1000) throw new Error('无法分配下载文件名')
+      const target = base + (n ? ` (${n})` : '') + ext
+      try { fs.copyFileSync(mergedFile, target, fs.constants.COPYFILE_EXCL); outputPath = target; break }
+      catch (error) { if (error.code !== 'EEXIST') throw error }
+    }
+    record.path = outputPath
 
     record.status = 'done'
     record.percent = 100
@@ -927,7 +1110,6 @@ async function startDashMergeDownload(id, videoUrl, audioUrl, outputPath, extraH
     record.endTime = Date.now()
     saveHistory()
     activeDownloads.delete(id)
-    try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath) } catch (er) {}
     emit('download:error', { id, error: record.error })
     emit('video-download-error', { downloadId: id, error: record.error })
     try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch (er) {}
@@ -1280,9 +1462,16 @@ async function retryDownload(id) {
   const record = downloadHistory.get(id)
   if (!record) return { success: false, error: '记录不存在' }
   if (activeDownloads.has(id)) return { success: false, error: '该任务进行中' }
+  if (record.provider) {
+    const source=musicDownloadProviders.get(record.provider)
+    if (!source || source.scope() !== record.source?.scope) return {success:false,error:'请登录原账号后重试下载'}
+    return startProviderMusicDownload(record.provider,{...record.source,name:record.name.replace(/（试听片段）$/,'')})
+  }
   // 复用原参数重新启动
   return startDownload({
     url: record.url,
+    audioUrl: record.audioUrl,
+    headers: record.headers,
     name: record.name,
     category: record.type,
     savePath: record.path
@@ -1292,88 +1481,9 @@ async function retryDownload(id) {
 // ===== IPC Handlers =====
 // 探测下载真实文件名（设置页/自定义下载自动填充）：
 // 1) Content-Disposition（filename* UTF-8 / filename） 2) 重定向后最终 URL 的带后缀文件名 3) Content-Type 推断扩展名
-function parseCDName(cd) {
-  const s = String(cd || '')
-  const mStar = s.match(/filename\*=\s*(?:UTF-8|utf-8)''([^;]+)/i)
-  const mPlain = s.match(/filename\s*=\s*"([^"]+)"/i) || s.match(/filename\s*=\s*([^;]+)/i)
-  let name = ''
-  if (mStar) name = decodeURIComponent(mStar[1].trim().replace(/^"|"$/g, ''))
-  else if (mPlain) name = mPlain[1].trim().replace(/^"|"$/g, '')
-  return name.replace(/[\\/:*?"<>|]/g, '_').trim()
-}
-
-// Content-Type → 扩展名（probe 兜底 + 下载完成重命名共用）
-const DL_CT_EXT_MAP = {
-        'application/zip': '.zip', 'application/x-zip-compressed': '.zip',
-        'application/x-rar-compressed': '.rar', 'application/vnd.rar': '.rar',
-        'application/x-7z-compressed': '.7z', 'application/gzip': '.gz',
-        'application/x-gzip': '.gz', 'application/x-tar': '.tar',
-        'application/x-iso9660-image': '.iso', 'application/vnd.android.package-archive': '.apk',
-        'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
-        'video/quicktime': '.mov', 'video/x-msvideo': '.avi', 'video/x-flv': '.flv',
-        'video/mpeg': '.mpeg', 'video/mp2t': '.ts', 'video/x-ms-wmv': '.wmv',
-        'audio/mpeg': '.mp3', 'audio/flac': '.flac', 'audio/mp4': '.m4a',
-        'audio/aac': '.aac', 'audio/wav': '.wav', 'audio/x-wav': '.wav',
-        'audio/ogg': '.ogg', 'audio/opus': '.opus', 'audio/x-ape': '.ape',
-        'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
-        'image/webp': '.webp', 'image/bmp': '.bmp', 'image/svg+xml': '.svg',
-        'application/pdf': '.pdf', 'text/plain': '.txt',
-        'application/msword': '.doc',
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
-        'application/vnd.ms-excel': '.xls',
-        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
-        'application/vnd.ms-powerpoint': '.ppt',
-        'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
-        'application/epub+zip': '.epub',
-        'application/x-msdownload': '.exe', 'application/x-msi': '.msi',
-        'application/x-apple-diskimage': '.dmg'
-      }
-
-ipcMain.handle('download:probe-name', async (_, url) => {
-  try {
-    // 流式 GET：只取响应头（拿到 Content-Disposition 即销毁流），比 HEAD 兼容性好
-    const res = await axios.get(url, {
-      responseType: 'stream',
-      headers: { 'User-Agent': DEFAULT_UA },
-      timeout: 15000,
-      maxRedirects: 5,
-      validateStatus: () => true
-    })
-    const finish = () => { try { res.data?.destroy() } catch (e) {} }
-    const cd = String(res.headers?.['content-disposition'] || '')
-    let name = ''
-    const mStar = cd.match(/filename\*=\s*(?:UTF-8|utf-8)''([^;]+)/i)
-    const mPlain = cd.match(/filename\s*=\s*"([^"]+)"/i) || cd.match(/filename\s*=\s*([^;]+)/i)
-    if (mStar) name = decodeURIComponent(mStar[1].trim().replace(/^"|"$/g, ''))
-    else if (mPlain) name = mPlain[1].trim().replace(/^"|"$/g, '')
-
-    // 重定向后最终 URL 里带真实扩展名的文件名
-    if (!name) {
-      try {
-        const finalUrl = res.request?.res?.responseURL || res.request?.responseURL || url
-        const last = decodeURIComponent(new URL(finalUrl).pathname.split('/').pop() || '')
-        if (/\.[A-Za-z0-9]{1,8}$/.test(last)) name = last
-      } catch (e) {}
-    }
-
-    // Content-Type 明确指向具体类型时，路径基名 + 扩展名；
-    // 泛型类型（octet-stream/text/html）+ 无扩展名基名（多为哈希 ID）→ 不猜，返回空让用户手填
-    if (!name) {
-      const ct = String(res.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase()
-      const extMap = DL_CT_EXT_MAP
-      const ext = extMap[ct]
-      if (ext && ct !== 'text/plain') {
-        const base = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'download')
-        name = base + ext
-      }
-    }
-
-    finish()
-    name = (name || '').replace(/[\/:*?"<>|]/g, '_').trim()
-    return { success: true, name: name || '' }
-  } catch (e) {
-    return { success: false, name: '', error: e.message }
-  }
+ipcMain.handle('download:probe-name', async (_, input) => {
+  try { const { headers: _headers, ...result } = await resolveDownloadLink(input, DEFAULT_UA); return result }
+  catch (e) { return { success: false, name: '', error: e.message } }
 })
 
 ipcMain.handle('download:start', async (_, params) => {

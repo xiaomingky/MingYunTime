@@ -1,11 +1,13 @@
 // QQ 音乐 API 前端封装
 // 通过 Electron IPC 调用主进程 electron/qq-music.js 注册的通道
-// 所有函数自动透传 localStorage 里的 qq_cookie
+// Cookie stays in memory after migration; persistent credentials are encrypted
+// by the main process. Legacy localStorage is read only until validated import.
 const getBridge = () => window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer
 
-export const getQQCookie = () => localStorage.getItem('qq_cookie') || ''
-export const setQQCookie = (cookie) => localStorage.setItem('qq_cookie', cookie)
-export const clearQQCookie = () => localStorage.removeItem('qq_cookie')
+let sessionCookie = ''
+export const getQQCookie = () => sessionCookie || localStorage.getItem('qq_cookie') || ''
+export const setQQCookie = (cookie) => { sessionCookie = cookie; localStorage.removeItem('qq_cookie') }
+export const clearQQCookie = () => { sessionCookie = ''; localStorage.removeItem('qq_cookie') }
 
 export const getQQProfile = () => {
     try { return JSON.parse(localStorage.getItem('qq_profile') || 'null') } catch { return null }
@@ -17,7 +19,7 @@ export const clearQQProfile = () => localStorage.removeItem('qq_profile')
 async function invoke(channel, params = {}) {
     const bridge = getBridge()
     if (!bridge?.invoke) throw new Error('Bridge 未就绪')
-    return bridge.invoke(channel, { ...params, cookie: getQQCookie() })
+    return bridge.invoke(channel, { ...params, cookie: params.cookie || getQQCookie() })
 }
 
 // ========== 搜索类(3) ==========
@@ -30,6 +32,7 @@ export const qqSongInfo = (songmid) => invoke('qq:song-info', { songmid })
 export const qqSongPlay = (songmid, quality = '128', cookie = '') => invoke('qq:song-play', { songmid, quality, cookie })
 export const qqLyric = (songmid, isFormat = 1, cookie = '') => invoke('qq:lyric', { songmid, isFormat, cookie })
 export const qqAlbumInfo = (albummid, cookie = '') => invoke('qq:album-info', { albummid, cookie })
+export const qqAlbumTracks = (albummid, offset = 0, limit = 100) => invoke('qq:album-tracks', { albummid, offset, limit })
 export const qqBatchSongInfo = (songs, cookie = '') => invoke('qq:batch-song-info', { songs, cookie })
 
 // ========== 歌手类(7) ==========
@@ -44,7 +47,7 @@ export const qqSingerStarNum = (singermid) => invoke('qq:singer-star-num', { sin
 // ========== 歌单类(5) ==========
 export const qqPlaylistCategories = () => invoke('qq:playlist-categories')
 export const qqPlaylistList = (params = {}) => invoke('qq:playlist-list', params)
-export const qqPlaylistDetail = (disstid) => invoke('qq:playlist-detail', { disstid })
+export const qqPlaylistDetail = (disstid, offset = 0, limit = 100) => invoke('qq:playlist-detail', { disstid, offset, limit })
 export const qqBatchPlaylists = (params = {}) => invoke('qq:batch-playlists', params)
 export const qqNewDisks = (limit = 20, page = 1) => invoke('qq:new-disks', { limit, page })
 
@@ -63,6 +66,16 @@ export const qqTopLists = () => invoke('qq:top-lists')
 // 返回归一化结构(与网易云兼容): { code:0, data: { comments, total, hasMore, lasthotcommentid } }
 export const qqComments = (songmid, songid, cmd = 8, pagenum = 0, pagesize = 20, lasthotcommentid = '', cookie = '') =>
     invoke('qq:comments', { songmid, songid, cmd, pagenum, pagesize, lasthotcommentid, cookie })
+export const qqResourceComments = (id, biztype = 1, cmd = 8, pagenum = 0, pagesize = 25, cursor = '') =>
+    invoke('qq:comments', { resourceId: String(id), biztype, cmd, pagenum, pagesize, lasthotcommentid: cursor })
+export const qqValidateSession = (cookie, uin = '', persist = false, nativeGeneration, qrGeneration) => invoke('qq:validate-session', { cookie, uin, persist, ...(nativeGeneration === undefined ? {} : {nativeGeneration}), ...(qrGeneration === undefined ? {} : {qrGeneration}) })
+export const qqRestoreSession = () => getBridge()?.invoke('qq:restore-session')
+export const qqLogout = () => getBridge()?.invoke('qq:logout')
+export const qqMembershipBenefits = (action, uin) => {
+    const bridge=getBridge()
+    if(!bridge?.invoke)throw new Error('Bridge 未就绪')
+    return bridge.invoke('qq:membership-benefits',{action,uin:String(uin || '')})
+}
 
 // ========== 用户类(4) ==========
 // 注意:QQ 用户类接口需要 cookie 鉴权,cookie 从 qqUserStore 取
@@ -78,16 +91,24 @@ export const qqOperMyLike = (cmd, songmid, cookie = '', dissid = '', songid = 0)
 // 歌单操作(cmd: 'add'/'del'/'addsong'/'delsong')
 export const qqOperSonglist = (cmd, params = {}, cookie = '') => invoke('qq:oper-songlist', { cmd, ...params, cookie })
 export const qqUserAvatar = (uin, size = 140) => invoke('qq:user-avatar', { uin, size })
-export const qqQrCreate = () => invoke('qq:qr-create')
-export const qqQrCheck = (qrsig, ptqrtoken) => invoke('qq:qr-check', { qrsig, ptqrtoken })
+export const qqQrCreate = (mode='qq') => getBridge()?.invoke('qq:qr-create', {mode})
+export const qqQrCheck = loginId => getBridge()?.invoke('qq:qr-check', {loginId})
+export const qqQrCancel = loginId => getBridge()?.invoke('qq:qr-cancel', loginId ? {loginId} : {})
 
 // 官网登录:打开 y.qq.com 扫码登录窗口,扫码成功后采集完整 cookie(含 qqmusic_key/qm_keyst)
 // 替代 API 二维码登录(API 登录缺失 qqmusic_key 导致播放链接被限制)
 // 注意:此通道不需要自动附加 cookie,直接调用 ipcRenderer
-export const qqWebLogin = () => {
+export const qqWebLogin = (mode = 'qq') => {
     const bridge = getBridge()
     if (!bridge?.invoke) throw new Error('Bridge 未就绪')
-    return bridge.invoke('qq:web-login')
+    return bridge.invoke('qq:web-login', { mode })
+}
+export const qqNativePhone = (action, params = {}) => invoke('qq:native-phone', { action, ...params })
+export const qqPlaylistGroup = (uin, kind, offset = 0, limit = 100) => invoke('qq:user-playlists', {uin,kind,offset,limit})
+export const qqOpenBenefits = (target, uin) => {
+    const bridge = getBridge()
+    if (!bridge?.invoke) throw new Error('Bridge 未就绪')
+    return bridge.invoke('qq:benefits-open', { target, uin: String(uin || '') })
 }
 
 // ========== 其他类(8) ==========
@@ -113,12 +134,12 @@ export const qqTicketInfo = () => invoke('qq:ticket-info')
 export const normalizeQQSong = (song) => {
     if (!song) return null
     // 幂等保护:已标准化对象直接返回(判断依据:有 platform:'qq' + artist 字段,无 singer/songname 原始字段)
-    if (song.platform === 'qq' && song.artist && !song.singer && !song.songname && song.songmid) {
+    if (song.platform === 'qq' && song.artist && !song.singer && !song.songname && song.id) {
         return song
     }
     // songmid 优先，没有 songmid 时用 songId 作为 fallback（排行榜场景）
     const songmid = song.songmid || song.mid || song.strSongMid || song.songMid || ''
-    const songid = song.songid || song.songId || 0
+    const songid = song.songid || song.songId || song.id || 0
     // 没有 songmid 但有 songid 时，用 songid 作为 id（排行榜歌曲）
     const id = songmid || (songid ? String(songid) : '')
     if (!id) return null
@@ -137,19 +158,19 @@ export const normalizeQQSong = (song) => {
     return {
         id,
         songmid,  // 可能为空（排行榜场景）
+        songType: song.songType ?? song.type ?? 0,
         songid,   // 排行榜场景用 songid 播放
         name: song.songname || song.songName || song.name || song.title || '',
         artist: singerName,
         album: albumName,
         albummid,
         albumid: song.albumid || song.albumId || song.album?.id || 0,
-        duration: (song.interval || song.duration || 0) * 1000,
-        // VIP/付费标识:pay.payplay=1 或 pay.price.album>0 等,表示需 VIP
-        // 多种字段兼容(接口版本不同字段名不同)
+        duration: song.dt ?? ((song.interval || song.duration || 0) * 1000),
+        // Playback rights only. Download prices and purchase status are not VIP requirements.
         isVip: (() => {
             const pay = song.pay || {}
-            return !!(pay.payplay === 1 || pay.paytrackprice === 1 || pay.trackprice > 0 ||
-                      song.payed === 1 || song.grant === 0 || song.action >= 30000)
+            const play = pay.payplay ?? pay.pay_play
+            return play !== undefined ? Number(play) === 1 : song.isVip === true
         })(),
         // 封面优先级:
         //   1. albummid 构造的专辑封面(QQ 音乐标准封面 T002)
@@ -192,9 +213,9 @@ export async function enrichQQSongWithDetail(song, cookie = '') {
         const albummid = t.album?.mid || t.albummid || ''
         // 歌手 mid:优先取 song-detail 返回的 singer[0].mid,其次用原 song 的 singermid
         const singerMid = (Array.isArray(t.singer) && t.singer[0]?.mid) || song.singermid || ''
-        const pay = t.pay || {}
         return {
             ...song,
+            songid: song.songid || t.id || 0,
             albummid: song.albummid || albummid,
             album: song.album || t.album?.name || t.albumname || '',
             singermid: song.singermid || singerMid,
@@ -202,7 +223,7 @@ export async function enrichQQSongWithDetail(song, cookie = '') {
             picUrl: albummid
                 ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albummid}.jpg`
                 : (singerMid ? `https://y.gtimg.cn/music/photo_new/T001R300x300M000${singerMid}.jpg` : ''),
-            isVip: song.isVip || !!(pay.payplay === 1 || pay.paytrackprice === 1)
+            isVip: normalizeQQSong(t)?.isVip ?? song.isVip
         }
     } catch (e) {
         console.warn('[QQ] enrichQQSongWithDetail 失败:', e?.message || e)
@@ -219,17 +240,24 @@ export const toQQTrack = (song) => {
     if (!song) return null
     const normalized = normalizeQQSong(song)
     if (!normalized) return null
+    const durationMs = normalized.dt ?? normalized.duration ?? 0
     return {
         id: normalized.songmid || normalized.id,
         name: normalized.name,
         artist: normalized.artist || '未知歌手',
-        al: { name: normalized.album || '未知专辑', picUrl: normalized.picUrl || '' },
+        al: { name: normalized.al?.name || normalized.album || '未知专辑', picUrl: normalized.picUrl || normalized.al?.picUrl || '' },
         picUrl: normalized.picUrl || '',
-        dt: normalized.duration || 0,
-        duration: (normalized.duration || 0) / 1000,
+        dt: durationMs,
+        duration: durationMs / 1000,
         ar: [{ name: normalized.artist || '未知歌手' }],
         platform: 'qq',
         songmid: normalized.songmid,
+        songid: normalized.songid,
+        songType: normalized.songType ?? 0,
+        albummid: normalized.albummid,
+        albumid: normalized.albumid,
+        singermid: normalized.singermid,
+        isVip: normalized.isVip,
         vid: normalized.vid || ''
     }
 }

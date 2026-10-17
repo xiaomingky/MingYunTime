@@ -5,7 +5,7 @@ import { ChevronLeft, RefreshCw, Radio, ExternalLink, Play, Pause, Swords, Trend
 import { esports } from '../api/esports'
 import { usePlayerStore } from '../store/player'
 import { useEsportsRefresh } from '../composables/useEsportsRefresh'
-import { matchTime, statusText, teamName, score, playbackSources, mergeLogs, itemsOf } from '../utils/esports'
+import { matchTime, statusText, teamName, score, playbackSources, mergeLogs, itemsOf, matchScoreboard } from '../utils/esports'
 import { vrsRank } from '../utils/esports-vrs'
 import EsportsImage from '../components/esports/EsportsImage.vue'
 import EsportsStats from '../components/esports/EsportsStats.vue'
@@ -14,6 +14,7 @@ import EsportsPrediction from '../components/esports/EsportsPrediction.vue'
 import ArtVideoPlayer from '../components/ArtVideoPlayer.vue'
 import CustomSelect from '../components/CustomSelect.vue'
 import '../styles/esports.css'
+import '../styles/esports-scoreboard.css'
 
 const route = useRoute(), router = useRouter(), player = usePlayerStore()
 const game = computed(() => route.params.game === 'val' ? 'val' : 'csgo')
@@ -38,6 +39,12 @@ const source = computed(() => sources.value.find(s => s.url === selectedSource.v
 const sourceOptions = computed(() => sources.value.map(s => ({ value: s.url, label: `${s.kind === 'live' ? '直播' : '回放'} · ${s.name}` })))
 const eventId = computed(() => match.value?.tt_info?.id || match.value?.tt_info?.tt_id)
 const detailStatus = computed(() => String(state.value.status))
+const scoreboard = computed(() => matchScoreboard(match.value))
+function openMap(bout) {
+    const index = bouts.value.indexOf(bout)
+    if (index < 0) return
+    switchMap(index); tab.value = 'stats'
+}
 function mapImage(bout) {
     return [bout?.map_icon, bout?.map_logo, bout?.map_bgm, bout?.map_image]
         .find(value => /^https?:\/\//i.test(String(value || ''))) || ''
@@ -122,7 +129,21 @@ onBeforeUnmount(() => { disposed = true; sequence++; playing.value = false })
             <section class="es-match-banner">
                 <button v-if="eventId" class="es-event-link" @click="router.push(`/entertainment/${game}/event/${eventId}`)"><EsportsImage :src="match.tt_info?.logo" />{{ match.tt_info?.disp_name || match.tt_info?.tt_name_show || match.tt_info?.name_zh || '赛事详情' }}</button>
                 <p class="es-match-time">{{ matchTime(info.plan_ts, true) }} · BO{{ info.format || '?' }}</p>
-                <div class="es-scoreboard"><div class="es-banner-team"><span class="es-team-ranking" v-if="game==='csgo'">VRS #{{ vrsRank(info.t1_info?.v_rank) }}<small>HLTV #{{ info.t1_info?.rank || '--' }}</small></span><EsportsImage :src="info.t1_info?.logo" /><h2>{{ teamName(info.t1_info) }}</h2><small v-if="game==='val' && info.t1_info?.rank">世界排名 #{{ info.t1_info.rank }}</small></div><div class="es-banner-center"><span class="es-status" :class="{ live: detailStatus === '1' }">{{ statusText(state.status) }}</span><strong v-if="detailStatus!=='0'">{{ score(state.t1_score) }} <span>:</span> {{ score(state.t2_score) }}</strong><strong v-else class="es-versus">VS</strong><button class="es-follow-btn" :class="{saved}" :aria-pressed="saved" @click="toggleSaved"><Star :size="14" :fill="saved?'currentColor':'none'" />{{ saved?'已关注':'关注比赛' }}</button></div><div class="es-banner-team"><span class="es-team-ranking" v-if="game==='csgo'">VRS #{{ vrsRank(info.t2_info?.v_rank) }}<small>HLTV #{{ info.t2_info?.rank || '--' }}</small></span><EsportsImage :src="info.t2_info?.logo" /><h2>{{ teamName(info.t2_info) }}</h2><small v-if="game==='val' && info.t2_info?.rank">世界排名 #{{ info.t2_info.rank }}</small></div></div>
+                <div class="es-scoreboard"><div class="es-banner-team"><span class="es-team-ranking" v-if="game==='csgo'">VRS #{{ vrsRank(info.t1_info?.v_rank) }}<small>HLTV #{{ info.t1_info?.rank || '--' }}</small></span><EsportsImage :src="info.t1_info?.logo" /><h2>{{ teamName(info.t1_info) }}</h2><small v-if="game==='val' && info.t1_info?.rank">世界排名 #{{ info.t1_info.rank }}</small></div><div class="es-banner-center"><span class="es-status" :class="{ live: detailStatus === '1' }">{{ statusText(state.status) }}</span><span class="es-score-label">大局比分 · BO{{ info.format || '?' }}</span>
+                    <strong v-if="detailStatus!=='0'" class="es-series-score">{{ scoreboard.series.t1 }} <span>:</span> {{ scoreboard.series.t2 }}</strong><strong v-else class="es-versus">VS</strong>
+                    <div v-if="scoreboard.featured" class="es-current-map" :class="{ live: !!scoreboard.active }" aria-live="polite" aria-atomic="true">
+                        <span class="es-score-label">{{ scoreboard.active ? '实时小局' : '最后一局' }} · {{ scoreboard.featured.name }}</span>
+                        <strong class="es-round-score">{{ scoreboard.featured.t1 }}<span>:</span>{{ scoreboard.featured.t2 }}</strong>
+                        <small v-if="scoreboard.active">{{ scoreboard.featured.stage }}<template v-if="scoreboard.featured.round !== '--'"> · 第 {{ scoreboard.featured.round }} 回合</template></small>
+                    </div>
+                    <small v-else class="es-map-waiting">{{ detailStatus === '0' ? '小局比分待开赛' : detailStatus === '1' ? '局间休息 / 等待小局数据' : '暂无小局比分' }}</small><button class="es-follow-btn" :class="{saved}" :aria-pressed="saved" @click="toggleSaved"><Star :size="14" :fill="saved?'currentColor':'none'" />{{ saved?'已关注':'关注比赛' }}</button></div><div class="es-banner-team"><span class="es-team-ranking" v-if="game==='csgo'">VRS #{{ vrsRank(info.t2_info?.v_rank) }}<small>HLTV #{{ info.t2_info?.rank || '--' }}</small></span><EsportsImage :src="info.t2_info?.logo" /><h2>{{ teamName(info.t2_info) }}</h2><small v-if="game==='val' && info.t2_info?.rank">世界排名 #{{ info.t2_info.rank }}</small></div></div>
+                <div v-if="scoreboard.maps.length" class="es-banner-maps" aria-label="各地图小局比分">
+                    <button v-for="map in scoreboard.maps" :key="map.number" class="es-banner-map" :class="{ live: map === scoreboard.active, selected: currentBout === map.bout }" @click="openMap(map.bout)" :aria-label="`第 ${map.number} 局 ${map.name}，${map.t1} 比 ${map.t2}，查看比赛数据`">
+                        <span class="es-banner-map-title">第 {{ map.number }} 局 · {{ map.name }}</span>
+                        <b>{{ map.t1 }}<span>:</span>{{ map.t2 }}</b>
+                        <small>{{ map.status === '1' ? '进行中' : map.status === '2' ? '已结束' : '待开始' }}</small>
+                    </button>
+                </div>
                 <EsportsPrediction :info="info" :state="state" :game="game" compact />
                 <p class="es-muted">{{ info.tt_stage_desc }}<template v-if="info.remark"> · {{ info.remark }}</template></p>
                 <div class="es-match-shortcuts"><button v-if="eventId" @click="router.push(`/entertainment/${game}/event/${eventId}`)"><Swords :size="16" />赛程对阵</button><button @click="tab='video'"><Play :size="16" />{{ sources.some(s=>s.kind==='live')?'观看直播':'直播 / 回放' }}</button></div>

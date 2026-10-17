@@ -12,32 +12,32 @@ import request, {
     verifyCaptcha,
     playlistDelete,
     playlistUpdate,
-    playlistCoverUpdate,
-    checkLockStatus,
-    verifyLockPassword,
-    syncDesktopAccount
+    playlistCoverUpdate
 } from '../api'
 
+// Retire the removed account-lock service without sending music credentials.
+localStorage.removeItem('music_cloud_token')
+
 export const useUserStore = defineStore('user', {
-    state: () => ({
-        isLoggedIn: !!localStorage.getItem('music_cookie') && !!localStorage.getItem('user_profile'),
+    state: () => ({ sessionCheckedAt: 0,
+        isLoggedIn: false,
+        revision: 0,
         profile: JSON.parse(localStorage.getItem('user_profile') || 'null'),
         cookie: localStorage.getItem('music_cookie') || '',
-        playlists: [],
+        playlists: [], playlistsLoading: false, playlistsError: '', playlistsRequest: 0,
         likedPlaylistId: null,
         likedSongIds: new Set(),
         vipInfo: null,
-        playlistChanged: false,
-        lockStatus: {
-            checked: false,
-            locked: false,
-            unlocked: false,
-            token: localStorage.getItem('music_cloud_token') || ''
-        }
+        vipLoading: false,
+        vipError: '',
+        vipRequest: 0,
+        vipCheckedAt: 0,
+        playlistChanged: false
     }),
     actions: {
-        async loginWithCookie(cookieString) {
+        async loginWithCookie(cookieString, stillActive = () => true) {
             if (!cookieString) return false
+            const revision = this.revision
 
             const ncmKeys = ['MUSIC_U', '__csrf', 'NID_GUID', 'MUSIC_A', 'MUSIC_R', 'MUSIC_S']
             let cleanCookie = ''
@@ -55,26 +55,28 @@ export const useUserStore = defineStore('user', {
                 else cleanCookie = cookieString.trim()
             }
 
-            this.cookie = cleanCookie.trim()
-            localStorage.setItem('music_cookie', this.cookie)
-
-            const success = await this.fetchStatus()
-            if (!success) {
-                localStorage.removeItem('music_cookie')
-                this.cookie = ''
-                return { success: false }
-            }
+            const candidate = cleanCookie.trim()
+            const status = await request.get('/login/status', { params: { cookie: candidate, timestamp: Date.now() } })
+            if (revision !== this.revision || !stillActive()) return { success: false, message: '登录已取消' }
+            if (status?.code !== 200 || !status.account?.id || !status.profile?.userId || String(status.account.id) !== String(status.profile.userId)) return { success: false, message: status?.message || '网易云未确认有效登录' }
+            this.revision++
+            this.sessionCheckedAt = Date.now(); this.cookie = candidate; this.profile = status.profile; this.isLoggedIn = true
+            this.playlists = []; this.likedSongIds = new Set(); this.likedPlaylistId = null
+            this.vipInfo = null
+            this.vipRequest++; this.vipLoading = false; this.vipError = ''; this.vipCheckedAt = 0
+            localStorage.setItem('music_cookie', candidate); localStorage.setItem('user_profile', JSON.stringify(this.profile))
+            const acceptedRevision = this.revision
+            await this.fetchStatus()
+            if (acceptedRevision !== this.revision || !stillActive() || !this.isLoggedIn) return { success: false, message: '登录已取消或失效' }
             return { success: true, profile: this.profile }
         },
         async loginWithPhone(data) {
+            const revision = this.revision
             try {
-                localStorage.removeItem('music_cookie')
                 const res = await loginCellphone(data)
+                if (revision !== this.revision) return { success:false, message:'登录已取消' }
                 if (res.code === 200) {
-                    this.cookie = res.cookie
-                    localStorage.setItem('music_cookie', res.cookie)
-                    await this.fetchStatus()
-                    return { success: true, profile: this.profile }
+                    return await this.loginWithCookie(res.cookie)
                 }
                 return { success: false, message: res.msg || res.message || '登录失败' }
             } catch (err) {
@@ -84,13 +86,12 @@ export const useUserStore = defineStore('user', {
             }
         },
         async loginWithEmail(data) {
+            const revision = this.revision
             try {
                 const res = await loginEmail(data)
+                if (revision !== this.revision) return { success:false, message:'登录已取消' }
                 if (res.code === 200) {
-                    this.cookie = res.cookie
-                    localStorage.setItem('music_cookie', res.cookie)
-                    await this.fetchStatus()
-                    return { success: true, profile: this.profile }
+                    return await this.loginWithCookie(res.cookie)
                 }
                 return { success: false, message: res.msg || res.message || '登录失败' }
             } catch (err) {
@@ -142,13 +143,15 @@ export const useUserStore = defineStore('user', {
                 return null
             }
         },
-        async checkQrCodeStatus(key) {
+        async checkQrCodeStatus(key, stillActive = () => true) {
+            const revision = this.revision
             try {
                 const res = await checkQrStatus(key)
+                if (!stillActive() || revision !== this.revision) return { code: 800, message: '登录已取消' }
                 if (res.code === 803) {
-                    this.cookie = res.cookie
-                    localStorage.setItem('music_cookie', res.cookie)
-                    await this.fetchStatus()
+                    if (!res.cookie) return { code: -1, message: '网易云未返回完整登录凭据' }
+                    const accepted = await this.loginWithCookie(res.cookie, stillActive)
+                    if (!accepted?.success) return { code: -1, message: accepted?.message || '登录验证失败' }
                 }
                 return res
             } catch (err) {
@@ -157,32 +160,35 @@ export const useUserStore = defineStore('user', {
         },
         async fetchStatus() {
             if (!this.cookie) return false
+            const revision = this.revision
             try {
                 const t = Date.now()
                 const res = await request.get('/login/status', { params: { timestamp: t } })
                 const profile = res.profile || (res.data && res.data.profile)
+                if (revision !== this.revision) return false
 
-                if (profile) {
-                    this.profile = profile
+                const account = res.account || res.data?.account
+                if (profile?.userId && account?.id && String(profile.userId) === String(account.id)) {
+                    this.sessionCheckedAt = Date.now(); this.profile = profile
                     this.isLoggedIn = true
                     localStorage.setItem('user_profile', JSON.stringify(profile))
-                    await this.fetchUserDetail(profile.userId)
-                    await this.fetchUserPlaylists(profile.userId)
+                    await Promise.allSettled([this.fetchUserDetail(profile.userId), this.fetchUserPlaylists(profile.userId)])
+                    if (revision !== this.revision) return false
                     this.fetchVipInfo()
-                    await this.syncCloudAccount()
                     return true
                 }
 
                 const accountRes = await request.get('/user/account', { params: { timestamp: t } })
-                if (accountRes.profile) {
-                    this.profile = accountRes.profile
+                if (revision !== this.revision) return false
+                if (accountRes.profile?.userId && accountRes.account?.id && String(accountRes.profile.userId) === String(accountRes.account.id)) {
+                    this.sessionCheckedAt = Date.now(); this.profile = accountRes.profile
                     this.isLoggedIn = true
-                    await this.fetchUserDetail(accountRes.profile.userId)
-                    await this.fetchUserPlaylists(accountRes.profile.userId)
+                    await Promise.allSettled([this.fetchUserDetail(accountRes.profile.userId), this.fetchUserPlaylists(accountRes.profile.userId)])
+                    if (revision !== this.revision) return false
                     this.fetchVipInfo()
-                    await this.syncCloudAccount()
                     return true
                 }
+                this.isLoggedIn = false
                 return false
             } catch (err) {
                 console.error('Fetch status error:', err)
@@ -190,10 +196,12 @@ export const useUserStore = defineStore('user', {
             }
         },
         async fetchUserDetail(uid) {
-            if (!uid) return
+            if (!uid || !this.isLoggedIn || String(uid) !== String(this.profile?.userId)) return
+            const revision = this.revision
             try {
                 const res = await request.get('/user/detail', { params: { uid, timestamp: Date.now() } })
-                if (res.profile) {
+                if (revision !== this.revision) return
+                if (res.profile && String(res.profile.userId) === String(uid)) {
                     // 合并详情到 profile 中，确保动态、关注、粉丝、等级等信息存在
                     this.profile = { ...this.profile, ...res.profile, level: res.level, listenSongs: res.listenSongs }
                     this.isLoggedIn = true
@@ -204,35 +212,39 @@ export const useUserStore = defineStore('user', {
             }
         },
         async fetchUserPlaylists(uid) {
-            if (!uid) return
+            if (!uid || !this.isLoggedIn || String(uid) !== String(this.profile?.userId)) return false
+            const revision = this.revision, requestId = ++this.playlistsRequest
+            const active = () => revision === this.revision && requestId === this.playlistsRequest
+            this.playlistsLoading = true; this.playlistsError = ''
             try {
-                // 加上时间戳避免浏览器/网关缓存
-                const res = await request.get('/user/playlist', { params: { uid, timestamp: Date.now() } })
-                console.log('[Playlist] fetchUserPlaylists raw res keys:', Object.keys(res || {}))
-                // 兼容多种 API 返回格式：playlist 可能在顶层、data 内、body 内，或 res 本身就是数组
-                let list = null
-                if (Array.isArray(res)) {
-                    list = res
-                } else {
-                    list = res.playlist || (res.data && res.data.playlist) || (res.body && res.body.playlist) || null
+                const all = [], seen = new Set()
+                let offset = 0
+                for (let page = 0; page < 100; page++) {
+                    const res = await request.get('/user/playlist', { params: { uid, limit: 100, offset, timestamp: Date.now() } })
+                    if (!active()) return false
+                    const body = res?.data?.playlist ? res.data : res?.body?.playlist ? res.body : res
+                    const list = Array.isArray(body) ? body : body?.playlist
+                    if ((body?.code != null && body.code !== 200) || !Array.isArray(list)) throw new Error(body?.message || '歌单响应不完整，请重试')
+                    let added = 0
+                    for (const item of list) if (item.id != null && !seen.has(String(item.id))) { seen.add(String(item.id)); all.push(item); added++ }
+                    offset += list.length
+                    if (!body?.more) break
+                    if (!added || page === 99) throw new Error('歌单分页未完成，请重试')
                 }
-                console.log('[Playlist] fetchUserPlaylists list found:', Array.isArray(list), list ? list.length : 0)
-                if (Array.isArray(list)) {
-                    this.$patch({ playlists: [...list] })
-                    if (list.length > 0) {
-                        this.likedPlaylistId = list[0].id
-                        this.fetchLikeList(uid)
-                    }
-                } else {
-                    console.warn('[Playlist] fetchUserPlaylists: playlist not found in response, res:', res)
-                }
-            } catch (err) {
-                console.error('Fetch user playlists error:', err)
-            }
+                this.playlists = all
+                this.likedPlaylistId = all.find(item => Number(item.specialType) === 5)?.id || all[0]?.id || null
+                if (this.likedPlaylistId) this.fetchLikeList(uid)
+                return true
+            } catch (error) {
+                if (active()) this.playlistsError = error.message || '歌单同步失败，请重试'
+                return false
+            } finally { if (active()) this.playlistsLoading = false }
         },
         async fetchLikeList(uid) {
+            const revision = this.revision
             try {
                 const res = await request.get('/likelist', { params: { uid, timestamp: Date.now() } })
+                if (revision !== this.revision) return
                 if (res.ids) {
                     this.likedSongIds = new Set(res.ids)
                 }
@@ -253,111 +265,25 @@ export const useUserStore = defineStore('user', {
             }
         },
         async fetchVipInfo() {
+            if (!this.isLoggedIn) return false
+            const revision = this.revision
+            const requestId = ++this.vipRequest
+            const active = () => revision === this.revision && requestId === this.vipRequest && this.isLoggedIn
+            this.vipLoading = true; this.vipError = ''
             try {
                 const res = await request.get('/vip/info', { params: { timestamp: Date.now() } })
-                if (res && res.code === 200) {
-                    this.vipInfo = res.data || res
-                }
-            } catch (e) {}
-        },
-
-        // ---------- 自建后端账号同步 ----------
-        // 只拿到用于请求后端的令牌，不代表已经通过密码锁验证
-        async syncCloudAccount() {
-            if (!this.profile?.userId || !this.cookie) return
-            try {
-                const res = await syncDesktopAccount(this.profile.userId, this.cookie)
-                if (res.success && res.token) {
-                    this.lockStatus.token = res.token
-                    this.lockStatus.unlocked = false
-                    localStorage.setItem('music_cloud_token', res.token)
-                } else {
-                    this.clearLockSession()
-                }
-            } catch (e) {
-                console.error('Sync cloud account error:', e)
-                this.clearLockSession()
-            }
-        },
-
-        // ---------- 账号密码锁 ----------
-        async checkLockStatus() {
-            if (!this.profile?.userId) {
-                this.lockStatus = { checked: true, locked: false, unlocked: false, token: '' }
-                return { locked: false }
-            }
-            if (!this.lockStatus.token) {
-                // 无令牌视为未上锁：必须同时复位 locked，
-                // 否则云端账号被删除后（clearLockSession 只清 token）歌单会永远残留锁图标
-                this.lockStatus.checked = true
-                this.lockStatus.locked = false
-                this.lockStatus.unlocked = false
-                return { locked: false }
-            }
-            try {
-                const res = await checkLockStatus()
-                // 令牌无效（云端账号已删除/后端重置）：清空整个锁会话并复位上锁状态
-                if (res && res.success === false && res.__status === 401) {
-                    this.clearLockSession()
-                    return { locked: false }
-                }
-                if (res && res.success !== false) {
-                    const locked = !!res.locked
-                    this.lockStatus.checked = true
-                    this.lockStatus.locked = locked
-                    // 保留 token：未上锁时直接获得访问权限；上锁时用于后续验证密码
-                    this.lockStatus.unlocked = !locked
-                    return { locked }
-                }
-                // 其它错误（网络异常/服务 500 等）：保持现状，避免服务暂不可用时误解锁
-                this.lockStatus.checked = true
-                return { locked: this.lockStatus.locked }
-            } catch (e) {
-                console.error('Check lock status error:', e)
-                this.lockStatus.checked = true
-                if (e.response?.status === 401) {
-                    this.clearLockSession()
-                }
-                return { locked: false }
-            }
-        },
-        async verifyLockPassword(password) {
-            if (!this.lockStatus.token) return { success: false, message: '账号未同步，请重新登录' }
-            try {
-                const res = await verifyLockPassword(password)
-                if (res.success && res.token) {
-                    this.lockStatus.unlocked = true
-                    this.lockStatus.token = res.token
-                    localStorage.setItem('music_cloud_token', res.token)
-                    return { success: true }
-                }
-                // 云端密码锁已被移除（管理端解除/账号数据被删）：本地同步解除上锁，避免歌单永远卡在弹窗
-                if (res && res.success === false && (res.__status === 404 || (res.message || '').includes('未设置密码锁'))) {
-                    this.lockStatus.locked = false
-                    this.lockStatus.unlocked = true
-                    return { success: true }
-                }
-                // 令牌失效：清空会话，让下次点击歌单时重新同步账号
-                if (res && res.success === false && res.__status === 401) {
-                    this.clearLockSession()
-                    return { success: false, message: '登录状态已失效，请重试' }
-                }
-                return { success: false, message: res.message || '密码错误' }
-            } catch (e) {
-                console.error('Verify lock password error:', e)
-                return { success: false, message: '网络错误' }
-            }
-        },
-        clearLockSession() {
-            // 完整复位：locked/checked 也要清，否则云端账号删除后侧边栏会一直显示"上锁"
-            this.lockStatus.checked = true
-            this.lockStatus.locked = false
-            this.lockStatus.unlocked = false
-            this.lockStatus.token = ''
-            localStorage.removeItem('music_cloud_token')
+                if (!active()) return false
+                if (res?.code !== 200 || !res.data || !['associator','musicPackage','redplus'].some(key => res.data[key] && typeof res.data[key] === 'object')) throw new Error(res?.message || '网易云会员响应不完整，请重试')
+                this.vipInfo = res.data
+                this.vipCheckedAt = Date.now()
+                return true
+            } catch (e) { if (active()) this.vipError = e.message || '会员查询失败，请重试'; return false }
+            finally { if (active()) this.vipLoading = false }
         },
 
         logout() {
+            this.revision++
+            this.playlistsRequest++; this.playlistsLoading = false; this.playlistsError = ''
             this.isLoggedIn = false
             this.profile = null
             this.cookie = ''
@@ -365,16 +291,18 @@ export const useUserStore = defineStore('user', {
             this.likedPlaylistId = null
             this.likedSongIds = new Set()
             this.vipInfo = null
-            this.lockStatus = { checked: false, locked: false, unlocked: false, token: '' }
+            this.vipRequest++; this.vipLoading = false; this.vipError = ''; this.vipCheckedAt = 0
             localStorage.removeItem('music_cookie')
             localStorage.removeItem('user_profile')
             localStorage.removeItem('music_cloud_token')
         },
         async createPlaylist(name) {
             if (!this.isLoggedIn) return false
+            const revision = this.revision
             try {
                 console.log('--- [Playlist] Creating playlist:', name)
                 const res = await playlistCreate(name)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 console.log('--- [Playlist] Create response:', res)
                 const code = res.code || (res.body && res.body.code)
                 if (code === 200 || code === '200') {
@@ -391,8 +319,10 @@ export const useUserStore = defineStore('user', {
         },
         async handleSubscribe(id, sub = true) {
             if (!this.isLoggedIn) return false
+            const revision = this.revision
             try {
                 const res = await playlistSubscribe(id, sub ? 1 : 2)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (res.code === 200) {
                     await this.fetchUserPlaylists(this.profile.userId)
                     this.playlistChanged = !this.playlistChanged
@@ -406,6 +336,7 @@ export const useUserStore = defineStore('user', {
         },
         async addTrackToPlaylist(pid, trackId) {
             if (!this.isLoggedIn) return { success: false, message: '请先登录' }
+            const revision = this.revision
             try {
                 const cleanId = String(trackId).replace('local-', '')
                 // 网易云 API 特例：添加到歌单有时需要 timestamp 避免缓存
@@ -415,6 +346,7 @@ export const useUserStore = defineStore('user', {
                 }) || {}
 
                 // 兼容不同 API 网关返回的 code 字段位置
+                if (revision !== this.revision || !this.isLoggedIn) return { success: false, message: '账号已切换' }
                 const code = res.code || (res.body && res.body.code) || res.status
 
                 if (code === 200 || code === '200' || res.status === 200) {
@@ -426,7 +358,7 @@ export const useUserStore = defineStore('user', {
                 // 具体的失败提示
                 const errorMsg = res.msg || res.message || (res.body && res.body.message)
                 // 502/400 通常是网际转发或已经存在的报错
-                if (code === 502 || code === 400 || (errorMsg && (errorMsg.includes('already') || errorMsg.includes('存在')))) {
+                if (errorMsg && /already exists|已存在|已经存在/i.test(errorMsg)) {
                     // 对于用户来说，已经存在即是成功的（已经进歌单了）
                     await this.fetchUserPlaylists(this.profile.userId)
                     this.playlistChanged = !this.playlistChanged
@@ -440,7 +372,7 @@ export const useUserStore = defineStore('user', {
                 const code = apiRes.code || apiRes.status
                 const msg = apiRes.msg || apiRes.message
 
-                if (code === 502 || code === 400 || (msg && (msg.includes('already') || msg.includes('存在')))) {
+                if (revision === this.revision && this.isLoggedIn && msg && /already exists|已存在|已经存在/i.test(msg)) {
                     await this.fetchUserPlaylists(this.profile.userId)
                     this.playlistChanged = !this.playlistChanged
                     return { success: true, message: '歌曲已在歌单中' }
@@ -449,8 +381,11 @@ export const useUserStore = defineStore('user', {
             }
         },
         async deletePlaylist(pid) {
+            if (!this.isLoggedIn) return false
+            const revision = this.revision
             try {
                 const res = await playlistDelete(pid)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 const code = res.code || (res.body && res.body.code)
                 if (code === 200 || code === '200') {
                     await this.fetchUserPlaylists(this.profile.userId)
@@ -464,8 +399,11 @@ export const useUserStore = defineStore('user', {
             }
         },
         async updatePlaylistInfo(pid, name, desc) {
+            if (!this.isLoggedIn) return false
+            const revision = this.revision
             try {
                 const res = await playlistUpdate({ id: pid, name, desc })
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (res.code === 200) {
                     await this.fetchUserPlaylists(this.profile.userId)
                     return true
@@ -477,8 +415,11 @@ export const useUserStore = defineStore('user', {
             }
         },
         async updatePlaylistCover(pid, file) {
+            if (!this.isLoggedIn) return false
+            const revision = this.revision
             try {
                 const res = await playlistCoverUpdate(pid, file)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (res.code === 200) {
                     await this.fetchUserPlaylists(this.profile.userId)
                     return true

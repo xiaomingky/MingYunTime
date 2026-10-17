@@ -15,6 +15,7 @@ import axios from 'axios'
 import { exec, execFile, spawn } from 'node:child_process'
 import https from 'node:https'
 import crypto from 'node:crypto'
+import { isNewerVersion } from './version.js'
 
 // 解析打包内 ffmpeg 路径（与 download-manager.js 的 resolveTool 一致）
 function getFfmpegPath() {
@@ -43,14 +44,17 @@ import { generateABogusV2 } from './douyin-abogus-v2.js'
 import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ, getKugouLyric } from './lyric-providers.js'
 // QQ 音乐 API 子进程(@sansenjian/qq-music-api,监听 3200 端口)
 import { startQQMusicAPI, stopQQMusicAPI, registerQQMusicIPC } from './qq-music.js'
+import { registerQishuiMusicIPC } from './qishui-music.js'
 // 酷狗音乐 API 子进程(KuGouMusicApi,监听 3300 端口,platform=lite 概念版)
-import { startKugouMusicAPI, stopKugouMusicAPI } from './kugou-music.js'
+import { startKugouMusicAPI, stopKugouMusicAPI, registerKugouMusicIPC } from './kugou-music.js'
 import { startNeteaseAPI, stopNeteaseAPI } from './netease-api.js'
+import { registerNeteaseMusicIPC } from './netease-music.js'
 import { extractShareUrl, extractDouyinId as extractDouyinMediaId, extractDouyinPage, extractDouyinMedia, DOUYIN_MOBILE_UA } from './douyin-media.js'
 // 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）
 import './unlock.js'
 import { parseDouyu } from './douyu-live.js'
-import { localFileResponse, createCoverHandler } from './local-protocol.js'
+import { localFileResponse, createCoverHandler, decodeLocalPath } from './local-protocol.js'
+import { localFileUrl } from '../src/utils/local-file-url.js'
 
 // Windows 10/11: retain Chromium driver checks and hardware/software fallback.
 // Let V8 schedule collection and size its heap; forced frequent GC stalls UI transitions.
@@ -142,8 +146,12 @@ function createTray() {
 
 // Register protocols (Privileged 保持不变)
 protocol.registerSchemesAsPrivileged([
-    { scheme: 'local-file', privileges: { bypassCSP: true, stream: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
-    { scheme: 'song-cover', privileges: { bypassCSP: true, stream: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
+    // `standard` is required for Chromium's media demuxer to issue follow-up
+    // byte-range requests when a local video is seeked. Without it the first
+    // range can load, but the demuxer rejects the later seek response.
+    { scheme: 'local-file', privileges: { standard: true, bypassCSP: true, stream: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+    { scheme: 'song-cover', privileges: { bypassCSP: true, stream: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+    { scheme: 'qishui-audio', privileges: { bypassCSP: true, stream: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
 ])
 
 function createWindow() {
@@ -4673,8 +4681,8 @@ ipcMain.handle('bilibili:archives', async (_, { pn = 1, ps = 10 }) => {
 ipcMain.handle('video:transcode-file', async (_, { url }) => {
     const src = String(url || '').trim()
     if (!/^local-file:\/\//i.test(src)) return { success: false, error: '仅支持本地视频文件转码' }
-    let filePath = src.replace(/^local-file:\/\//i, '')
-    try { filePath = decodeURIComponent(filePath) } catch (e) {}
+    let filePath
+    try { filePath = decodeLocalPath(src, 'local-file') } catch { return { success: false, error: '本地文件地址无效' } }
     if (!filePath || !fs.existsSync(filePath)) return { success: false, error: '本地文件不存在：' + filePath }
     try {
         const stat = fs.statSync(filePath)
@@ -5036,7 +5044,7 @@ function checkForUpdates() {
                 const encodedFileName = encodeURIComponent(`茗韵时光 Setup ${latestVersion}.exe`)
                 const directDownload = `https://github.com/xiaomingky/MingYunTime/releases/download/${tag}/${encodedFileName}`
                 const downloadUrl = asset?.browser_download_url || directDownload
-                if (latestVersion && latestVersion !== currentVersion) {
+                if (isNewerVersion(latestVersion, currentVersion)) {
                     win?.webContents.send('update-available', tag, notes, downloadUrl)
                 } else {
                     win?.webContents.send('update-not-available', currentVersion)
@@ -5054,6 +5062,9 @@ function checkForUpdates() {
 
 app.whenReady().then(() => {
     registerQQMusicIPC()
+    registerQishuiMusicIPC()
+    registerNeteaseMusicIPC()
+    registerKugouMusicIPC()
     const services = { netease: startNeteaseAPI, qq: startQQMusicAPI, kugou: startKugouMusicAPI }
     ipcMain.handle('local-service:ensure', async (_event, name) => {
         if (!Object.hasOwn(services, name)) throw new Error('Unknown music service')

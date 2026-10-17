@@ -1,4 +1,5 @@
 <script setup>
+import SongVipBadge from '../components/SongVipBadge.vue'
 import { computed } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
@@ -69,7 +70,7 @@ const clearRecent = async () => {
       >
         <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
         <div class="col-title">
-          <span class="song-name text-truncate">{{ song.name }}</span>
+          <span class="song-name text-truncate">{{ song.name }}<SongVipBadge :song="song" /></span>
         </div>
         <div class="col-artist text-truncate">{{ song.artist }}</div>
         <div class="col-album text-truncate">{{ song.al?.name || '未知专辑' }}</div>

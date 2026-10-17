@@ -1,9 +1,10 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import QQSongBadge from '../../components/QQSongBadge.vue'
+import { ref, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { useQQUserStore } from '../../store/qq-user'
-import { qqUserLikedSongs, normalizeQQSong, toQQTrack, enrichQQSongWithDetail } from '../../api/qq'
+import { toQQTrack, enrichQQSongWithDetail } from '../../api/qq'
 import SongActionsMenu from '../../components/SongActionsMenu.vue'
 
 const playerStore = usePlayerStore()
@@ -16,33 +17,26 @@ const loading = ref(false)
 const error = ref('')
 // 歌单封面(用于无封面歌曲兜底)
 const playlistCover = ref('')
+let revision = 0
 
 const loadLiked = async () => {
+    const requestId = ++revision, accountRevision = qqUserStore.revision
     // 未登录:显示空(线上 API 需要 uin + cookie)
     if (!qqUserStore.isLoggedIn || !qqUserStore.uin) {
         likedSongs.value = []
+        playlistCover.value = ''
+        loading.value = false
         error.value = '请先登录 QQ 音乐'
         return
     }
     loading.value = true
     error.value = ''
     try {
-        const res = await qqUserLikedSongs(qqUserStore.uin, qqUserStore.cookie, 0, 200)
-        // 解包:res = { code, data: { songs: [...], info: { cover } } }
-        const data = res?.data || res || {}
-        const list = data?.songs || data?.list || data?.songlist || []
-        // 保存歌单封面,用于无封面歌曲兜底
-        playlistCover.value = data?.info?.cover || ''
-        likedSongs.value = list.map(normalizeQQSong).filter(Boolean)
-        // 同步到本地收藏缓存,让播放器 checkIfLiked 能识别红心状态
-        localStorage.setItem('qq_liked_songs', JSON.stringify(likedSongs.value.map(s => ({
-            id: s.songmid || s.id,
-            songmid: s.songmid,
-            name: s.name,
-            artist: s.artist,
-            al: { name: s.album, picUrl: s.picUrl },
-            platform: 'qq'
-        }))))
+        const result = await qqUserStore.fetchLikedSongs()
+        if (requestId !== revision || accountRevision !== qqUserStore.revision) return
+        playlistCover.value = result.info?.cover || ''
+        likedSongs.value = result.songs.map(s => ({ ...s, duration: s.dt, album: s.al?.name || '' }))
+        if (result.incomplete) error.value = 'QQ 音乐暂只返回部分收藏，已显示可获取的歌曲'
         // 封面策略:normalizeQQSong 已从 albummid 构造 T002 专辑封面
         // 无 albummid 的歌曲调 enrichQQSongWithDetail 拿真实 albummid;拿不到时用歌手头像(T001)兜底
         const cookie = qqUserStore.cookie || ''
@@ -50,17 +44,17 @@ const loadLiked = async () => {
             // picUrl 为空 或 不是 T002 专辑封面 → 尝试补全
             if (!s.picUrl || !s.picUrl.includes('T002R300x300M000')) {
                 enrichQQSongWithDetail(s, cookie).then(updated => {
-                    if (updated.picUrl) likedSongs.value[i] = updated
+                    if (requestId === revision && accountRevision === qqUserStore.revision && updated.picUrl && likedSongs.value[i]?.id === s.id) likedSongs.value[i] = updated
                 }).catch(() => {})
             }
         })
         console.log('[QQ Liked] 线上我喜欢歌曲:', likedSongs.value.length, '首, 歌单封面:', playlistCover.value || '(无)')
     } catch (e) {
+        if (requestId !== revision || accountRevision !== qqUserStore.revision) return
         console.error('[QQ Liked] 加载失败:', e)
         error.value = '加载失败: ' + (e?.message || '未知错误')
-        likedSongs.value = []
     } finally {
-        loading.value = false
+        if (requestId === revision) loading.value = false
     }
 }
 
@@ -88,8 +82,22 @@ const onCoverError = (e, song) => {
 }
 
 const isEmpty = computed(() => likedSongs.value.length === 0)
+const switchAccount = async () => {
+    const result = await qqUserStore.webLogin()
+    if (!result?.success) messageStore.error(result?.message || 'QQ 登录未完成')
+    else await loadLiked()
+}
 
 onMounted(loadLiked)
+watch(() => qqUserStore.revision, () => {
+    likedSongs.value = []
+    playlistCover.value = ''
+    loadLiked()
+})
+watch(() => qqUserStore.likedSongs, list => {
+    likedSongs.value = list.map(s => ({ ...s, duration: s.dt, album: s.al?.name || '' }))
+}, { deep: 1 })
+onBeforeUnmount(() => revision++)
 </script>
 
 <template>
@@ -104,11 +112,13 @@ onMounted(loadLiked)
             <div class="qq-liked-info">
                 <h1 class="qq-liked-title">我喜欢的音乐</h1>
                 <div class="qq-liked-meta">共 {{ likedSongs.length }} 首 · QQ 音乐线上</div>
+                <div class="qq-liked-account">当前账号：{{ qqUserStore.profile?.nickname || '未登录' }}<span v-if="qqUserStore.uin"> · 尾号 {{ String(qqUserStore.uin).slice(-4) }}</span></div>
+                <div class="qq-liked-controls"><button :disabled="loading || qqUserStore.logining" @click="loadLiked">{{ loading ? '同步中…' : '刷新收藏' }}</button><button :disabled="loading || qqUserStore.logining" @click="switchAccount">切换登录账号</button></div>
                 <button class="qq-play-btn" @click="playAll" :disabled="isEmpty || loading">播放全部</button>
             </div>
         </div>
 
-        <div v-if="error" class="qq-error">{{ error }}</div>
+        <div v-if="error" class="qq-error" role="alert">{{ error }} <button :disabled="loading" @click="loadLiked">重试</button></div>
 
         <div class="qq-song-list" v-if="likedSongs.length">
             <div v-for="(s, i) in likedSongs" :key="s.id || i" class="qq-song-item" @click="playSong(s, $event)">
@@ -124,7 +134,7 @@ onMounted(loadLiked)
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
                 </div>
                 <div class="qq-song-info">
-                    <div class="qq-song-name">{{ s.name }}</div>
+                    <div class="qq-song-name"><span class="qq-song-title">{{ s.name }}</span><QQSongBadge :song="s" /></div>
                     <div class="qq-song-artist">{{ s.artist }}</div>
                 </div>
                 <div class="qq-song-album">{{ s.album }}</div>
@@ -133,7 +143,7 @@ onMounted(loadLiked)
         </div>
 
         <div v-if="!loading && !error && isEmpty" class="qq-empty">
-            还没有喜欢的歌曲
+            官方当前返回此账号收藏 0 首。若与你手机里的收藏不同，请检查 QQ / 微信登录的账号是否一致，或刷新收藏。
         </div>
     </div>
 </template>
@@ -153,6 +163,9 @@ onMounted(loadLiked)
 .qq-liked-info { flex: 1; display: flex; flex-direction: column; }
 .qq-liked-title { font-size: 24px; color: var(--text-main); margin-bottom: 12px; }
 .qq-liked-meta { color: var(--text-light); font-size: 13px; margin-bottom: 16px; }
+.qq-liked-account { color:var(--text-light); font-size:12px; margin-bottom:10px; }
+.qq-liked-controls { display:flex; gap:8px; margin-bottom:12px; }
+.qq-liked-controls button,.qq-error button { border:1px solid var(--border-color); border-radius:8px; background:var(--hover-bg); color:var(--text-main); padding:6px 10px; cursor:pointer; }
 .qq-play-btn {
     align-self: flex-start; background: var(--primary-color); color: white;
     border: none; padding: 8px 28px; border-radius: 18px; cursor: pointer; font-size: 14px;
@@ -173,7 +186,9 @@ onMounted(loadLiked)
     display: flex; align-items: center; justify-content: center;
 }
 .qq-song-info { flex: 1; min-width: 0; }
+.qq-song-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .qq-song-name {
+    display:flex;align-items:center;
     font-size: 14px; color: var(--text-main);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

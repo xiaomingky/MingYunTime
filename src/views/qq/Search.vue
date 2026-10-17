@@ -1,4 +1,5 @@
 <script setup>
+import QQSongBadge from '../../components/QQSongBadge.vue'
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore } from '../../store/player'
@@ -23,6 +24,8 @@ const albums = ref([])
 const mvs = ref([])
 const page = ref(1)
 const total = ref(0)
+const error = ref('')
+let revision = 0, suggestRevision = 0
 
 const tabs = [
     { key: 'song', label: '歌曲' },
@@ -49,6 +52,7 @@ const fetchHotKeys = async () => {
 const suggests = ref([])
 let suggestTimer = null
 const fetchSuggests = (val) => {
+    const requestId = ++suggestRevision
     if (suggestTimer) clearTimeout(suggestTimer)
     if (!val || !val.trim()) {
         suggests.value = []
@@ -57,12 +61,13 @@ const fetchSuggests = (val) => {
     suggestTimer = setTimeout(async () => {
         try {
             const res = await qqSmartbox(val.trim())
+            if (requestId !== suggestRevision) return
             const data = res?.data || res
             // getSmartbox 返回 { album:{itemlist}, mv:{itemlist}, song:{itemlist} }
             const songList = data?.song?.itemlist || []
             suggests.value = songList.map(s => s.name || s.songname || s.title || '').filter(Boolean).slice(0, 8)
         } catch (e) {
-            suggests.value = []
+            if (requestId === suggestRevision) suggests.value = []
         }
     }, 250)
 }
@@ -71,6 +76,7 @@ const showSuggest = ref(false)
 const onInputFocus = () => { showSuggest.value = true }
 const onInputBlur = () => { setTimeout(() => { showSuggest.value = false }, 200) }
 const pickSuggest = (text) => {
+    suggestRevision++
     localInput.value = text
     keywords.value = text
     suggests.value = []
@@ -81,28 +87,34 @@ const pickSuggest = (text) => {
 const doSearch = async () => {
     const kw = keywords.value.trim()
     if (!kw) return
+    const requestId = ++revision, tab = activeTab.value
+    error.value = ''
+    songs.value = []; playlists.value = []; singers.value = []; albums.value = []; mvs.value = []
+    total.value = 0
     router.replace({ path: '/qq/search', query: { keywords: kw } })
     loading.value = true
     try {
         // catZhida: 0 歌曲, 1 歌手, 2 专辑, 3 歌单, 4 MV (按 QQ API 文档)
         const zhidaMap = { song: 0, singer: 1, album: 2, playlist: 3, mv: 4 }
-        const res = await qqSearch(kw, 30, page.value, zhidaMap[activeTab.value])
+        const res = await qqSearch(kw, 30, page.value, zhidaMap[tab])
+        if (requestId !== revision) return
+        if (res?.code !== 0 || (res.subcode !== undefined && res.subcode !== 0)) throw new Error(res?.message || 'QQ 搜索请求被拒绝，请重试')
         const data = res?.data || res
         const list = data?.list || data?.song?.list || data?.singer?.list || data?.album?.list || data?.songlist?.list || data?.mv?.list || []
-        total.value = data?.total || data?.song?.total || data?.singer?.total || data?.album?.total || data?.songlist?.total || data?.mv?.total || 0
+        total.value = data?.total || data?.song?.totalnum || data?.song?.total || data?.singer?.total || data?.album?.totalnum || data?.album?.total || data?.songlist?.total || data?.mv?.total || 0
 
-        if (activeTab.value === 'song') {
+        if (tab === 'song') {
             songs.value = list.map(normalizeQQSong).filter(Boolean)
             // 无专辑封面(albummid 缺失)的歌曲,调官方 song-detail 接口拿真实 albummid 构造 T002 封面
             const cookie = getQQCookie()
             songs.value.forEach((s, i) => {
                 if (!s.picUrl || !s.picUrl.includes('T002R300x300M000')) {
                     enrichQQSongWithDetail(s, cookie).then(updated => {
-                        if (updated.picUrl) songs.value[i] = updated
+                        if (requestId === revision && updated.picUrl && songs.value[i]?.id === s.id) songs.value[i] = updated
                     }).catch(() => {})
                 }
             })
-        } else if (activeTab.value === 'playlist') {
+        } else if (tab === 'playlist') {
             playlists.value = list.map(p => ({
                 id: p.dissid || p.disstid,
                 name: p.dissname || p.title,
@@ -110,20 +122,20 @@ const doSearch = async () => {
                 creator: p.creator?.name || p.nickname || '',
                 playCount: p.listennum || 0
             }))
-        } else if (activeTab.value === 'singer') {
+        } else if (tab === 'singer') {
             singers.value = list.map(s => ({
                 id: s.singerMID || s.singermid,
                 name: s.singerName || s.singername,
                 picUrl: s.singerPic || (s.singerMID ? `https://y.gtimg.cn/music/photo_new/T001R300x300M000${s.singerMID}.jpg` : '')
             }))
-        } else if (activeTab.value === 'album') {
+        } else if (tab === 'album') {
             albums.value = list.map(a => ({
                 id: a.albumMID || a.albummid,
                 name: a.albumName || a.albumname,
                 picUrl: (a.albumMID || a.albummid) ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${a.albumMID || a.albummid}.jpg` : '',
                 artist: a.singerName || a.singername || ''
             }))
-        } else if (activeTab.value === 'mv') {
+        } else if (tab === 'mv') {
             mvs.value = list.map(m => ({
                 id: m.vid || m.mv_id,
                 vid: m.vid || m.mv_id,
@@ -133,19 +145,28 @@ const doSearch = async () => {
             }))
         }
     } catch (e) {
-        console.error('[QQ Search] error:', e)
-        messageStore.error('QQ 搜索失败')
+        if (requestId === revision) {
+            error.value = e.message || 'QQ 搜索失败，请重试'
+            messageStore.error(error.value)
+        }
     } finally {
-        loading.value = false
+        if (requestId === revision) loading.value = false
     }
 }
 
 const submitSearch = () => {
+    suggestRevision++
     keywords.value = localInput.value
     suggests.value = []
     activeTab.value = 'song'
     page.value = 1
     songs.value = []; playlists.value = []; singers.value = []; albums.value = []; mvs.value = []
+    doSearch()
+}
+
+const changePage = (next) => {
+    if (loading.value || next < 1) return
+    page.value = next
     doSearch()
 }
 
@@ -212,11 +233,14 @@ const playMv = async (mv) => {
 const closeMv = () => { currentMv.value = null }
 
 watch(() => route.query.keywords, (val) => {
+    if ((val || '') === keywords.value) return
+    revision++; suggestRevision++
     keywords.value = val || ''
     localInput.value = val || ''
     page.value = 1
     activeTab.value = 'song'
     if (val) doSearch()
+    else { songs.value = []; playlists.value = []; singers.value = []; albums.value = []; mvs.value = []; total.value = 0; loading.value = false; error.value = '' }
 })
 
 onMounted(() => {
@@ -224,7 +248,7 @@ onMounted(() => {
     if (keywords.value) doSearch()
 })
 
-onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
+onUnmounted(() => { revision++; suggestRevision++; if (suggestTimer) clearTimeout(suggestTimer) })
 </script>
 
 <template>
@@ -293,7 +317,7 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
                         <span class="qq-song-index">{{ i + 1 }}</span>
                         <img v-if="s.picUrl" :src="s.picUrl" class="qq-song-cover" loading="lazy" />
                         <div class="qq-song-info">
-                            <div class="qq-song-name">{{ s.name }}</div>
+                            <div class="qq-song-name"><span class="qq-song-title">{{ s.name }}</span><QQSongBadge :song="s" /></div>
                             <div class="qq-song-artist">{{ s.artist }}</div>
                         </div>
                         <div class="qq-song-album">{{ s.album }}</div>
@@ -339,10 +363,16 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
                     </div>
                 </div>
 
-                <div v-if="!loading && !songs.length && !playlists.length && !singers.length && !albums.length && !mvs.length" class="qq-empty">
+                <div v-if="error" class="qq-empty" role="alert">{{ error }} <button class="qq-search-btn" :disabled="loading" @click="doSearch">重试</button></div>
+                <div v-if="!loading && !error && !songs.length && !playlists.length && !singers.length && !albums.length && !mvs.length" class="qq-empty">
                     暂无搜索结果
                 </div>
             </div>
+            <nav v-if="!error && total > 30" class="qq-pagination" aria-label="搜索结果分页">
+                <button :disabled="loading || page === 1" @click="changePage(page - 1)">上一页</button>
+                <span>第 {{ page }} 页 · 共 {{ total }} 项</span>
+                <button :disabled="loading || page * 30 >= total" @click="changePage(page + 1)">下一页</button>
+            </nav>
         </template>
 
         <!-- MV 播放器浮层 -->
@@ -359,6 +389,9 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
 </template>
 
 <style scoped>
+.qq-pagination { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 24px 0; color: var(--text-secondary); }
+.qq-pagination button { border: 1px solid var(--border-color); background: var(--bg-secondary); color: var(--text-main); padding: 8px 14px; border-radius: 16px; cursor: pointer; }
+.qq-pagination button:disabled { opacity: .4; cursor: default; }
 .qq-search-page {
     padding: 20px 28px;
     height: 100%;
@@ -512,7 +545,9 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
     flex: 1;
     min-width: 0;
 }
+.qq-song-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .qq-song-name {
+    display:flex;align-items:center;
     font-size: 14px;
     color: var(--text-main);
     overflow: hidden;

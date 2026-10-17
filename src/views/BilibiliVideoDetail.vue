@@ -1,4 +1,5 @@
 <script setup>
+import SelectionMark from '../components/SelectionMark.vue'
 import { ref, computed, onMounted, watch, defineComponent, h } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { biliVideoDetail, biliAnimePlayurl, biliVideoPlayurl, biliVideoSeasonDetail, biliVideoPgcPlayurl, biliAnimeDanmaku, biliVideoComments, biliVideoCommentReplies, biliVideoLike, biliVideoCoin, biliVideoFav, biliVideoInteract, downloadVideo } from '../api'
@@ -10,7 +11,7 @@ import BiliCookieLogin from '../components/BiliCookieLogin.vue'
 import BiliIcon from '../components/BiliIcon.vue'
 import {
     ChevronLeft, Loader2, Tv, Clapperboard, RefreshCw,
-    Users, MonitorPlay, LogOut, X, Check, ChevronDown, ChevronUp, CheckSquare, Square, ZoomIn, ZoomOut, RotateCcw,
+    Users, MonitorPlay, LogOut, X, Check, ChevronDown, ChevronUp, ZoomIn, ZoomOut, RotateCcw,
     MessageCircle, CornerDownRight, Download, Folder
 } from 'lucide-vue-next'
 
@@ -1217,8 +1218,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                             合集 {{ ugcSeason.title ? `「${ugcSeason.title}」` : '' }}（{{ ugcSeasonEpisodes.length }} 集，当前第 {{ ugcSeasonCurrentIdx >= 0 ? ugcSeasonCurrentIdx + 1 : '?' }} 集）
                         </span>
                         <label class="autonext-toggle" title="播完自动播放下一集" @click.prevent="toggleAutoNext">
-                            <CheckSquare v-if="autoNext" :size="15" class="check-icon active" />
-                            <Square v-else :size="15" class="check-icon" />
+                            <SelectionMark :checked="autoNext" :size="15" class="check-icon" />
                             <span>自动连播</span>
                         </label>
                     </div>
@@ -1245,8 +1245,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                             选集（{{ seasonEps.length }} 集，当前第 {{ currentPgcEpIdx >= 0 ? currentPgcEpIdx + 1 : '?' }} 集）
                         </span>
                         <label class="autonext-toggle" title="播完自动播放下一话" @click.prevent="toggleAutoNext">
-                            <CheckSquare v-if="autoNext" :size="15" class="check-icon active" />
-                            <Square v-else :size="15" class="check-icon" />
+                            <SelectionMark :checked="autoNext" :size="15" class="check-icon" />
                             <span>自动连播</span>
                         </label>
                     </div>
@@ -1275,8 +1274,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                     <div class="pages-header">
                         <span class="pages-title">分P列表 ({{ episodes.length }})</span>
                         <label class="autonext-toggle" title="播完自动播放下一P" @click.prevent="toggleAutoNext">
-                            <CheckSquare v-if="autoNext" :size="15" class="check-icon active" />
-                            <Square v-else :size="15" class="check-icon" />
+                            <SelectionMark :checked="autoNext" :size="15" class="check-icon" />
                             <span>自动连播</span>
                         </label>
                     </div>

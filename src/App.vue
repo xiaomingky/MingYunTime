@@ -1,14 +1,15 @@
 <script setup>
-import { ref, onMounted, computed, onUnmounted, watch, provide, h, nextTick, defineAsyncComponent } from 'vue'
+import SongVipBadge from './components/SongVipBadge.vue'
+import { ref, onMounted, computed, onUnmounted, watch, h, nextTick, defineAsyncComponent } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { getPendingLockTarget } from './router'
 import { usePlayerStore } from './store/player'
 import { useSongDetailStore } from './store/song-detail'
 import { useUserStore } from './store/user'
 import { useMessageStore } from './store/message'
 const SongDetail = defineAsyncComponent(() => import('./views/SongDetail.vue'))
 const LoginModal = defineAsyncComponent(() => import('./components/LoginModal.vue'))
-const LockModal = defineAsyncComponent(() => import('./components/LockModal.vue'))
+const QishuiVipModal = defineAsyncComponent(() => import('./components/QishuiVipModal.vue'))
+const QQMembershipBenefitsModal = defineAsyncComponent(() => import('./components/QQMembershipBenefitsModal.vue'))
 const MvPlayer = defineAsyncComponent(() => import('./components/MvPlayer.vue'))
 import VideoDownloadToast from './components/VideoDownloadToast.vue'
 import Toast from './components/Toast.vue'
@@ -18,6 +19,7 @@ import EqPanel from './components/EqPanel.vue'
 import LyricSelector from './components/LyricSelector.vue'
 import {
   Search,
+  Gift,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -34,7 +36,6 @@ import {
   Clock,
   Clapperboard,
   Database,
-  Lock,
   Play,
   Pause,
   SkipBack,
@@ -59,13 +60,15 @@ import {
   GraduationCap,
   Gamepad2,
   GripVertical,
-  ListPlus
+  ListPlus,
+  User
 } from 'lucide-vue-next'
 import SearchSuggest from './components/SearchSuggest.vue'
 import QueueList from './components/QueueList.vue'
 import { useSearchHistoryStore } from './store/searchHistory'
 import { usePlatformStore } from './store/platform'
 import { useQQUserStore } from './store/qq-user'
+import { useQishuiUserStore } from './store/qishui-user'
 import { useKugouUserStore } from './store/kugou-user'
 import { useSettingsStore, comboMatches } from './store/settings'
 import {
@@ -76,6 +79,8 @@ import {
     kugouYouthUnionVip
 } from './api/kugou'
 import CustomSelect from './components/CustomSelect.vue'
+import { membership } from './utils/membership'
+import { QISHUI_QUALITY_LABELS, qishuiQualityLabel } from './utils/qishui-quality'
 
 const bridgeDisposers = []
 const router = useRouter()
@@ -87,8 +92,14 @@ const messageStore = useMessageStore()
 const searchHistoryStore = useSearchHistoryStore()
 const platformStore = usePlatformStore()
 const qqUserStore = useQQUserStore()
+const qishuiUserStore = useQishuiUserStore()
 const kugouUserStore = useKugouUserStore()
 const settingsStore = useSettingsStore()
+const membershipStore = computed(() => platformStore.isKugou ? kugouUserStore : platformStore.isQQ ? qqUserStore : platformStore.isQishui ? qishuiUserStore : userStore)
+const currentMembership = computed(() => membership(platformStore.isKugou ? 'kugou' : platformStore.isQQ ? 'qq' : platformStore.isQishui ? 'qishui' : 'netease', membershipStore.value.profile, membershipStore.value.vipInfo))
+const membershipLabel = computed(() => membershipStore.value.vipLoading ? '正在查询…' : membershipStore.value.vipError ? '查询失败，点击重试' : currentMembership.value.label)
+const membershipTitle = computed(() => membershipStore.value.vipError || [currentMembership.value.label, ...currentMembership.value.benefits.map(v=>`${v.label}${v.expiresAt ? ` · ${v.expiresAt} 到期` : ''}`), currentMembership.value.expiresAt ? `${currentMembership.value.expiresAt} 到期` : ''].filter(Boolean).join('\n'))
+function refreshMembership() { if (!membershipStore.value.vipLoading) membershipStore.value.fetchVipInfo() }
 const routeLoading = ref(false)
 const stopRouteStart = router.beforeEach(() => { routeLoading.value = true })
 const stopRouteFinish = router.afterEach(() => { routeLoading.value = false })
@@ -102,18 +113,19 @@ const playModeLabel = computed(() => ({ 0: '列表循环', 1: '单曲循环', 2:
 
 // 当前平台的登录态（根据平台自动选择 userStore / qqUserStore / kugouUserStore）
 const activeUserStore = computed(() =>
-    platformStore.isQQ ? qqUserStore
+    platformStore.isQishui ? qishuiUserStore : platformStore.isQQ ? qqUserStore
     : platformStore.isKugou ? kugouUserStore
     : userStore
 )
 // 当前平台的"已登录"状态
 const isLoggedIn = computed(() =>
-    platformStore.isQQ ? qqUserStore.isLoggedIn
+    platformStore.isQishui ? qishuiUserStore.isLoggedIn : platformStore.isQQ ? qqUserStore.isLoggedIn
     : platformStore.isKugou ? kugouUserStore.isLoggedIn
     : userStore.isLoggedIn
 )
 // 当前平台的用户头像
 const avatarUrl = computed(() => {
+    if (platformStore.isQishui) return qishuiUserStore.profile?.avatarUrl || ''
     if (platformStore.isQQ) {
         return qqUserStore.profile?.avatarUrl || ''
     }
@@ -124,6 +136,7 @@ const avatarUrl = computed(() => {
 })
 // 当前平台的用户昵称
 const nickname = computed(() => {
+    if (platformStore.isQishui) return qishuiUserStore.profile?.nickname || '未登录'
     if (platformStore.isQQ) {
         return qqUserStore.profile?.nickname || '未登录'
     }
@@ -136,15 +149,16 @@ const nickname = computed(() => {
 const searchText = ref('')
 const showSearchSuggest = ref(false)
 const showLogin = ref(false)
+watch(showLogin, visible => { if (visible) showSearchSuggest.value = false })
 const showUserMenu = ref(false)
+const showQishuiVip = ref(false)
+const showQQBenefits = ref(false)
 const isMaximized = ref(false)
 const showCreatePlaylist = ref(false)
 const newPlaylistName = ref('')
 const showSpeedMenu = ref(false)
 const showQualityMenu = ref(false)
 const showDonate = ref(false)
-const showLockModal = ref(false)
-const pendingProtectedPath = ref('')
 // Cookie/Token 查看弹窗(可复制，QQ 与酷狗共用)
 const showCookieModal = ref(false)
 const cookieCopied = ref(false)
@@ -358,9 +372,11 @@ const copyCookie = async () => {
 
 // 自动更新检测
 const updateInfo = ref({ available: false, version: '', notes: '', downloadUrl: '' })
+const failedFooterCover = ref('')
+watch(() => playerStore.currentSong.id, () => { failedFooterCover.value = '' })
 
 const getFooterCoverUrl = () => {
-    const picUrl = playerStore.currentSong.al?.picUrl || ''
+    const picUrl = playerStore.currentSong.id ? playerStore.currentSong.al?.picUrl || playerStore.currentSong.picUrl || '' : ''
     if (!picUrl) return ''
     return picUrl
 }
@@ -376,20 +392,20 @@ const neteaseQualityLabels = {
     jyeffect: '高清环绕声'
 }
 
-// QQ 音乐真实音质选项（已实测：API 仅支持这 4 种,master/atmos/ape 不可用）
-// 对应 @sansenjian/qq-music-api 的 quality 参数: 128/320/m4a/flac
+// QQ 音质偏好选项；实际播放以官方授权的文件档位为准
+// 本项目官方 vkey 请求的 quality 参数: 128/320/m4a/flac
 const qqQualityLabels = {
     '128': '标准',
-    '320': '高品',
+    '320': '高音质 · 320 kbps',
     m4a: '标准 AAC',
     flac: '无损'
 }
-// 酷狗概念版真实音质（已查 KuGouMusicApi song_url.js 源码确认：7 档真实）
+// 酷狗音质偏好，未获授权的档位按实际回退结果显示
 // 隐藏 multitrack / viper_tape / 魔法音效（piano/acappella 等）
 const kugouQualityLabels = {
     '128': '标准',
-    '320': '高品',
-    flac: '无损',
+    '320': '高音质 · 320 kbps',
+    flac: '无损 · FLAC',
     high: 'Hi-Res',
     viper_atmos: '蝰蛇全景声',
     viper_clear: '蝰蛇清澈',
@@ -397,24 +413,33 @@ const kugouQualityLabels = {
 }
 // 根据当前平台动态切换音质选项
 const qualityLabels = computed(() =>
-    platformStore.isQQ ? qqQualityLabels
+    platformStore.isQishui ? QISHUI_QUALITY_LABELS : platformStore.isQQ ? qqQualityLabels
     : platformStore.isKugou ? kugouQualityLabels
     : neteaseQualityLabels
 )
 // 顶部 badge 显示的短标签
 const qualityBadgeLabel = computed(() => {
-    const q = playerStore.quality
-    if (platformStore.isQQ) return qqQualityLabels[q] || '标准'
-    if (platformStore.isKugou) return kugouQualityLabels[q] || '标准'
-    return neteaseQualityLabels[q] || '标准'
+    const song = playerStore.currentSong
+    if (!song?.id) return `默认 · ${qualityLabels.value[playerStore.quality] || '标准'}`
+    if (/^(local|cloud)-/.test(String(song.id))) return '原始音源'
+    if (song.streamError) return '音源不可用'
+    const labels = song.platform === 'qishui' ? QISHUI_QUALITY_LABELS : song.platform === 'qq' ? qqQualityLabels : song.platform === 'kugou' ? kugouQualityLabels : neteaseQualityLabels
+    return `${song.isPreview ? '试听 · ' : ''}${labels[song.streamQuality] || '平台未标注'}`
+})
+const qualityStreamDescription = computed(() => {
+    const song = playerStore.currentSong
+    if (song?.streamError) return song.streamError
+    return [song?.streamCodec?.toUpperCase(), song?.streamBitrate ? `${Math.round(song.streamBitrate / 1000)} kbps` : '', song?.streamSampleRate ? `${song.streamSampleRate / 1000} kHz` : ''].filter(Boolean).join(' · ')
 })
 
 const toggleUserMenu = () => {
   showUserMenu.value = !showUserMenu.value
+  if (showUserMenu.value && Date.now() - membershipStore.value.vipCheckedAt > 60000) refreshMembership()
 }
 
 const logout = () => {
-    if (platformStore.isQQ) {
+    if (platformStore.isQishui) { qishuiUserStore.logout(); router.push('/qishui') }
+    else if (platformStore.isQQ) {
         qqUserStore.logout()
         router.push('/qq')
     } else if (platformStore.isKugou) {
@@ -435,7 +460,8 @@ const switchPlatform = (key) => {
 const platformOptions = computed(() => [
     { value: 'netease', label: '网易云' },
     { value: 'kugou', label: '酷狗概念版' },
-    { value: 'qq', label: 'QQ音乐' }
+    { value: 'qq', label: 'QQ音乐' },
+    { value: 'qishui', label: '汽水音乐' }
 ])
 // 下拉框切换平台
 const onPlatformChange = (key) => {
@@ -549,7 +575,7 @@ window.addEventListener('sections-changed', () => {
     hiddenSections.value = JSON.parse(localStorage.getItem('hidden_sections') || '[]')
 })
 const visibleNavItems = computed(() =>
-    (platformStore.isQQ ? qqNavItems : platformStore.isKugou ? kugouNavItems : neteaseNavItems).filter(i => sectionVisible(i.id))
+    (platformStore.isQishui ? [{ id: '/qishui', label: '发现音乐', icon: Music }] : platformStore.isQQ ? qqNavItems : platformStore.isKugou ? kugouNavItems : neteaseNavItems).filter(i => sectionVisible(i.id))
 )
 const visibleVideoChildren = computed(() => videoChildren.filter(i => sectionVisible(i.id)))
 const visibleLibraryItems = computed(() =>
@@ -609,7 +635,10 @@ function flushPlayState() {
     for (const key of _dirtyPlayState) {
         try {
             const value = _playStateFields[key]()
-            localStorage.setItem(key, typeof value === 'object' ? JSON.stringify(value) : String(value))
+            localStorage.setItem(key, typeof value === 'object' ? JSON.stringify(value, (field, item) => {
+                if (item?.platform === 'qishui') { const { url, ...metadata } = item; return metadata }
+                return item
+            }) : String(value))
             _dirtyPlayState.delete(key)
         } catch (error) { console.warn('Cannot persist playback state:', key, error.message) }
     }
@@ -655,20 +684,13 @@ onMounted(() => {
 
   // 平台隔离：QQ 平台不调网易云 fetchStatus；网易云平台不调 QQ fetchUserPlaylists
   if (platformStore.isNetease) {
-      userStore.fetchStatus().then(async () => {
-          if (userStore.isLoggedIn && userStore.profile?.userId) {
-              await userStore.syncCloudAccount()
-              await userStore.checkLockStatus()
-          }
-      })
-  } else if (platformStore.isQQ && qqUserStore.isLoggedIn && qqUserStore.uin) {
-      qqUserStore.fetchUserPlaylists()
-      // 启动时刷新真实昵称/头像/VIP状态(解决重启后显示"已登录"的问题)
-      qqUserStore.fetchRealProfile()
-  } else if (platformStore.isKugou && kugouUserStore.isLoggedIn && kugouUserStore.userid) {
-      kugouUserStore.fetchUserPlaylists()
-      kugouUserStore.fetchRealProfile()
-      kugouUserStore.fetchVipInfo()
+      userStore.fetchStatus()
+  } else if (platformStore.isQishui) {
+      qishuiUserStore.refresh()
+  } else if (platformStore.isQQ) {
+      qqUserStore.restoreSession()
+  } else if (platformStore.isKugou && kugouUserStore.cookie && kugouUserStore.userid) {
+      kugouUserStore.restoreSession()
   }
 
   const b = getBridge()
@@ -830,7 +852,7 @@ const handleSearch = () => {
     searchHistoryStore.addHistory(`music-${platformStore.current}`, searchText.value)
     showSearchSuggest.value = false
     // 根据当前平台跳转搜索页
-    const searchPath = platformStore.isQQ ? '/qq/search' : platformStore.isKugou ? '/kugou/search' : '/search'
+    const searchPath = platformStore.isQishui ? '/qishui/search' : platformStore.isQQ ? '/qq/search' : platformStore.isKugou ? '/kugou/search' : '/search'
     router.push({ path: searchPath, query: { keywords: searchText.value, t: Date.now() } })
   }
 }
@@ -882,66 +904,6 @@ const submitCreatePlaylist = async () => {
 const goToPlaylist = (id) => {
     // 强制刷新：即使同一歌单也重新加载
     router.push({ path: `/playlist/${id}`, query: { _t: Date.now() } })
-}
-
-const isOwnPlaylist = (id) => {
-    if (!userStore.isLoggedIn) return false
-    if (String(id) === String(userStore.likedPlaylistId)) return true
-    return userStore.playlists.some(p => String(p.id) === String(id))
-}
-
-const requireLockForPlaylist = async (id) => {
-    if (!userStore.isLoggedIn || !isOwnPlaylist(id)) {
-        goToPlaylist(id)
-        return
-    }
-
-    // 已确认上锁且未解锁，点击立即弹窗，不等待页面加载
-    if (userStore.lockStatus.checked && userStore.lockStatus.locked && !userStore.lockStatus.unlocked) {
-        pendingProtectedPath.value = `/playlist/${id}`
-        showLockModal.value = true
-        // 后台复核最新锁状态：云端密码锁可能已被移除（如云音乐账号被删），
-        // 若服务端已无锁，自动关掉弹窗直接进入歌单，避免永远卡在"上锁"
-        userStore.checkLockStatus().then(() => {
-            if (showLockModal.value && (!userStore.lockStatus.locked || userStore.lockStatus.unlocked)) {
-                showLockModal.value = false
-                onLockVerified()
-            }
-        }).catch(() => {})
-        return
-    }
-
-    // 若还没有后端 token，先同步账号（桌面程序登录后必须拿到 token 才能判断锁状态）
-    if (!userStore.lockStatus.token) {
-        try {
-            await userStore.syncCloudAccount()
-        } catch (e) {
-            console.error('syncCloudAccount error:', e)
-        }
-    }
-
-    // 强制重新检查一次最新锁状态
-    try {
-        await userStore.checkLockStatus()
-    } catch (e) {
-        console.error('checkLockStatus error:', e)
-    }
-
-    if (!userStore.lockStatus.locked || userStore.lockStatus.unlocked) {
-        goToPlaylist(id)
-        return
-    }
-    pendingProtectedPath.value = `/playlist/${id}`
-    showLockModal.value = true
-}
-
-provide('requireLockForPlaylist', requireLockForPlaylist)
-
-const onLockVerified = () => {
-    if (pendingProtectedPath.value) {
-        router.push({ path: pendingProtectedPath.value, query: { _t: Date.now() } })
-        pendingProtectedPath.value = ''
-    }
 }
 
 const playQueueSong = (song, event) => playerStore.handleSongClick(song, [], event)
@@ -1021,30 +983,6 @@ const boostVolume = () => {
     }
 }
 
-// 处理被路由守护拦截的受保护歌单
-watch(() => route.fullPath, () => {
-    const target = getPendingLockTarget()
-    if (target) {
-        pendingProtectedPath.value = target
-        showLockModal.value = true
-    }
-})
-
-// 直接访问/刷新受保护歌单页面时的兜底拦截
-watch(
-    [() => route.params.id, () => userStore.lockStatus.locked, () => userStore.lockStatus.unlocked, () => userStore.playlists.length],
-    () => {
-        const id = route.params.id
-        if (!id || !userStore.isLoggedIn || !userStore.lockStatus.locked || userStore.lockStatus.unlocked) return
-        const isOwn = String(id) === String(userStore.likedPlaylistId) ||
-            userStore.playlists.some(p => String(p.id) === String(id))
-        if (isOwn && !showLockModal.value) {
-            pendingProtectedPath.value = route.fullPath
-            showLockModal.value = true
-        }
-    }
-)
-
 // 动态切换根节点类名，彻底解决全透明问题
 watch(() => route.path, (newPath) => {
     if (newPath === '/desktop-lyrics') {
@@ -1055,14 +993,6 @@ watch(() => route.path, (newPath) => {
         document.body.style.backgroundColor = ''
     }
 }, { immediate: true })
-
-// 登录后先同步账号再检查锁状态
-watch(() => userStore.isLoggedIn, async (val) => {
-    if (val && userStore.profile?.userId) {
-        await userStore.syncCloudAccount()
-        await userStore.checkLockStatus()
-    }
-})
 
 // 监听歌单变化，立即刷新侧边栏
 watch(() => userStore.playlistChanged, async () => {
@@ -1132,7 +1062,8 @@ const openGithub = () => {
         <div v-if="playerStore.showSongDetail" class="song-panel-shell"><SongDetail /></div>
       </Transition>
       <LoginModal v-if="showLogin" :show="showLogin" @close="showLogin = false" />
-      <LockModal :show="showLockModal" @close="showLockModal = false" @verified="onLockVerified" />
+      <QishuiVipModal v-if="showQishuiVip && platformStore.isQishui && qishuiUserStore.isLoggedIn" @close="showQishuiVip = false" />
+      <QQMembershipBenefitsModal v-if="showQQBenefits && platformStore.isQQ && qqUserStore.isLoggedIn" @close="showQQBenefits = false" />
       <MvPlayer v-if="playerStore.showMvPlayer" />
 
       <!-- Custom Create Playlist Modal -->
@@ -1235,7 +1166,7 @@ const openGithub = () => {
 <div v-if="routeLoading" class="route-loading" role="progressbar" aria-label="正在打开页面"><span /></div>
 <header class="header" v-show="!playerStore.showSongDetail && !playerStore.showMvPlayer">
         <div class="header-left no-drag">
-          <div class="logo clickable" @click="navigateTo(platformStore.isQQ ? '/qq' : platformStore.isKugou ? '/kugou' : '/')">
+          <div class="logo clickable" @click="navigateTo(platformStore.isQishui ? '/qishui' : platformStore.isQQ ? '/qq' : platformStore.isKugou ? '/kugou' : '/')">
             <div class="logo-icon">
               <Music :size="20" color="white" />
             </div>
@@ -1303,14 +1234,14 @@ const openGithub = () => {
               <img v-if="isLoggedIn && avatarUrl" :src="avatarUrl" class="avatar" />
               <div v-else class="avatar"></div>
               <span class="nickname">{{ isLoggedIn ? nickname : '未登录' }}</span>
-              <span v-if="platformStore.isKugou && kugouUserStore.profile?.isVip" class="kugou-vip-badge" title="酷狗概念版 VIP">VIP</span>
-              <div v-if="!platformStore.isQQ && !platformStore.isKugou && userStore.vipInfo && userStore.vipInfo.redVipLevelIcon" class="vip-badge">
-                 <img :src="userStore.vipInfo.redVipLevelIcon" class="vip-icon" />
-              </div>
-              <span v-if="platformStore.isQQ && qqUserStore.profile?.isVip" class="qq-vip-badge" :title="qqUserStore.profile?.vipLevel >= 2 ? '豪华绿钻' : '绿钻'">
+              <span v-if="isLoggedIn && platformStore.isKugou && currentMembership.status === 'active'" class="official-membership-badge" :title="membershipTitle"><img v-if="currentMembership.icon" :src="currentMembership.icon" :alt="currentMembership.label" /><span v-else>{{ currentMembership.label }}</span></span>
+              <span v-if="isLoggedIn && platformStore.isNetease && currentMembership.status === 'active' && currentMembership.icon" class="official-membership-badge" :title="membershipTitle"><img :src="currentMembership.icon" :alt="currentMembership.label" /></span>
+              <span v-if="isLoggedIn && platformStore.isQQ && currentMembership.status === 'active'" class="qq-vip-badge" :title="membershipTitle">
                   <img v-if="qqUserStore.profile?.vipIcon" :src="qqUserStore.profile.vipIcon" class="qq-vip-icon" />
                   <template v-else>VIP</template>
               </span>
+              <span v-if="isLoggedIn && platformStore.isQishui && currentMembership.status === 'active'" class="official-membership-badge" :title="membershipTitle"><img :src="currentMembership.icon" :alt="currentMembership.label" /></span>
+              <span v-if="isLoggedIn && platformStore.isNetease && currentMembership.status === 'active' && !currentMembership.icon" :title="membershipTitle">{{ currentMembership.label }}</span>
             </div>
 
             <div class="user-dropdown" v-if="showUserMenu && isLoggedIn" @click.stop>
@@ -1337,6 +1268,9 @@ const openGithub = () => {
                         <span class="label">QQ号</span>
                     </div>
                     </template>
+                    <template v-else-if="platformStore.isQishui">
+                        <div class="stats-item"><span class="count">{{ qishuiUserStore.playlists.length }}</span><span class="label">歌单</span></div>
+                    </template>
                     <!-- 网易云平台:显示动态/关注/粉丝 -->
                     <template v-else>
                     <div class="stats-item">
@@ -1359,11 +1293,14 @@ const openGithub = () => {
                         <div class="right">Lv.{{ userStore.profile.level || 0 }}</div>
                     </div>
                     <!-- 酷狗平台:显示VIP状态 -->
-                    <div v-if="platformStore.isKugou" class="menu-sub-item">
-                        <div class="left">VIP状态</div>
-                        <div class="right">{{ kugouUserStore.profile?.isVip ? 'VIP会员' : '普通用户' }}</div>
+                    <div class="menu-sub-item clickable" :title="membershipTitle" @click="refreshMembership" :aria-busy="membershipStore.vipLoading">
+                        <div class="left">会员状态</div>
+                        <div class="right">{{ membershipLabel }}</div>
                     </div>
+                    <div v-if="currentMembership.expiresAt" class="menu-sub-item"><div class="left">会员到期</div><div class="right">{{ currentMembership.expiresAt }}</div></div>
                     <!-- 酷狗平台:领取概念版 VIP -->
+                    <button v-if="platformStore.isQishui" class="menu-sub-item clickable soda-vip-menu" @click="showQishuiVip = true; showUserMenu = false"><span class="left">领取免费 VIP</span><Gift :size="16" /></button>
+                    <button v-if="platformStore.isQQ" class="menu-sub-item clickable soda-vip-menu" @click="showQQBenefits = true; showUserMenu = false"><span class="left">领取会员</span><Gift :size="16" /></button>
                     <div v-if="platformStore.isKugou" class="menu-sub-item clickable" @click="openYouthVipModal">
                         <div class="left">领取 VIP</div>
                         <div class="right"><Sparkles :size="14" /></div>
@@ -1470,131 +1407,25 @@ const openGithub = () => {
               </div>
             </div>
 
-            <!-- 网易云：创建的歌单 -->
             <template v-if="platformStore.isNetease">
-                <div v-if="userStore.isLoggedIn" class="sidebar-label">
-                    <span>创建的歌单</span>
-                    <Plus :size="14" class="clickable add-icon" @click.stop="handleCreatePlaylist" />
-                </div>
-                <div v-if="userStore.isLoggedIn" class="sidebar-section">
-                  <div v-if="userStore.likedPlaylistId"
-                       class="menu-item"
-                       :class="{ active: route.path === `/playlist/${userStore.likedPlaylistId}` }"
-                       @click="requireLockForPlaylist(userStore.likedPlaylistId)">
-                    <Heart :size="18" />
-                    <span class="menu-label">我喜欢的音乐</span>
-                    <Lock v-if="userStore.lockStatus.locked" :size="12" class="lock-icon" />
-                  </div>
-
-                  <div
-                    v-for="p in userStore.playlists.slice(1)"
-                    :key="p.id"
-                    class="menu-item playlist-item"
-                    :class="{ active: route.path === `/playlist/${p.id}` }"
-                    @click="requireLockForPlaylist(p.id)"
-                  >
-                    <ListMusic :size="16" />
-                    <span class="menu-label truncate">{{ p.name }}</span>
-                    <Lock v-if="userStore.lockStatus.locked" :size="12" class="lock-icon" />
-                  </div>
-                </div>
+                <div class="sidebar-label">网易云音乐 · 我的音乐</div>
+                <div v-if="userStore.isLoggedIn && userStore.likedPlaylistId" class="menu-item" :class="{ active: route.path === `/playlist/${userStore.likedPlaylistId}` }" @click="goToPlaylist(userStore.likedPlaylistId)"><Heart :size="18" /><span class="menu-label">我喜欢的音乐</span></div>
+                <div class="menu-item" :class="{ active: route.path === '/library' }" @click="navigateTo('/library')"><ListPlus :size="18" /><span class="menu-label">管理歌单</span></div>
             </template>
-
-            <!-- QQ 音乐：仅显示"我喜欢的音乐"(线上 API),不显示用户歌单列表 -->
+            <template v-else-if="platformStore.isQishui">
+                <div class="sidebar-label">汽水音乐 · 我的音乐</div>
+                <div class="menu-item" :class="{ active: route.path === '/qishui/recent' }" @click="navigateTo('/qishui/recent')"><Clock :size="18" /><span class="menu-label">最近听过</span></div>
+                <div class="menu-item" :class="{ active: route.path === '/qishui/library' }" @click="navigateTo('/qishui/library')"><ListPlus :size="18" /><span class="menu-label">管理歌单</span></div>
+            </template>
             <template v-else-if="platformStore.isQQ">
-                <div class="sidebar-label">
-                    <span>QQ 音乐</span>
-                </div>
-                <div class="sidebar-section">
-                  <div
-                    class="menu-item"
-                    :class="{ active: route.path === '/qq/liked' }"
-                    @click="navigateTo('/qq/liked')"
-                  >
-                    <Heart :size="18" />
-                    <span class="menu-label">我喜欢的音乐</span>
-                  </div>
-                </div>
+                <div class="sidebar-label">QQ 音乐 · 我的音乐</div>
+                <div class="menu-item" :class="{ active: route.path === '/qq/liked' }" @click="navigateTo('/qq/liked')"><Heart :size="18" /><span class="menu-label">我喜欢的音乐</span></div>
+                <div class="menu-item" :class="{ active: route.path === '/qq/library' }" @click="navigateTo('/qq/library')"><ListPlus :size="18" /><span class="menu-label">管理歌单</span></div>
             </template>
-
-            <!-- 酷狗概念版：区分创建/收藏歌单，除我喜欢外自动折叠 -->
             <template v-else-if="platformStore.isKugou">
-                <template v-if="kugouUserStore.isLoggedIn">
-                    <!-- 我创建的歌单（含"我喜欢"） -->
-                    <div class="sidebar-label clickable" @click="kugouCreatedCollapsed = !kugouCreatedCollapsed">
-                        <ChevronDown :size="12" class="collapse-chevron" :class="{ collapsed: kugouCreatedCollapsed }" />
-                        <span>我创建的歌单</span>
-                        <Plus :size="14" class="sidebar-add-btn" title="新建歌单" @click.stop="kugouShowCreatePlaylist = true" />
-                    </div>
-                    <div class="collapse-wrap" :class="{ collapsed: kugouCreatedCollapsed }">
-                        <div class="collapse-inner">
-                            <div class="sidebar-section">
-                                <div
-                                    v-for="p in kugouCreatedPlaylists"
-                                    :key="p.id"
-                                    class="menu-item playlist-item"
-                                    :class="{ active: p.id === kugouUserStore.likedPlaylistId ? route.path === '/kugou/liked' : route.path === `/kugou/playlist/${p.id}` }"
-                                    @click="navigateTo(p.id === kugouUserStore.likedPlaylistId ? '/kugou/liked' : `/kugou/playlist/${p.id}`)"
-                                >
-                                    <Heart v-if="p.id === kugouUserStore.likedPlaylistId" :size="16" :fill="'#EC4141'" :color="'#EC4141'" />
-                                    <ListMusic v-else :size="16" />
-                                    <span class="menu-label truncate">{{ p.name }}</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <!-- 我收藏的歌单 -->
-                    <div v-if="kugouCollectedPlaylists.length" class="sidebar-label clickable" @click="kugouCollectedCollapsed = !kugouCollectedCollapsed">
-                        <ChevronDown :size="12" class="collapse-chevron" :class="{ collapsed: kugouCollectedCollapsed }" />
-                        <span>我收藏的歌单</span>
-                        <Trash2
-                            v-if="!kugouCollectedCollapsed"
-                            :size="13"
-                            class="sidebar-add-btn"
-                            :title="kugouPlaylistBatchMode ? '退出批量' : '批量管理'"
-                            @click.stop="kugouTogglePlaylistBatch"
-                        />
-                    </div>
-                    <!-- 批量操作栏 -->
-                    <div class="collapse-wrap" :class="{ collapsed: kugouCollectedCollapsed || !kugouPlaylistBatchMode || !kugouCollectedPlaylists.length }">
-                        <div class="collapse-inner">
-                            <div v-if="kugouPlaylistBatchMode && kugouCollectedPlaylists.length" class="kugou-sidebar-batch-bar">
-                                <div class="kugou-sidebar-batch-select-all" @click="kugouSelectAllPlaylists">
-                                    <CheckSquare v-if="kugouIsAllPlaylistsSelected" :size="14" class="kugou-check-icon active" />
-                                    <Square v-else :size="14" class="kugou-check-icon" />
-                                    <span>全选</span>
-                                </div>
-                                <button
-                                    class="kugou-sidebar-batch-delete-btn"
-                                    @click="kugouShowBatchConfirm = true"
-                                    :disabled="!kugouSelectedPlaylistIds.length || kugouBatchDeleting"
-                                >
-                                    {{ kugouBatchDeleting ? '删除中...' : `取消收藏(${kugouSelectedPlaylistIds.length})` }}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    <div v-if="kugouCollectedPlaylists.length" class="collapse-wrap" :class="{ collapsed: kugouCollectedCollapsed }">
-                        <div class="collapse-inner">
-                            <div class="sidebar-section">
-                                <div
-                                    v-for="p in kugouCollectedPlaylists"
-                                    :key="p.id"
-                                    class="menu-item playlist-item"
-                                    :class="{ active: !kugouPlaylistBatchMode && route.path === `/kugou/playlist/${p.id}` }"
-                                    @click="kugouPlaylistBatchMode ? kugouTogglePlaylistSelect(p.id) : navigateTo(`/kugou/playlist/${p.id}`)"
-                                >
-                                    <template v-if="kugouPlaylistBatchMode">
-                                        <CheckSquare v-if="kugouIsPlaylistSelected(p.id)" :size="16" class="kugou-check-icon active" />
-                                        <Square v-else :size="16" class="kugou-check-icon" />
-                                    </template>
-                                    <ListMusic v-else :size="16" />
-                                    <span class="menu-label truncate">{{ p.name }}</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </template>
+                <div class="sidebar-label">酷狗音乐 · 我的音乐</div>
+                <div class="menu-item" :class="{ active: route.path === '/kugou/liked' }" @click="navigateTo('/kugou/liked')"><Heart :size="18" /><span class="menu-label">我喜欢的音乐</span></div>
+                <div class="menu-item" :class="{ active: route.path === '/kugou/library' }" @click="navigateTo('/kugou/library')"><ListPlus :size="18" /><span class="menu-label">管理歌单</span></div>
             </template>
         </div>
       </aside>
@@ -1618,11 +1449,12 @@ const openGithub = () => {
 
     <footer class="footer" :class="{ 'is-transparent': playerStore.showSongDetail && playerStore.bgMode === 'cover' && detailPreferences.style !== 'apple', 'is-apple-detail': playerStore.showSongDetail && detailPreferences.style === 'apple' }">
       <div class="song-info" @click="toggleSongDetailOverlay">
-        <img :src="getFooterCoverUrl()" class="song-cover" />
+        <img v-if="getFooterCoverUrl() && failedFooterCover !== getFooterCoverUrl()" :src="getFooterCoverUrl()" class="song-cover" @error="failedFooterCover = getFooterCoverUrl()" />
+        <span v-else class="song-cover song-cover-placeholder" aria-hidden="true"><Music :size="26" /></span>
         <div class="song-detail">
           <div class="song-name-row">
-            <span class="song-name" :title="playerStore.currentSong.name">{{ playerStore.currentSong.name }}</span>
-            <span v-if="playerStore.currentSong.fee === 1 || playerStore.currentSong.isVip" class="vip-badge-footer">VIP</span>
+            <span class="song-name" :title="playerStore.currentSong.name">{{ playerStore.currentSong.name }}<small v-if="playerStore.currentSong.isPreview"> · 试听</small></span>
+            <SongVipBadge :song="playerStore.currentSong" />
             <Heart
               :size="16"
               class="heart-icon clickable hover-red"
@@ -1703,12 +1535,13 @@ const openGithub = () => {
         </div>
 
         <div class="quality-selector-container">
-            <div class="quality-badge clickable" @click="showQualityMenu = !showQualityMenu">
+            <div class="quality-badge clickable" :title="qualityStreamDescription || '显示当前音源的实际音质'" @click="showQualityMenu = !showQualityMenu">
                 {{ qualityBadgeLabel }}
             </div>
 
             <Transition name="menu-fade">
             <div v-if="showQualityMenu" class="quality-menu no-drag">
+                <div class="quality-stream-info">当前：{{ qualityBadgeLabel }}<small v-if="qualityStreamDescription">{{ qualityStreamDescription }}</small></div>
                 <div
                     v-for="(label, key) in qualityLabels"
                     :key="key"
@@ -2350,6 +2183,9 @@ const openGithub = () => {
     flex-shrink: 0;
 }
 /* 酷狗概念版 VIP 角标 */
+.official-membership-badge { display: inline-flex; align-items: center; flex-shrink: 0; }
+.official-membership-badge img { height: 22px; max-width: 62px; width: auto; object-fit: contain; }
+.soda-vip-menu { width: 100%; font: inherit; background: transparent; border: 0; color: inherit; text-align: left; }
 .kugou-vip-badge {
     margin-left: 6px;
     display: inline-block;
@@ -2948,6 +2784,8 @@ const openGithub = () => {
     align-items: center;
     cursor: pointer;
 }
+.quality-stream-info { padding: 10px 14px; border-bottom: 1px solid var(--border-color); color: var(--text-main); font-size: 12px; white-space: nowrap; }
+.quality-stream-info small { display: block; color: var(--text-secondary); margin-top: 5px; font-size: 11px; }
 
 .quality-option:hover {
     background: #f5f5f5;

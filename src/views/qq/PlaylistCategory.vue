@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { qqPlaylistCategories, qqPlaylistList, qqBatchPlaylists, normalizeQQPlaylist } from '../../api/qq'
 
@@ -12,10 +12,14 @@ const playlists = ref([])
 const page = ref(1)
 const hasMore = ref(true)
 const batchPlaylists = ref([]) // 批量精选歌单
+const error = ref(''), categoryError = ref('')
+let revision=0, disposed=false
 
 const fetchCategories = async () => {
     try {
         const res = await qqPlaylistCategories()
+        if(disposed)return
+        if(res?.code!==0)throw new Error(res?.message || '分类加载失败')
         // 解包 response 后：{ code, data: { categories: [{ categoryGroupName, items: [{ categoryId, categoryName }] }] } }
         const cats = res?.data?.categories || res?.categories || []
         // 展平所有分组下的 items 作为分类列表
@@ -37,6 +41,8 @@ const fetchCategories = async () => {
             fetchPlaylists(true)
         }
     } catch (e) {
+        if(disposed)return
+        categoryError.value='分类服务暂不可用，已显示常用分类'
         console.error('[QQ PlaylistCategory] fetchCategories error:', e)
         // 降级：用默认分类
         categories.value = [
@@ -55,6 +61,7 @@ const fetchCategories = async () => {
 }
 
 const fetchPlaylists = async (reset = false) => {
+    if(!reset && loading.value)return
     if (!currentCat.value) return
     if (reset) {
         page.value = 1
@@ -62,23 +69,27 @@ const fetchPlaylists = async (reset = false) => {
         hasMore.value = true
     }
     if (!hasMore.value) return
+    const requestId=++revision
     loading.value = true
+    error.value=''
     try {
         const res = await qqPlaylistList({ categoryId: currentCat.value, sortId: 5, limit: 30, page: page.value })
+        if(disposed || requestId!==revision)return
+        if(res?.code!==0)throw new Error(res?.message || 'QQ 歌单加载失败')
         const data = res?.data || res
         const list = data?.list || data?.songListList || data?.playlists || []
         const mapped = list.map(normalizeQQPlaylist).filter(p => p.id)
         if (reset) {
             playlists.value = mapped
         } else {
-            playlists.value.push(...mapped)
+            playlists.value=[...new Map([...playlists.value,...mapped].map(p=>[String(p.id),p])).values()]
         }
         hasMore.value = mapped.length >= 30
         if (mapped.length) page.value++
     } catch (e) {
-        console.error('[QQ PlaylistCategory] fetchPlaylists error:', e)
+        if(!disposed && requestId===revision)error.value=e.message || '歌单加载失败，请重试'
     } finally {
-        loading.value = false
+        if(!disposed && requestId===revision)loading.value = false
     }
 }
 
@@ -86,6 +97,7 @@ const fetchPlaylists = async (reset = false) => {
 const fetchBatchPlaylists = async () => {
     try {
         const res = await qqBatchPlaylists({ categoryIds: [10000000, 1, 2], page: 0, limit: 6 })
+        if(disposed)return
         const data = res?.data || res
         // 返回的可能是按分类分组的歌单数组
         const list = data?.list || data?.data || data?.playlists || []
@@ -94,6 +106,7 @@ const fetchBatchPlaylists = async () => {
             .filter(p => p.id)
             .slice(0, 10)
     } catch (e) {
+        if(disposed)return
         console.error('[QQ PlaylistCategory] fetchBatchPlaylists error:', e)
         batchPlaylists.value = []
     }
@@ -112,11 +125,14 @@ onMounted(() => {
     fetchBatchPlaylists()
     fetchCategories()
 })
+onBeforeUnmount(()=>{disposed=true;revision++})
 </script>
 
 <template>
     <div class="qq-cat-page" v-loading="loading">
         <h2 class="qq-page-title">歌单分类</h2>
+        <p v-if="categoryError" class="qq-category-warning" role="status">{{ categoryError }}</p>
+        <p v-if="error" class="qq-category-error" role="alert">{{ error }} <button :disabled="loading" @click="fetchPlaylists(!playlists.length)">重试</button></p>
 
         <!-- 精选推荐（批量歌单） -->
         <section class="qq-section" v-if="batchPlaylists.length">
@@ -152,12 +168,14 @@ onMounted(() => {
         <div v-if="hasMore && playlists.length" class="qq-load-more">
             <button class="qq-load-btn" @click="loadMore" :disabled="loading">加载更多</button>
         </div>
-        <div v-if="!loading && !playlists.length" class="qq-empty">暂无歌单</div>
+        <div v-if="!loading && !error && !playlists.length" class="qq-empty">此分类暂无歌单</div>
     </div>
 </template>
 
 <style scoped>
 .qq-cat-page { padding: 20px 28px; height: 100%; overflow-y: auto; }
+.qq-category-warning,.qq-category-error { color:var(--text-secondary); padding:12px; border:1px solid var(--border-color); border-radius:8px; font-size:13px; }
+.qq-category-error button { color:var(--primary-color); background:transparent; border:0; cursor:pointer; }
 .qq-page-title {
     font-size: 20px; font-weight: 600; margin-bottom: 18px; color: var(--text-main);
     border-left: 3px solid var(--primary-color); padding-left: 10px;

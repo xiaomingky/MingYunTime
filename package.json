@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "4.0.0-beta.2",
+  "version": "4.0.0",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -9,11 +9,33 @@
   "scripts": {
     "dev": "set NODE_OPTIONS=--max-old-space-size=1024 && vite",
     "dev:light": "set NODE_OPTIONS=--max-old-space-size=512 && vite",
-    "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/clean-dist.cjs && node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && node scripts/prepare-api-dependencies.cjs && vite build && electron-builder",
+    "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/clean-dist.cjs && node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && node scripts/prepare-api-dependencies.cjs && node scripts/ensure-qishui-runtime.cjs && vite build && electron-builder",
     "preview": "vite preview",
     "check:electron": "electron scripts/check-electron-functional.cjs",
+    "check:music": "node scripts/check-music-platforms.mjs",
+    "check:music:live": "node scripts/check-music-platforms.mjs --live",
+    "check:qishui:electron": "electron scripts/check-qishui-electron.cjs",
     "postinstall": "node node_modules/electron/install.js",
-    "check": "node scripts/check-modernization.mjs && node scripts/check-player-queue.mjs && node scripts/check-download-stream.mjs && node scripts/check-qq-search.mjs && node scripts/check-douyu-live.mjs && node scripts/check-apple-lyrics.mjs && node scripts/check-douyin-media.mjs && node scripts/check-douyin-browser.mjs && node scripts/check-interface-motion.mjs"
+    "check": "node scripts/check-modernization.mjs && node scripts/check-player-queue.mjs && node scripts/check-playback-start.mjs && node scripts/check-playlist-comments.mjs && node scripts/check-qishui-cenc.mjs && node scripts/check-download-stream.mjs && node scripts/check-download-resolver.mjs && node scripts/check-download-center.mjs && node scripts/check-qishui-playlists.mjs && node scripts/check-song-vip.mjs && node scripts/check-qq-search.mjs && node scripts/check-douyu-live.mjs && node scripts/check-apple-lyrics.mjs && node scripts/check-douyin-media.mjs && node scripts/check-douyin-browser.mjs && node scripts/check-interface-motion.mjs && node scripts/check-music-platforms.mjs && node scripts/check-qq-client.mjs && node scripts/check-qq-native-login.mjs && node scripts/check-qq-inline-qr.mjs && node scripts/check-qq-benefits.mjs && node scripts/check-esports-scoreboard.mjs && node scripts/check-qishui-search-login.mjs && node scripts/check-qishui-business.mjs && node scripts/check-qishui-account.mjs && node scripts/check-netease-client.mjs && node scripts/check-kugou-client.mjs && node scripts/check-account-state.mjs && node scripts/check-membership-state.mjs && node scripts/check-update-version.mjs && node scripts/check-platform-fixes.mjs && node scripts/check-stream-quality.mjs && node scripts/check-netease-playback.mjs && node scripts/check-session-download.mjs && node scripts/check-provider-download.mjs",
+    "check:esports:scoreboard": "node scripts/check-esports-scoreboard.mjs",
+    "check:qishui:search-login": "node scripts/check-qishui-search-login.mjs",
+    "prepare:qishui": "node scripts/ensure-qishui-runtime.cjs",
+    "check:qishui:business": "node scripts/check-qishui-business.mjs",
+    "check:qishui:account": "node scripts/check-qishui-account.mjs",
+    "check:qq:client": "node scripts/check-qq-client.mjs",
+    "check:qq:benefits": "node scripts/check-qq-benefits.mjs",
+    "check:qq:electron": "electron scripts/check-qq-electron.cjs",
+    "check:qq:login": "electron scripts/check-qq-login.cjs",
+    "check:netease:client": "node scripts/check-netease-client.mjs",
+    "check:netease:electron": "electron scripts/check-netease-electron.cjs",
+    "check:kugou:client": "node scripts/check-kugou-client.mjs",
+    "check:account:state": "node scripts/check-account-state.mjs",
+    "check:kugou:electron": "electron scripts/check-kugou-electron.cjs",
+    "check:playback:start": "node scripts/check-playback-start.mjs",
+    "check:platform:fixes": "node scripts/check-platform-fixes.mjs",
+    "check:qishui:cenc": "node scripts/check-qishui-cenc.mjs",
+    "check:stream:quality": "node scripts/check-stream-quality.mjs",
+    "check:qq:native-login": "node scripts/check-qq-native-login.mjs"
   },
   "dependencies": {
     "@applemusic-like-lyrics/core": "^0.5.0",
@@ -43,6 +65,7 @@
     "music-metadata": "^11.12.3",
     "node-id3": "^0.2.9",
     "pinia": "^3.0.4",
+    "qrcode": "^1.5.4",
     "vue": "^3.5.30",
     "vue-router": "^5.0.3"
   },
@@ -109,6 +132,14 @@
       {
         "from": "electron/api-runtime.cjs",
         "to": "api-runtime.cjs"
+      },
+      {
+        "from": "electron/qishui-runtime-worker.cjs",
+        "to": "qishui-runtime-worker.cjs"
+      },
+      {
+        "from": "resources/qishui-runtime",
+        "to": "qishui-runtime"
       }
     ],
     "fileAssociations": [

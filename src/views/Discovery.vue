@@ -1,5 +1,6 @@
 <script setup>
-import { ref, onMounted, onUnmounted, watch, inject } from 'vue'
+import SongVipBadge from '../components/SongVipBadge.vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { 
   getBanner, 
@@ -18,7 +19,6 @@ import SongActionsMenu from '../components/SongActionsMenu.vue'
 const router = useRouter()
 const playerStore = usePlayerStore()
 const userStore = useUserStore()
-const requireLockForPlaylist = inject('requireLockForPlaylist')
 
 const banners = ref([])
 const currentBanner = ref(0)
@@ -93,11 +93,7 @@ const refreshData = async () => {
 defineExpose({ refreshData })
 
 const goToPlaylist = (id) => {
-  if (requireLockForPlaylist) {
-    requireLockForPlaylist(id)
-  } else {
-    router.push(`/playlist/${id}`)
-  }
+  router.push(`/playlist/${id}`)
 }
 
 const goToArtist = (id) => {
@@ -200,11 +196,11 @@ onUnmounted(() => { clearInterval(bannerTimer) })
                 </div>
               </div>
               <div class="song-info-mini" v-if="item.song">
-                <div class="mini-name">{{ item.name }}</div>
+                <div class="mini-name">{{ item.name }}<SongVipBadge :song="item" platform="netease" /></div>
                 <div class="mini-artist">{{ item.song.artists ? item.song.artists.map(a => a.name).join('/') : '未知歌手' }}</div>
               </div>
               <div class="song-info-mini" v-else>
-                <div class="mini-name">{{ item.name }}</div>
+                <div class="mini-name">{{ item.name }}<SongVipBadge :song="item" platform="netease" /></div>
                 <div class="mini-artist">{{ item.artists ? item.artists.map(a => a.name).join('/') : '未知歌手' }}</div>
               </div>
               <SongActionsMenu :song="item" :list="newSongs" compact />
@@ -284,7 +280,7 @@ onUnmounted(() => { clearInterval(bannerTimer) })
                         </div>
                     </div>
                     <div class="song-info-mini">
-                        <div class="mini-name">{{ item.name }}</div>
+                        <div class="mini-name">{{ item.name }}<SongVipBadge :song="item" platform="netease" /></div>
                         <div class="mini-artist">{{ item.artists ? item.artists.map(a => a.name).join('/') : (item.ar ? item.ar.map(a => a.name).join('/') : '未知歌手') }}</div>
                     </div>
                     <SongActionsMenu :song="item" :list="newSongs" compact />

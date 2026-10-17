@@ -1,26 +1,30 @@
 # 茗韵时光 · MingYun Time
 
-**三平台音乐、双风格歌词、视频与赛事，一款 Windows 桌面播放器。**
+**四平台音乐、双风格歌词、视频与赛事，一款 Windows 桌面播放器。**
 
-[English](README_EN.md) · [下载 v3.6.3](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.3) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
+[English](README_EN.md) · [下载 v4.0.0](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.0) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
 [程序官网](https://music.xiaomingky.dpdns.org) · [作者网站](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-3.6.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-4.0.0-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
-基于 Vue 3 + Electron 44 构建，集成网易云音乐、QQ 音乐、酷狗概念版。除了发现、搜索、歌单和专辑，还提供可排序播放队列、本地音乐、经典 / Apple Music 风格歌词、桌面歌词、均衡器和统一下载中心。视频专区包含 B站、动漫、影视、网页解析与直播；娱乐专区提供 CS / VAL 赛事；智慧教材支持阅读、批注与配套音频。
+基于 Vue 3 + Electron 44 构建，集成网易云音乐、QQ 音乐、酷狗概念版和汽水音乐。除了发现、搜索、歌单和专辑，还提供可排序播放队列、本地音乐、经典 / Apple Music 风格歌词、桌面歌词、均衡器和统一下载中心。视频专区包含 B站、动漫、影视、网页解析与直播；娱乐专区提供 CS / VAL 赛事；智慧教材支持阅读、批注与配套音频。
 
-> 本项目由 AI 辅助开发。英文 README 是文档翻译，不代表客户端具有英文界面。以下图片与 GIF 来自 v3.6.1 界面；在线推荐、榜单与赛事会随服务更新。歌词 GIF 演示界面动画，不含音频。本地音乐展示使用示例文件条目。
+> 本项目由 AI 辅助开发。英文 README 是文档翻译，不代表客户端具有英文界面。4.0.0 设置界面见下方；其余历史图片与 GIF 保留 v3.6.1 标注；在线推荐、榜单与赛事会随服务更新。歌词 GIF 演示界面动画，不含音频。本地音乐展示使用示例文件条目。
 
-## 4.0 测试版优化（当前源码，尚未发布）
+## 4.0.0 正式版
 
-当前开发分支升级至 Electron **44.7.0**、electron-builder **26.15.3**，面向 Windows 10 / 11 x64。上方 v3.6.3 下载仍为历史版本。
+4.0.0 正式版升级至 Electron **44.7.0**、electron-builder **26.15.3**，面向 Windows 10 / 11 x64。安装包与免安装压缩包见 v4.0.0 Release；v3.6.3 保留为历史兼容版本。
 
+- **四平台与歌单**：新增汽水音乐入口和歌单管理；整合各平台账号、歌曲权限标识与下载解析。在线操作仍受平台授权与资源状态限制。
+- **统一控件**：复选框、全选 / 半选、单选按钮、胶囊开关、分段选择器与下拉菜单统一玻璃质感，保留现有页面布局。
 - **队列排列**：长队列只绘制可见行，支持 1 万首歌曲；拖动手柄、上下移动按钮和 **Alt + ↑ / ↓** 都能排列。点击「当前歌曲」快速定位，拖到列表边缘会自动滚动，便于跨屏拖动。
 - **显示与流畅度**：「设置 → 显示与流畅度」选择「轻盈流畅」或「完整视觉」，两者均保留过渡和逐字歌词；还可分别调整界面动画、轻量视觉。Apple 歌词支持 30 / 45 / 60 FPS。
 - **启动与后台**：页面、歌词详情和视频引擎按需加载。音乐 API 首次请求时启动，同一平台的并发请求共用启动过程；自有进程空闲三分钟后释放。首次请求等待就绪，用户选择的在线线路不会被自动覆盖。
 - **播放稳定性**：本地文件异步流式读取，支持完整、部分、尾部范围请求及 HEAD / 416；封面请求合并解析并使用容量限制缓存。经典逐字歌词向后拖动进度后恢复正确高亮。
 - **资源清理**：离开视频时销毁播放器、流缓冲和音频同步；队列原地排序也会保存；窗口隐藏和恢复保留后台听歌。
+
+![4.0.0 设置与统一控件](showimage/v4.0.0/settings.png)
 
 [验证记录与实测数据](docs/MODERNIZATION.md)。运行 `npm run check` 执行回归检查；构建需 Node.js 22.12+，项目 postinstall 会安装 Electron 运行文件。
 
@@ -48,12 +52,12 @@
 
 ## 下载安装
 
-1. 打开 [v3.6.3 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v3.6.3)，在 **Assets** 中选择 Windows 安装包 `.exe`；需要免安装方式时选择 `.7z`，完整解压后运行程序。
+1. 打开 [v4.0.0 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.0)，在 **Assets** 中选择 Windows 安装包 `.exe`；需要免安装方式时选择 `.7z`，完整解压后运行程序。
 2. 安装包使用原生 **NSIS 向导**，可选择安装目录，并创建桌面 / 开始菜单快捷方式。
 3. 启动后在左上角选择平台，再按需登录。普通使用无需安装 Node.js，音乐 API 服务与下载工具随客户端提供。
 4. 首次启动本地 API 服务需要时间，数据暂未出现时稍等后刷新页面。
 
-**当前源码 / 4.0 测试版：Windows 10 / 11，64 位；不再支持 Windows 7 / 8 / 8.1。** 上方已发布的 v3.6.3 属于旧版兼容分支。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
+**4.0.0 正式版：Windows 10 / 11，64 位；不再支持 Windows 7 / 8 / 8.1。** 上方已发布的 v3.6.3 属于旧版兼容分支。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
 
 在线播放、下载、高音质和账号操作依赖对应平台的授权、会员、地区与资源可用性。
 
@@ -63,7 +67,7 @@
 - **界面动画**：在「设置 → 播放器其他设置 → 界面动画」选择开启动画、跟随系统或减少动态效果。默认开启，即使 Windows 请求减少动态效果，应用仍保留切换动画。
 - **轻量视觉**：同一设置分区中开启，减少毛玻璃与歌词模糊开销，同时保留页面、抽屉的切换动画，适合核显和较旧电脑。
 - **渲染与缓存**：让 Chromium 根据显卡驱动选择合适的渲染方式，隐藏窗口时保留着色器与页面缓存，减少返回时的重复解码与重建。
-- **兼容性**：历史 v3.6.3 使用 Electron 22.3.27，支持 Windows 7 SP1；当前 4.0 测试版要求 Windows 10 / 11。
+- **兼容性**：历史 v3.6.3 使用 Electron 22.3.27，支持 Windows 7 SP1；4.0.0 正式版要求 Windows 10 / 11。
 
 ## v3.6.1 播放体验
 

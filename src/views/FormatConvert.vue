@@ -1,4 +1,5 @@
 <script setup>
+import SelectionMark from '../components/SelectionMark.vue'
 // 音乐格式转换（加密格式还原）
 // 支持：网易云 .ncm / QQ音乐 .qmc* .mflac .mgg / 酷狗 .kgm .kgma .vpr
 // 原理：本地字节级解密还原，不转码 —— 输出原生 FLAC/MP3/OGG/M4A 等，与原始音质一致
@@ -227,8 +228,7 @@ function removePending(f) {
             <FolderOpen :size="14" /> 添加文件
           </button>
           <label class="check-all" @click="toggleAll">
-            <CheckSquare v-if="allChecked" :size="16" class="check-icon active" />
-            <Square v-else :size="16" class="check-icon" />
+            <SelectionMark :checked="allChecked" :size="16" class="check-icon" :mixed="allCheckedIndeterminate" />
             全选
           </label>
           <button class="primary-btn" :disabled="converting || selectedCount === 0" @click="startConvert">
@@ -275,8 +275,7 @@ function removePending(f) {
                   class="check-icon-wrap"
                   @click.stop="f.selected = !f.selected"
                 >
-                  <CheckSquare v-if="f.selected" :size="16" class="check-icon active" />
-                  <Square v-else :size="16" class="check-icon" />
+                  <SelectionMark :checked="f.selected" :size="16" class="check-icon" />
                 </span>
                 <Loader2 v-else-if="f.status === 'converting'" :size="15" class="spinning icon-wait" />
                 <span v-else-if="f.status === 'success'" class="ok-mark"><CheckSquare :size="16" class="icon-success" /></span>

@@ -1,5 +1,6 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import QQSongBadge from '../../components/QQSongBadge.vue'
+import { ref, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
@@ -24,11 +25,21 @@ const albums = ref([])
 const mvs = ref([])
 const similarSingers = ref([])
 const starNum = ref(0)
+const error = ref('')
+const songPage = ref(1), albumPage = ref(1), songTotal = ref(0), albumTotal = ref(0)
+const moreSongs = ref(false), moreAlbums = ref(false), songLoading = ref(false), albumLoading = ref(false)
+const songError = ref(''), albumError = ref('')
+let revision = 0
 
 const fetchSinger = async () => {
     const singermid = route.params.id
     if (!singermid) return
+    const requestId = ++revision
     loading.value = true
+    singer.value = null; hotSongs.value = []; albums.value = []; mvs.value = []; similarSingers.value = []; starNum.value = 0; error.value = ''
+    songPage.value = 1; albumPage.value = 1; songTotal.value = 0; albumTotal.value = 0
+    moreSongs.value = false; moreAlbums.value = false; songError.value = ''; albumError.value = ''
+    songLoading.value = false; albumLoading.value = false
     try {
         const [descRes, songRes, albumRes, mvRes, similarRes, starRes] = await Promise.allSettled([
             qqSingerDesc(singermid),
@@ -38,6 +49,10 @@ const fetchSinger = async () => {
             qqSimilarSinger(singermid),
             qqSingerStarNum(singermid)
         ])
+        if (requestId !== revision) return
+        const unavailable = [descRes, songRes, albumRes].map((result, index) =>
+            result.status === 'rejected' || result.value?.code !== 0 ? ['歌手资料', '热门歌曲', '专辑'][index] : '').filter(Boolean)
+        if (unavailable.length) error.value = `${unavailable.join('、')}加载失败，请重试`
         // 歌手基本信息（getSingerDesc 常返回 referer error，容错处理）
         singer.value = {
             id: singermid,
@@ -56,12 +71,14 @@ const fetchSinger = async () => {
             const r = songRes.value
             const list = r?.singer?.data?.songlist || r?.data?.songlist || r?.data?.list || []
             hotSongs.value = list.map(normalizeQQSong).filter(Boolean)
+            songTotal.value = Number(r?.data?.total ?? hotSongs.value.length)
+            moreSongs.value = list.length > 0 && hotSongs.value.length < songTotal.value
             // 无专辑封面(albummid 缺失)的歌曲,调官方 song-detail 接口拿真实 albummid 构造 T002 封面
             const cookie = getQQCookie()
             hotSongs.value.forEach((s, i) => {
                 if (!s.picUrl || !s.picUrl.includes('T002R300x300M000')) {
                     enrichQQSongWithDetail(s, cookie).then(updated => {
-                        if (updated.picUrl) hotSongs.value[i] = updated
+                        if (requestId === revision && updated.picUrl && hotSongs.value[i]?.id === s.id) hotSongs.value[i] = updated
                     }).catch(() => {})
                 }
             })
@@ -76,6 +93,8 @@ const fetchSinger = async () => {
             const r = albumRes.value
             const list = r?.singerAlbum?.data?.list || r?.data?.list || r?.data?.albumList || []
             albums.value = list.map(normalizeQQAlbum).filter(Boolean)
+            albumTotal.value = Number(r?.data?.total ?? albums.value.length)
+            moreAlbums.value = list.length > 0 && albums.value.length < albumTotal.value
         }
         // MV：解包后可能为 { code, mv: { data: { list: [...] } } } 或 { code, data: { mvlist: [...] } }
         if (mvRes.status === 'fulfilled') {
@@ -101,11 +120,33 @@ const fetchSinger = async () => {
             starNum.value = r?.star_num || r?.starNum || r?.fans || r?.data?.star_num || r?.data?.starNum || 0
         }
     } catch (e) {
-        console.error('[QQ Singer] error:', e)
-        messageStore.error('QQ 歌手加载失败')
+        if (requestId === revision) { error.value = e.message || 'QQ 歌手加载失败'; messageStore.error(error.value) }
     } finally {
-        loading.value = false
+        if (requestId === revision) loading.value = false
     }
+}
+
+const loadMore = async (kind) => {
+    const songs = kind === 'songs', busy = songs ? songLoading : albumLoading
+    const hasMore = songs ? moreSongs : moreAlbums, page = songs ? songPage : albumPage
+    const list = songs ? hotSongs : albums, failure = songs ? songError : albumError
+    if (busy.value || !hasMore.value) return
+    const requestId = revision, id = route.params.id
+    busy.value = true; failure.value = ''
+    try {
+        const response = await (songs ? qqSingerHotsong(id, 30, page.value + 1) : qqSingerAlbum(id, 10, page.value + 1))
+        if (requestId !== revision) return
+        if (response?.code !== 0) throw new Error(response?.message || '加载失败，请重试')
+        const raw = songs ? response.data?.songlist : response.data?.list
+        if (!Array.isArray(raw)) throw new Error('QQ 分页响应不完整，请重试')
+        const normalized = raw.map(songs ? normalizeQQSong : normalizeQQAlbum).filter(item => item?.id)
+        const known = new Set(list.value.map(item => String(item.id)))
+        const next = normalized.filter(item => { const key = String(item.id); if (known.has(key)) return false; known.add(key); return true })
+        if (raw.length && !next.length) throw new Error('QQ 返回了重复分页，请稍后重试')
+        list.value.push(...next); page.value++
+        hasMore.value = raw.length > 0 && list.value.length < (songs ? songTotal.value : albumTotal.value)
+    } catch (e) { if (requestId === revision) failure.value = e.message }
+    finally { if (requestId === revision) busy.value = false }
 }
 
 const playSong = (song, event = null) => {
@@ -148,12 +189,13 @@ const formatFans = (n) => {
     return String(n)
 }
 
-watch(() => route.params.id, fetchSinger)
-onMounted(fetchSinger)
+watch(() => route.params.id, fetchSinger, { immediate: true })
+onBeforeUnmount(() => revision++)
 </script>
 
 <template>
     <div class="qq-singer-page" v-loading="loading">
+        <div v-if="error" class="qq-empty" role="alert">{{ error }} <button :disabled="loading" @click="fetchSinger">重试</button></div>
         <div class="qq-singer-header" v-if="singer">
             <img :src="singer.picUrl" class="qq-singer-pic" />
             <div class="qq-singer-info">
@@ -164,28 +206,32 @@ onMounted(fetchSinger)
         </div>
 
         <section class="qq-section" v-if="hotSongs.length">
-            <h2 class="qq-section-title">热门歌曲</h2>
+            <h2 class="qq-section-title">热门歌曲 <small>{{ hotSongs.length }} / {{ songTotal }}</small></h2>
             <div class="qq-song-list">
                 <div v-for="(s, i) in hotSongs" :key="s.id || i" class="qq-song-item" @click="playSong(s, $event)">
                     <span class="qq-song-index">{{ i + 1 }}</span>
                     <div class="qq-song-info">
-                        <div class="qq-song-name">{{ s.name }}</div>
+                        <div class="qq-song-name"><span class="qq-song-title">{{ s.name }}</span><QQSongBadge :song="s" /></div>
                         <div class="qq-song-artist">{{ s.artist }}</div>
                     </div>
                     <div class="qq-song-album">{{ s.album }}</div>
                     <SongActionsMenu :song="toQQTrack(s)" :list="hotSongs.map(toQQTrack).filter(Boolean)" compact />
                 </div>
             </div>
+            <p v-if="songError" role="alert">{{ songError }}</p>
+            <button v-if="moreSongs" class="qq-singer-more" :disabled="songLoading" @click="loadMore('songs')">{{ songLoading ? '加载中…' : '加载更多歌曲' }}</button>
         </section>
 
         <section class="qq-section" v-if="albums.length">
-            <h2 class="qq-section-title">专辑</h2>
+            <h2 class="qq-section-title">专辑 <small>{{ albums.length }} / {{ albumTotal }}</small></h2>
             <div class="qq-card-grid">
                 <div v-for="a in albums" :key="a.id" class="qq-card" @click="router.push(`/qq/album/${a.id}`)">
                     <img :src="a.picUrl" :alt="a.name" class="qq-card-img" loading="lazy" />
                     <div class="qq-card-name">{{ a.name }}</div>
                 </div>
             </div>
+            <p v-if="albumError" role="alert">{{ albumError }}</p>
+            <button v-if="moreAlbums" class="qq-singer-more" :disabled="albumLoading" @click="loadMore('albums')">{{ albumLoading ? '加载中…' : '加载更多专辑' }}</button>
         </section>
 
         <section class="qq-section" v-if="mvs.length">
@@ -226,6 +272,9 @@ onMounted(fetchSinger)
 
 <style scoped>
 .qq-singer-page { padding: 20px 28px; height: 100%; overflow-y: auto; }
+.qq-singer-more { display: block; margin: 18px auto; padding: 10px 24px; border: 1px solid var(--primary-color); border-radius: 20px; color: var(--primary-color); background: transparent; cursor: pointer; }
+.qq-singer-more:disabled { opacity: .6; cursor: wait; }
+.qq-section-title small { font-size: 12px; font-weight: normal; color: var(--text-secondary); margin-left: 10px; }
 .qq-singer-header { display: flex; gap: 24px; margin-bottom: 28px; }
 .qq-singer-pic { width: 180px; height: 180px; border-radius: 50%; object-fit: cover; flex-shrink: 0; }
 .qq-singer-info { flex: 1; display: flex; flex-direction: column; }
@@ -245,7 +294,9 @@ onMounted(fetchSinger)
 .qq-song-item:hover { background: var(--hover-bg); }
 .qq-song-index { width: 28px; color: var(--text-light); font-size: 13px; text-align: center; }
 .qq-song-info { flex: 1; min-width: 0; }
+.qq-song-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .qq-song-name {
+    display:flex;align-items:center;
     font-size: 14px; color: var(--text-main);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }

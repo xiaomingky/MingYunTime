@@ -1,5 +1,7 @@
 <script setup>
-import { ref, onMounted, watch, computed } from 'vue'
+import SelectionMark from '../components/SelectionMark.vue'
+import SongVipBadge from '../components/SongVipBadge.vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import request, { getCommentPlaylist, playlistTracks } from '../api'
 import { usePlayerStore } from '../store/player'
@@ -8,7 +10,7 @@ import { useMessageStore } from '../store/message'
 
 const userStore = useUserStore()
 const messageStore = useMessageStore()
-import { Play, Heart, Share2, Download, Search, Clock, Edit, Trash2, Camera, X, CheckSquare, Square, ListPlus, SkipForward } from 'lucide-vue-next'
+import { Play, Heart, Share2, Download, Search, Clock, Edit, Trash2, Camera, X, ListPlus, SkipForward } from 'lucide-vue-next'
 import SongActionsMenu from '../components/SongActionsMenu.vue'
 
 const route = useRoute()
@@ -17,37 +19,66 @@ const playerStore = usePlayerStore()
 const playlist = ref(null)
 const tracks = ref([])
 const loading = ref(false)
-
+const detailError = ref(''), loadingMore = ref(false), hasMore = ref(false), trackOffset = ref(0)
+const activeTab = ref('tracks'), comments = ref([]), playlistCommentsCount = ref(0), commentsLoading = ref(false), commentsError = ref('')
+let commentRevision = 0
+let detailRevision = 0
 const fetchDetail = async () => {
     const id = route.params.id
     if (!id) return
+    const revision = ++detailRevision
+    commentRevision++; comments.value = []; playlistCommentsCount.value = 0; commentsLoading.value = false; commentsError.value = ''; activeTab.value = 'tracks'
     loading.value = true
+    detailError.value = ''; playlist.value = userStore.playlists.find(p => String(p.id) === String(id)) || null; tracks.value = []; trackOffset.value = 0; hasMore.value = false; loadingMore.value = false
 
     try {
         const res = await request.get('/playlist/detail', { params: { id, timestamp: Date.now() } })
+        if (revision !== detailRevision) return
         if (res && res.playlist) {
             playlist.value = res.playlist
-            if (res.playlist.tracks && res.playlist.tracks.length > 0) {
+            if (res.playlist.tracks?.length || !(res.playlist.trackCount || res.playlist.trackIds?.length)) {
                 tracks.value = res.playlist.tracks
+                trackOffset.value = tracks.value?.length || 0
+                hasMore.value = trackOffset.value < Number(res.playlist.trackCount || res.playlist.trackIds?.length || 0)
             } else {
                 const trackRes = await request.get('/playlist/track/all', {
-                    params: { id, limit: 1000, timestamp: Date.now() }
+                    params: { id, limit: 100, offset: 0, timestamp: Date.now() }
                 })
-                if (trackRes && trackRes.songs) tracks.value = trackRes.songs
+                if (revision !== detailRevision) return
+                if (!Array.isArray(trackRes?.songs)) throw new Error(trackRes?.message || '歌单歌曲加载失败，请重试')
+                tracks.value = trackRes.songs
+                trackOffset.value = Number(trackRes.offset ?? tracks.value.length)
+                hasMore.value = trackRes.hasMore ?? (trackOffset.value < Number(res.playlist.trackCount || 0))
             }
         } else {
-            console.error('--- [Detail] API returned no playlist object:', res)
+            throw new Error(res?.message || '歌单详情加载失败，请重试')
         }
     } catch (error) {
-        console.error('Fetch playlist error:', error)
+        if (revision === detailRevision) detailError.value = error.message
     } finally {
-        loading.value = false
+        if (revision === detailRevision) loading.value = false
     }
 }
+const loadMoreTracks = async () => {
+    if (!hasMore.value || loadingMore.value) return
+    const revision = detailRevision, id = route.params.id
+    loadingMore.value = true; detailError.value = ''
+    try {
+        const result = await request.get('/playlist/track/all', { params: { id, limit: 100, offset: trackOffset.value } })
+        if (revision !== detailRevision) return
+        if (!Array.isArray(result?.songs)) throw new Error(result?.message || '歌单分页加载失败，请重试')
+        const nextOffset = Number(result.offset ?? trackOffset.value + result.songs.length)
+        if (nextOffset <= trackOffset.value && result.hasMore !== false) throw new Error('歌单分页未继续返回数据，请重试')
+        const seen = new Set(tracks.value.map(t => String(t.id)))
+        tracks.value.push(...result.songs.filter(t => { const key = String(t.id); if (seen.has(key)) return false; seen.add(key); return true }))
+        trackOffset.value = nextOffset
+        hasMore.value = result.hasMore ?? (nextOffset < Number(playlist.value?.trackCount || 0))
+    } catch (error) { if (revision === detailRevision) detailError.value = error.message }
+    finally { if (revision === detailRevision) loadingMore.value = false }
+}
+onBeforeUnmount(() => { detailRevision++; commentRevision++ })
 
-watch(() => route.params.id, (newId) => {
-  if (newId) fetchDetail()
-}, { immediate: true })
+watch(() => route.fullPath, () => fetchDetail(), { immediate: true })
 
 const formatTime = (ms) => {
   const seconds = ms / 1000
@@ -108,24 +139,26 @@ const batchRemoveTracks = async () => {
     selectMode.value = false
 }
 
-const activeTab = ref('tracks')
-const comments = ref([])
-const playlistCommentsCount = ref(0)
-const commentsLoading = ref(false)
-
 const fetchComments = async () => {
     if (!playlist.value?.id) return
-    commentsLoading.value = true
+    const current = ++commentRevision, id = playlist.value.id, account = userStore.revision
+    commentsLoading.value = true; commentsError.value = ''
     try {
-        const res = await getCommentPlaylist(playlist.value.id)
-        comments.value = res.hotComments || res.comments || []
+        const res = await getCommentPlaylist(id)
+        if (current !== commentRevision || id !== playlist.value?.id || account !== userStore.revision) return
+        if (res?.code !== 200 || !Array.isArray(res.comments)) throw new Error(res?.message || '歌单评论加载失败，请重试')
+        comments.value = res.hotComments?.length ? res.hotComments : res.comments
         playlistCommentsCount.value = res.total || 0
     } catch (err) {
-        console.error('Fetch playlist comments error:', err)
+        if (current === commentRevision && account === userStore.revision) commentsError.value = err.message || '歌单评论加载失败，请重试'
     } finally {
-        commentsLoading.value = false
+        if (current === commentRevision && account === userStore.revision) commentsLoading.value = false
     }
 }
+watch(() => userStore.revision, () => {
+    commentRevision++; comments.value = []; playlistCommentsCount.value = 0; commentsLoading.value = false; commentsError.value = ''
+    if (activeTab.value === 'comments') fetchComments()
+})
 
 const formatDate = (timestamp) => {
     const date = new Date(timestamp)
@@ -221,8 +254,9 @@ const handleCoverChange = async (e) => {
 </script>
 
 <template>
+    <div v-if="detailError" class="playlist-load-status" role="alert">{{ detailError }} <button @click="playlist ? loadMoreTracks() : fetchDetail()">重试</button></div>
   <div class="playlist-detail">
-    <div v-if="loading" class="refresh-bar">刷新中...</div>
+    <div v-if="loading" class="refresh-bar" role="status">正在加载歌曲…</div>
     <template v-if="playlist">
         <div class="detail-header">
             <div class="cover-wrapper" :class="{ owner: isOwner }" @click="isOwner && triggerCoverUpload()">
@@ -307,8 +341,7 @@ const handleCoverChange = async (e) => {
                     <td class="index-cell">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</td>
                     <td class="operation-cell">
                         <span v-if="selectMode" class="track-check" @click.stop="toggleSelect(track)">
-                            <CheckSquare v-if="selectedIds.includes(track.id)" :size="16" class="check-icon active" />
-                            <Square v-else :size="16" class="check-icon" />
+                            <SelectionMark :checked="selectedIds.includes(track.id)" :size="16" class="check-icon" />
                         </span>
                         <Heart
                           :size="14"
@@ -323,7 +356,7 @@ const handleCoverChange = async (e) => {
                     <td class="title-cell" :title="track.name">
                         <div class="title-container">
                             <span class="name-text">{{ track.name }}</span>
-                            <span v-if="track.fee === 1" class="vip-tag-mini">VIP</span>
+                            <SongVipBadge :song="track" platform="netease" />
                         </div>
                     </td>
                     <td class="artist-cell" :title="track.ar.map(a => a.name).join('/')">{{ track.ar.map(a => a.name).join('/') }}</td>
@@ -332,10 +365,15 @@ const handleCoverChange = async (e) => {
                 </tr>
                 </tbody>
             </table>
+            <div v-if="activeTab==='tracks' && hasMore" class="playlist-load-status">
+                <span>已加载 {{ tracks.length }} / {{ playlist.trackCount }}</span>
+                <button :disabled="loadingMore" @click="loadMoreTracks">{{ loadingMore ? '加载中…' : '加载更多歌曲' }}</button>
+            </div>
 
             <!-- Playlist Comment Section -->
             <div v-show="activeTab === 'comments'" class="playlist-comments-view">
                 <div v-if="commentsLoading" class="loading-small">加载评论中...</div>
+                <div v-else-if="commentsError" class="playlist-load-status" role="alert">{{ commentsError }} <button @click="fetchComments">重试</button></div>
                 <div v-else class="comments-list">
                     <div v-for="comment in comments" :key="comment.commentId" class="comment-item">
                         <img :src="comment.user.avatarUrl" class="u-avatar" />
@@ -404,6 +442,8 @@ const handleCoverChange = async (e) => {
 </template>
 
 <style scoped>
+.playlist-load-status { display: flex; justify-content: center; align-items: center; gap: 18px; padding: 18px; color: var(--text-secondary); }
+.playlist-load-status button { padding: 8px 18px; border: 1px solid var(--primary-color); border-radius: 18px; background: transparent; color: var(--primary-color); cursor: pointer; }
 /* 歌曲行骨架屏：与歌曲表格行同节奏（序号/标题/歌手/时长） */
 .track-skeleton { padding: 6px 0; }
 .track-skeleton-row {

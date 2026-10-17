@@ -1,5 +1,6 @@
 <script setup>
-import { ref, watch, onMounted, computed, inject } from 'vue'
+import SongVipBadge from '../components/SongVipBadge.vue'
+import { ref, watch, onMounted, onBeforeUnmount, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { cloudSearch } from '../api'
 import { usePlayerStore } from '../store/player'
@@ -14,7 +15,6 @@ const messageStore = useMessageStore()
 const route = useRoute()
 const router = useRouter()
 const playerStore = usePlayerStore()
-const requireLockForPlaylist = inject('requireLockForPlaylist')
 const songs = ref([])
 const artists = ref([])
 const albums = ref([])
@@ -22,6 +22,8 @@ const mvList = ref([])
 const playlists = ref([])
 const loading = ref(false)
 const activeTab = ref(1)
+const page = ref(0), total = ref(0), searchError = ref('')
+let searchRevision = 0
 
 const isEmpty = computed(() => {
     if (activeTab.value === 1) return songs.value.length === 0
@@ -49,28 +51,38 @@ const formatTime = (ms) => {
 
 const handleSearch = async () => {
     const q = route.query.keywords
-    if (!q) return
+    const requestId = ++searchRevision
+    if (!q) { loading.value = false; songs.value = []; albums.value = []; artists.value = []; playlists.value = []; mvList.value = []; return }
     loading.value = true
+    searchError.value = ''
     try {
-        const res = await cloudSearch(q, activeTab.value)
-        if (activeTab.value === 1) songs.value = res.result.songs || []
-        else if (activeTab.value === 10) albums.value = res.result.albums || []
-        else if (activeTab.value === 100) artists.value = res.result.artists || []
-        else if (activeTab.value === 1000) playlists.value = res.result.playlists || []
-        else if (activeTab.value === 1004) mvList.value = res.result.videos || []
+        const type = activeTab.value
+        const res = await cloudSearch(q, type, 30, page.value * 30)
+        if (requestId !== searchRevision) return
+        if (!res || res.code !== 200) throw new Error(res?.message || '网易云搜索暂不可用，请重试')
+        const result = res.result || {}
+        if (type === 1) songs.value = result.songs || []
+        else if (type === 10) albums.value = result.albums || []
+        else if (type === 100) artists.value = result.artists || []
+        else if (type === 1000) playlists.value = result.playlists || []
+        else if (type === 1004) mvList.value = result.videos || []
+        total.value = Number(res.total || result.songCount || result.albumCount || result.artistCount || result.playlistCount || result.mvCount || 0)
     } catch (err) {
-        console.error('Search error:', err)
+        if (requestId === searchRevision) searchError.value = err.message || '搜索失败，请重试'
     } finally {
-        loading.value = false
+        if (requestId === searchRevision) loading.value = false
     }
 }
 
 const changeTab = (type) => {
     activeTab.value = type
+    page.value = 0
     handleSearch()
 }
+const changePage = next => { page.value = Math.max(0, page.value + next); handleSearch() }
 
-watch(() => route.query.keywords, handleSearch)
+watch(() => route.query.keywords, () => { page.value = 0; handleSearch() })
+onBeforeUnmount(() => searchRevision++)
 
 const toggleLike = async (song) => {
     if (!userStore.isLoggedIn) return messageStore.warning('请先登录后收藏')
@@ -91,11 +103,7 @@ const toggleLike = async (song) => {
 }
 
 const goToPlaylist = (id) => {
-    if (requireLockForPlaylist) {
-        requireLockForPlaylist(id)
-    } else {
-        router.push(`/playlist/${id}`)
-    }
+    router.push(`/playlist/${id}`)
 }
 
 const goToAlbum = (id) => {
@@ -153,7 +161,7 @@ onMounted(handleSearch)
             <td class="title-cell" :title="song.name">
                 <div class="title-container">
                     <span class="name-text">{{ song.name }}</span>
-                    <span v-if="song.fee === 1" class="vip-tag-mini">VIP</span>
+                    <SongVipBadge :song="song" platform="netease" />
                 </div>
             </td>
             <td class="artist-cell" :title="song.ar.map(a => a.name).join('/')">{{ song.ar.map(a => a.name).join('/') }}</td>
@@ -174,7 +182,7 @@ onMounted(handleSearch)
 
     <!-- Album List (Type 10) -->
     <div class="playlist-grid" v-if="!loading && activeTab === 10">
-        <div v-for="item in albums" :key="item.id" class="playlist-card clickable">
+        <div v-for="item in albums" :key="item.id" class="playlist-card clickable" @click="goToAlbum(item.id)">
             <div class="card-cover">
                 <img :src="item.picUrl + '?param=200y200'" />
             </div>
@@ -194,7 +202,13 @@ onMounted(handleSearch)
     </div>
 
     <div v-if="loading" class="loading">正在搜索...</div>
+    <div v-else-if="searchError" class="loading search-error" role="alert">{{ searchError }} <button @click="handleSearch">重试</button></div>
     <div v-else-if="isEmpty" class="loading">暂无搜索结果</div>
+    <div v-if="!loading && total > 30" class="search-pagination">
+        <button :disabled="page===0" @click="changePage(-1)">上一页</button>
+        <span>第 {{ page + 1 }} 页 · 共 {{ total }} 条</span>
+        <button :disabled="(page + 1) * 30 >= total" @click="changePage(1)">下一页</button>
+    </div>
   </div>
 </template>
 
@@ -209,6 +223,9 @@ onMounted(handleSearch)
     font-size: 20px;
     margin-bottom: 20px;
 }
+.search-pagination { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 24px 0; color: var(--text-secondary); }
+.search-pagination button, .search-error button { border: 1px solid var(--primary-color); color: var(--primary-color); background: transparent; border-radius: 4px; padding: 7px 14px; cursor: pointer; }
+.search-pagination button:disabled { opacity: .45; cursor: default; }
 
 .tabs {
     display: flex;

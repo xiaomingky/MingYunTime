@@ -1,7 +1,9 @@
 <script setup>
-import { ref, onMounted, watch, computed } from 'vue'
+import SelectionMark from '../../components/SelectionMark.vue'
+import SongVipBadge from '../../components/SongVipBadge.vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Heart, Plus, Trash2, X, Bookmark, CheckSquare, Square, ListPlus, SkipForward } from 'lucide-vue-next'
+import { Heart, Plus, Trash2, X, Bookmark, ListPlus, SkipForward } from 'lucide-vue-next'
 import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
 import { useKugouUserStore } from '../../store/kugou-user'
@@ -21,12 +23,16 @@ const kugouUserStore = useKugouUserStore()
 const loading = ref(false)
 const detail = ref(null)
 const songs = ref([])
+const loadError = ref('')
+let revision = 0
 const normalizedTracks = computed(() => songs.value.map(toKugouTrack).filter(Boolean))
 
 const fetchDetail = async () => {
+    const requestId = ++revision
     const idParam = route.params.id
     if (!idParam) return
     loading.value = true
+    loadError.value = ''; detail.value = null; songs.value = []; selectedSongs.value = []; batchMode.value = false
     try {
         // 文档明确：
         //   /playlist/track/all 需要 global_collection_id（推荐歌单用）
@@ -63,6 +69,7 @@ const fetchDetail = async () => {
             // 循环加载直到没有更多
             while (true) {
                 const res = await fetcher(id, page, PAGE_SIZE)
+                if (requestId !== revision) return null
                 if (!allRes) {
                     allRes = res
                 } else {
@@ -110,7 +117,7 @@ const fetchDetail = async () => {
                 //   2. global_collection_id
                 //   3. listid
                 //   4. specialid
-                if (isEmpty(res)) {
+                if (isEmpty(res) && userPlaylist.songCount !== 0) {
                     const fallbackIds = [
                         userPlaylist.list_create_gid,
                         userPlaylist.global_collection_id,
@@ -228,6 +235,7 @@ const fetchDetail = async () => {
             }
         }
         console.log('[Kugou Playlist] 最终响应:', JSON.stringify(res).slice(0, 500))
+        if (requestId !== revision) return
         const parsed = parseKugouPlaylistFull(res)
 
         // 歌单元信息兜底策略：
@@ -271,16 +279,19 @@ const fetchDetail = async () => {
 
         // 排序已在 parseKugouPlaylistFull 内完成（按播放量/添加时间从大到小）
 
+        if (requestId !== revision) return
         detail.value = parsed.detail
         songs.value = parsed.songs
         if (!parsed.songs.length && !parsed.detail.name) {
             messageStore.warning('歌单为空或加载失败')
         }
     } catch (e) {
+        if (requestId !== revision) return
+        loadError.value = e.message || '酷狗歌单加载失败'
         console.error('[Kugou Playlist] error:', e)
         messageStore.error('酷狗歌单加载失败')
     } finally {
-        loading.value = false
+        if (requestId === revision) loading.value = false
     }
 }
 
@@ -459,10 +470,12 @@ const targetPlaylists = computed(() => {
 
 watch(() => route.params.id, fetchDetail)
 onMounted(fetchDetail)
+onBeforeUnmount(() => revision++)
 </script>
 
 <template>
     <div class="kugou-playlist-page">
+        <div v-if="loadError" role="alert">{{ loadError }} <button @click="fetchDetail">重试</button></div>
         <!-- 加载骨架屏：按歌曲行形状占位（封面块 + 两行文字） -->
         <div v-if="loading" class="kugou-track-skeleton">
             <div v-for="i in 9" :key="i" class="kugou-ts-row">
@@ -536,8 +549,7 @@ onMounted(fetchDetail)
             <!-- 批量操作栏 -->
             <div v-if="batchMode" class="kugou-batch-bar">
                 <div class="kugou-batch-select-all" @click="selectAll">
-                    <CheckSquare v-if="selectedSongs.length === songs.length && songs.length > 0" :size="16" class="kugou-check-icon active" />
-                    <Square v-else :size="16" class="kugou-check-icon" />
+                    <SelectionMark :checked="selectedSongs.length === songs.length && songs.length > 0" :size="16" class="kugou-check-icon" :mixed="selectedSongs.length > 0" />
                     <span>全选</span>
                 </div>
                 <span class="kugou-batch-count">已选 {{ selectedSongs.length }} 首</span>
@@ -547,15 +559,14 @@ onMounted(fetchDetail)
             </div>
             <div v-for="(s, i) in songs" :key="s.id || i" class="kugou-song-item" @click="batchMode ? toggleSelect(s) : playSong(s, $event)">
                 <div v-if="batchMode" class="kugou-col-check" @click.stop="toggleSelect(s)">
-                    <CheckSquare v-if="isSelected(s.hash)" :size="16" class="kugou-check-icon active" />
-                    <Square v-else :size="16" class="kugou-check-icon" />
+                    <SelectionMark :checked="isSelected(s.hash)" :size="16" class="kugou-check-icon" />
                 </div>
                 <span class="kugou-song-index">{{ i + 1 }}</span>
                 <img v-if="s.picUrl" :src="s.picUrl" class="kugou-song-cover" loading="lazy" />
                 <div class="kugou-song-info">
                     <div class="kugou-song-name">
                         <span class="name-text">{{ s.name }}</span>
-                        <span v-if="s.fee === 1 || s.isVip" class="kugou-vip-tag">VIP</span>
+                        <SongVipBadge :song="s" platform="kugou" />
                     </div>
                     <div class="kugou-song-artist">{{ s.artist }}</div>
                 </div>
@@ -582,7 +593,7 @@ onMounted(fetchDetail)
             </div>
         </div>
 
-        <div v-if="!loading && !songs.length" class="kugou-empty">歌单为空或加载失败</div>
+        <div v-if="!loading && !loadError && !songs.length" class="kugou-empty">歌单暂无歌曲</div>
         </template>
 
         <!-- 评论区 (歌单评论,用 global_collection_id) -->

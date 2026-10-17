@@ -1,0 +1,227 @@
+/* Shared control surfaces. Keep page geometry and ordinary buttons intact. */
+:root body {
+    --control-accent: var(--primary-color, #ec4141);
+    --control-glass: color-mix(in srgb, var(--bg-main, #fff) 76%, transparent);
+    --control-soft: color-mix(in srgb, var(--text-main, #333) 7%, transparent);
+    --control-line: color-mix(in srgb, var(--text-main, #333) 20%, transparent);
+    --control-ink: var(--text-main, #333);
+    --control-muted: var(--text-secondary, #666);
+}
+
+/* Detail settings use the same controls against their dark glass surface. */
+:root body .detail-liquid-panel,
+:root body .detail-liquid-menu {
+    --control-glass: #ffffff22;
+    --control-soft: #0e1a2e40;
+    --control-line: #ffffff38;
+    --control-ink: #f7f8fc;
+    --control-muted: #eef3ffbb;
+}
+
+/* Native selections, including the browser's indeterminate state. */
+:root body input:is([type="checkbox"], [type="radio"]):not(.visually-hidden) {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--control-line);
+    border-radius: 5px;
+    background: var(--control-soft);
+    box-shadow: inset 0 1px #ffffff45, 0 1px 2px #00000012;
+    cursor: pointer;
+    transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+:root body input[type="radio"] { border-radius: 50%; }
+:root body input:is([type="checkbox"], [type="radio"]):not(.visually-hidden):is(:checked, :indeterminate) {
+    background: var(--control-accent);
+    border-color: var(--control-accent);
+}
+:root body input[type="checkbox"]:not(.visually-hidden):checked::after {
+    content: '';
+    position: absolute;
+    left: 4px;
+    top: 3px;
+    width: 6px;
+    height: 9px;
+    border: solid #fff;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+:root body input[type="checkbox"]:not(.visually-hidden):indeterminate::after {
+    content: '';
+    position: absolute;
+    inset: 7px 3px;
+    width: auto;
+    height: 2px;
+    border: 0;
+    border-radius: 2px;
+    background: #fff;
+    transform: none;
+}
+:root body input[type="radio"]:checked::after {
+    content: '';
+    position: absolute;
+    inset: 4px;
+    border-radius: 50%;
+    background: white;
+}
+
+/* Lucide selections retain the original viewBox, hit target and event handlers. */
+:root body svg:is(.check-icon, .kugou-check-icon) {
+    color: var(--control-line) !important;
+    overflow: visible;
+    filter: drop-shadow(0 1px 1px #00000012);
+}
+:root body svg:is(.check-icon, .kugou-check-icon) rect {
+    rx: 5px;
+    ry: 5px;
+    fill: var(--control-soft);
+    stroke: currentColor;
+}
+:root body svg:is(.check-icon, .kugou-check-icon):is(.active, .mixed) { color: var(--control-accent) !important; }
+:root body svg:is(.check-icon, .kugou-check-icon):is(.active, .mixed) rect { fill: var(--control-accent); }
+:root body svg:is(.check-icon, .kugou-check-icon):is(.active, .mixed) :is(path, polyline) { stroke: #fff; }
+
+/* Existing switches use one real thumb; never add a second pseudo thumb. */
+:root body :is(.toggle-switch, .switch-track, .eq-switch, .switch:has(> .switch-knob)),
+:root body input[type="checkbox"]:is([role="switch"], .switch),
+:root body .apple-setting-row input[type="checkbox"] {
+    --switch-width: 40px;
+    --switch-height: 23px;
+    --switch-thumb: 17px;
+    position: relative;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    width: var(--switch-width);
+    height: var(--switch-height);
+    padding: 0;
+    border: 1px solid #ffffff38;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--control-muted) 28%, transparent);
+    box-shadow: inset 0 1px 2px #00000018;
+    cursor: pointer;
+    transition: background .22s ease, border-color .22s ease;
+}
+:root body .switch:has(> .switch-knob) { --switch-width: 34px; --switch-height: 20px; --switch-thumb: 14px; }
+:root body .eq-switch { --switch-width: 34px; --switch-height: 20px; --switch-thumb: 14px; }
+:root body :is(.toggle-switch, .switch-track, .eq-switch).active,
+:root body .switch.on:has(> .switch-knob),
+:root body input[type="checkbox"]:is([role="switch"], .switch):checked,
+:root body .apple-setting-row input[type="checkbox"]:checked {
+    background: var(--control-accent);
+    border-color: var(--control-accent);
+}
+:root body :is(.toggle-switch > .toggle-knob, .switch-track > .switch-thumb, .eq-switch > .eq-switch-thumb, .switch > .switch-knob),
+:root body input[type="checkbox"]:is([role="switch"], .switch):is(:checked, :not(:checked))::after,
+:root body .apple-setting-row input[type="checkbox"]:is(:checked, :not(:checked))::after {
+    content: '';
+    position: absolute;
+    box-sizing: border-box;
+    left: 2px;
+    top: 2px;
+    width: var(--switch-thumb);
+    height: var(--switch-thumb);
+    border: 0;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 4px #0004, inset 0 1px #fff;
+    transform: none;
+    transition: transform .24s cubic-bezier(.22, 1, .36, 1);
+}
+:root body :is(.toggle-switch.active > .toggle-knob, .switch-track.active > .switch-thumb, .eq-switch.active > .eq-switch-thumb, .switch.on > .switch-knob),
+:root body input[type="checkbox"]:is([role="switch"], .switch):checked::after,
+:root body .apple-setting-row input[type="checkbox"]:checked::after {
+    left: 2px;
+    transform: translateX(calc(var(--switch-width) - var(--switch-thumb) - 6px));
+}
+
+/* These are known segmented controls, not arbitrary classes containing 'segment'. */
+:root body :is(.apple-segment, .es-segment, .es-ranking-sources, .cover-ratio-switch, .close-options) {
+    background: var(--control-soft);
+    border-radius: 12px;
+    box-shadow: inset 0 1px 2px #0000000a, inset 0 0 0 1px var(--control-line);
+}
+:root body :is(.apple-segment, .es-segment, .es-ranking-sources, .cover-ratio-switch, .close-options) > :is(button, .close-opt),
+:root body .detail-liquid-panel .mode-chip {
+    border-color: transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--control-muted);
+    box-shadow: none;
+    transition: background .2s ease, color .2s ease, box-shadow .2s ease;
+}
+:root body :is(.apple-segment, .es-segment, .es-ranking-sources, .cover-ratio-switch, .close-options) > :is(button, .close-opt):is(.active, .selected),
+:root body .detail-liquid-panel .mode-chip.active {
+    color: var(--control-ink);
+    background: var(--control-glass);
+    box-shadow: inset 0 1px #ffffff55, inset 0 0 0 1px var(--control-line), 0 2px 5px #00000012;
+}
+/* Text-bearing switch keeps its accessible name and existing footprint. */
+:root body button.close-opt[role="switch"] {
+    border-radius: 999px;
+    background: var(--control-soft);
+    color: var(--control-muted);
+    border-color: var(--control-line);
+    box-shadow: inset 0 1px #ffffff45;
+}
+:root body button.close-opt[role="switch"][aria-checked="true"] { background: var(--control-accent); color: white; }
+
+/* Shared dropdowns, including compact/transparent triggers. Preserve their sizes. */
+:root body select,
+:root body .custom-select .cs-trigger {
+    border: 1px solid var(--control-line) !important;
+    border-radius: 12px !important;
+    background: var(--control-glass) !important;
+    color: var(--control-ink) !important;
+    box-shadow: inset 0 1px #ffffff45;
+    transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+:root body .custom-select.transparent .cs-trigger { border-radius: 999px !important; }
+:root body select:hover:not(:disabled),
+:root body .custom-select:not(.disabled):hover .cs-trigger { border-color: var(--control-accent) !important; }
+:root body .custom-select.open .cs-trigger { box-shadow: 0 0 0 3px color-mix(in srgb, var(--control-accent) 16%, transparent); }
+:root body .cs-dropdown.cs-dropdown-fixed {
+    border: 1px solid var(--control-line) !important;
+    border-radius: 16px !important;
+    background: color-mix(in srgb, var(--bg-main, #fff) 86%, transparent) !important;
+    box-shadow: 0 20px 55px #0003, inset 0 1px #ffffff45 !important;
+    backdrop-filter: blur(24px) saturate(145%);
+    -webkit-backdrop-filter: blur(24px) saturate(145%);
+}
+:root body .cs-dropdown.cs-dropdown-fixed.detail-liquid-menu { background: linear-gradient(145deg, #e7efff24, #d4e4ff08 38%, #ffffff12), #28354cb3 !important; }
+:root body .cs-dropdown.cs-dropdown-fixed .cs-option { border-radius: 10px; color: var(--control-ink); }
+:root body .cs-dropdown.cs-dropdown-fixed .cs-option:is(:hover, .highlighted) { background: var(--control-soft); color: var(--control-ink); }
+:root body .cs-dropdown.cs-dropdown-fixed .cs-option.active { background: color-mix(in srgb, var(--control-accent) 15%, transparent); color: var(--control-accent); }
+:root body .cs-dropdown.detail-liquid-menu .cs-option.active { color: #fff; background: #ffffff26; }
+
+/* Other existing dropdown menus share the surface without moving their anchors. */
+:root body :is(.quality-menu, .add-menu, .mv-dropdown-menu, .close-options-dropdown) {
+    border: 1px solid var(--control-line);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--bg-main, #fff) 86%, transparent);
+    box-shadow: 0 16px 40px #0003, inset 0 1px #ffffff45;
+    backdrop-filter: blur(24px) saturate(145%);
+    -webkit-backdrop-filter: blur(24px) saturate(145%);
+}
+:root body .mv-dropdown-menu {
+    --control-ink: #f7f8fc;
+    --control-soft: #ffffff18;
+    background: linear-gradient(145deg, #e7efff24, #d4e4ff08 38%, #ffffff12), #28354cb3;
+    border-color: #ffffff38;
+}
+:root body :is(.quality-option, .add-menu-item, .mv-menu-item, .close-option-item) { border-radius: 9px; color: var(--control-ink); }
+:root body :is(.quality-option, .add-menu-item, .mv-menu-item, .close-option-item):hover { background: var(--control-soft); }
+:root body .quality-option.active { color: var(--control-accent); background: color-mix(in srgb, var(--control-accent) 15%, transparent); }
+
+:root body :is(input[type="checkbox"], input[type="radio"], select, .cs-trigger, button[role="switch"], button[role="radio"]):focus-visible {
+    outline: 2px solid var(--control-accent);
+    outline-offset: 3px;
+}
+:root body input:is([type="checkbox"], [type="radio"]):not(.visually-hidden):disabled { opacity: .4; cursor: not-allowed; }
+:root body :is(.apple-segment, .es-segment, .cover-ratio-switch) > button:disabled { opacity: .35; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+    :root body :is(.toggle-knob, .switch-thumb, .eq-switch-thumb, .switch-knob, .cs-trigger, .cs-option, input[type="checkbox"], input[type="radio"]) { transition: none; }
+}

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { qqSingerList, normalizeQQSinger } from '../../api/qq'
 
@@ -9,6 +9,8 @@ const loading = ref(false)
 const singers = ref([])
 const page = ref(1)
 const hasMore = ref(true)
+const error = ref('')
+let revision = 0
 
 // 筛选条件：area/sex/genre
 // QQ API "全部"标签 id 为 -100（非 -1）
@@ -43,29 +45,34 @@ const currentSex = ref(-100)
 const currentGenre = ref(-100)
 
 const fetchSingers = async (reset = false) => {
+    if (!reset && loading.value) return
     if (reset) {
         page.value = 1
         singers.value = []
         hasMore.value = true
     }
     if (!hasMore.value) return
+    const requestId = ++revision
     loading.value = true
+    error.value = ''
     try {
         const res = await qqSingerList({ area: currentArea.value, sex: currentSex.value, genre: currentGenre.value, page: page.value, limit: 30 })
+        if (requestId !== revision) return
+        if (res?.code !== 0) throw new Error(res?.message || 'QQ 歌手列表加载失败')
         // 解包 response 后结构：{ code, singerList: { data: { singerlist: [...] } } }
         const list = res?.singerList?.data?.singerlist || res?.data?.singerlist || res?.data?.list || []
         const mapped = list.map(normalizeQQSinger).filter(s => s.id)
         if (reset) {
             singers.value = mapped
         } else {
-            singers.value.push(...mapped)
+            singers.value = [...new Map([...singers.value, ...mapped].map(singer => [singer.id, singer])).values()]
         }
         hasMore.value = mapped.length >= 30
         if (mapped.length) page.value++
     } catch (e) {
-        console.error('[QQ SingerList] error:', e)
+        if (requestId === revision) error.value = e.message || 'QQ 歌手列表加载失败'
     } finally {
-        loading.value = false
+        if (requestId === revision) loading.value = false
     }
 }
 
@@ -80,6 +87,7 @@ const goToDetail = (id) => id && router.push(`/qq/singer/${id}`)
 const loadMore = () => fetchSingers(false)
 
 onMounted(() => fetchSingers(true))
+onBeforeUnmount(() => revision++)
 </script>
 
 <template>
@@ -115,7 +123,8 @@ onMounted(() => fetchSingers(true))
         <div v-if="hasMore && singers.length" class="qq-load-more">
             <button class="qq-load-btn" @click="loadMore" :disabled="loading">加载更多</button>
         </div>
-        <div v-if="!loading && !singers.length" class="qq-empty">暂无歌手</div>
+        <div v-if="error" class="qq-empty" role="alert">{{ error }} <button :disabled="loading" @click="fetchSingers(!singers.length)">重试</button></div>
+        <div v-if="!loading && !error && !singers.length" class="qq-empty">暂无歌手</div>
     </div>
 </template>
 

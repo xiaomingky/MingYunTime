@@ -1,114 +1,40 @@
 <script setup>
-import { ref, watch, onMounted } from 'vue'
-import { qqComments } from '../api/qq'
-import { useQQUserStore } from '../store/qq-user'
-
-const props = defineProps({
-    // id: 歌曲用 songmid(字符串),歌单用 disstid
-    id: { type: [String, Number], required: true },
-    biztype: { type: Number, default: 1 }, // 1=歌曲 2=专辑 3=歌单 4=排行榜 5=MV
-})
-
-const qqUserStore = useQQUserStore()
-const loading = ref(false)
-const hotComments = ref([])
-const newComments = ref([])
-const page = ref(0) // QQ API pagenum 从 0 开始
-const total = ref(0)
-const hasMore = ref(false)
-const lasthotcommentid = ref('') // 翻页需要
-
-// QQ 评论字段:
-//   nick, avatarurl, rootcommentcontent(主评论)/middlecommentcontent(回复),
-//   time(秒级时间戳), praisenum, commentid
-const normalizeComment = (c) => ({
-    id: c.commentid || c.rootcommentid || c.id || Math.random(),
-    avatar: c.avatarurl || c.avatar || '',
-    nickname: c.nick || c.nickname || '匿名用户',
-    content: c.rootcommentcontent || c.middlecommentcontent || c.content || '',
-    time: c.time || c.comment_time || 0,
-    praiseNum: c.praisenum || 0,
-    reply: c.reply ? {
-        nickname: c.reply.nick || c.reply.nickname || '',
-        content: c.reply.content || c.reply.rootcommentcontent || ''
-    } : null
-})
-
+import { ref, watch, onBeforeUnmount } from 'vue'
+import { qqComments, qqResourceComments } from '../api/qq'
+const props = defineProps({ id: { type: [String, Number], required: true }, biztype: { type: Number, default: 1 } })
+const loading = ref(false), hotComments = ref([]), newComments = ref([]), page = ref(0)
+const total = ref(0), hasMore = ref(false), error = ref('')
+let requestId = 0
+const normalizeComment = c => ({ id: c.commentId, avatar: c.user?.avatarUrl || '', nickname: c.user?.nickname || '匿名用户',
+    content: c.content || '', time: c.time || 0, praiseNum: c.likedCount || 0,
+    reply: c.beReplied?.[0] ? { nickname: c.beReplied[0].user?.nickname, content: c.beReplied[0].content } : null })
+const request = (cmd, pagenum) => props.biztype === 1
+    ? qqComments(String(props.id), /^\d+$/.test(String(props.id)) ? String(props.id) : undefined, cmd, pagenum, 25)
+    : qqResourceComments(props.id, props.biztype, cmd, pagenum, 25)
 const fetchComments = async (reset = false) => {
-    if (!props.id) return
-    if (reset) {
-        page.value = 0
-        newComments.value = []
-        hotComments.value = []
-        lasthotcommentid.value = ''
-    }
-    loading.value = true
+    if (!props.id || (!reset && loading.value)) return
+    const id = ++requestId, nextPage = reset ? 0 : page.value + 1
+    loading.value = true; error.value = ''
+    if (reset) { hotComments.value = []; newComments.value = []; total.value = 0; hasMore.value = false }
     try {
-        const cookie = qqUserStore.cookie || ''
-        // 热门评论(reqtype=2):仅在首页加载
         if (reset) {
-            try {
-                const hotRes = await qqComments(props.id, props.biztype, 2, 25, 0, '', cookie)
-                // 解包:res = { code, comment: { commentlist, commenttotal, lasthotcommentid } }
-                const hotData = hotRes?.comment || hotRes?.data?.comment || hotRes?.data || {}
-                const hotList = hotData?.commentlist || []
-                hotComments.value = hotList.map(normalizeComment).filter(c => c.content).slice(0, 15)
-                // 记录 lasthotcommentid(翻页用)
-                if (hotData?.lasthotcommentid) {
-                    lasthotcommentid.value = hotData.lasthotcommentid
-                } else if (hotList.length > 0) {
-                    lasthotcommentid.value = hotList[hotList.length - 1].commentid || ''
-                }
-                if (typeof hotData?.commenttotal === 'number') {
-                    total.value = hotData.commenttotal
-                }
-                console.log('[QQ Comment] 热评加载:', hotList.length, '条, lasthotcommentid:', lasthotcommentid.value)
-            } catch (e) {
-                console.error('[QQ Comment] hot error:', e)
-            }
+            const hot = await request(6, 0)
+            if (id !== requestId) return
+            if (hot?.code === 0) hotComments.value = (hot.data?.comments || []).map(normalizeComment).filter(c => c.content)
         }
-        // 最新评论(reqtype=1):分页加载
-        // 翻页时需要 rootcommentid(= lasthotcommentid)
-        const rootId = page.value === 0 ? '' : lasthotcommentid.value
-        const newRes = await qqComments(props.id, props.biztype, 1, 25, page.value, rootId, cookie)
-        const newData = newRes?.comment || newRes?.data?.comment || newRes?.data || {}
-        const newList = newData?.commentlist || []
-        if (typeof newData?.commenttotal === 'number') {
-            total.value = newData.commenttotal
-        }
-        hasMore.value = newList.length >= 25
-        if (reset) {
-            newComments.value = newList.map(normalizeComment).filter(c => c.content)
-        } else {
-            newComments.value.push(...newList.map(normalizeComment).filter(c => c.content))
-        }
-        console.log('[QQ Comment] 第', page.value, '页最新评论:', newList.length, '条')
-    } catch (e) {
-        console.error('[QQ Comment] error:', e)
-    } finally {
-        loading.value = false
-    }
+        const res = await request(8, nextPage)
+        if (id !== requestId) return
+        if (res?.code !== 0) throw new Error(res?.message || '评论加载失败')
+        const list = (res.data?.comments || []).map(normalizeComment).filter(c => c.content)
+        newComments.value = reset ? list : [...newComments.value, ...list].filter((c, i, arr) => arr.findIndex(x => x.id === c.id) === i)
+        total.value = res.data?.total || 0; hasMore.value = !!res.data?.hasMore; page.value = nextPage
+    } catch (e) { if (id === requestId) error.value = e.message }
+    finally { if (id === requestId) loading.value = false }
 }
-
-const loadMore = () => {
-    page.value++
-    fetchComments(false)
-}
-
-const formatTime = (ts) => {
-    if (!ts) return ''
-    const d = new Date(ts * 1000)
-    const now = Date.now()
-    const diff = (now - d.getTime()) / 1000
-    if (diff < 60) return '刚刚'
-    if (diff < 3600) return Math.floor(diff / 60) + '分钟前'
-    if (diff < 86400) return Math.floor(diff / 3600) + '小时前'
-    if (diff < 2592000) return Math.floor(diff / 86400) + '天前'
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-}
-
-watch(() => props.id, () => fetchComments(true))
-onMounted(() => fetchComments(true))
+const loadMore = () => fetchComments(false)
+const formatTime = ts => ts ? new Date(ts).toLocaleString('zh-CN') : ''
+watch(() => [props.id, props.biztype], () => fetchComments(true), { immediate: true })
+onBeforeUnmount(() => requestId++)
 </script>
 
 <template>
@@ -118,6 +44,7 @@ onMounted(() => fetchComments(true))
             <span class="qq-comment-count" v-if="total">({{ total }})</span>
         </h2>
 
+        <div v-if="error" class="qq-comment-empty">{{ error }} <button @click="fetchComments(true)">重试</button></div>
         <!-- 热门评论 -->
         <div class="qq-comment-group" v-if="hotComments.length">
             <h3 class="qq-comment-group-title">精彩评论</h3>
@@ -160,7 +87,7 @@ onMounted(() => fetchComments(true))
             </div>
         </div>
 
-        <div v-if="!loading && !hotComments.length && !newComments.length" class="qq-comment-empty">
+        <div v-if="!loading && !error && !hotComments.length && !newComments.length" class="qq-comment-empty">
             暂无评论
         </div>
 

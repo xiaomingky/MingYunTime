@@ -6,6 +6,25 @@ export const localDate = (value = new Date()) => {
 export const itemsOf = value => Array.isArray(value) ? value : value?.items || value?.list || []
 export const matchInfo = item => item?.mc_info || item || {}
 export const matchState = item => item?.global_state || item?.state || {}
+// Series wins and map round scores have different sources. Never substitute one
+// for the other, or infer a map winner from a round count (overtime is possible).
+export function matchScoreboard(match) {
+    const state = matchState(match), status = String(state.status ?? '')
+    const roundScore = value => value !== null && value !== undefined && /^\d+$/.test(String(value).trim()) ? String(value).trim() : '--'
+    const maps = (Array.isArray(match?.bouts_state) ? match.bouts_state : [])
+        .filter(bout => bout && (String(bout.display) !== '2' || bout.map_name || String(bout.status) === '1'))
+        .map((bout, index) => ({
+            bout, number: String(bout.bout_num || index + 1), name: bout.map_name || `地图 ${bout.bout_num || index + 1}`,
+            status: String(bout.status ?? ''), t1: roundScore(bout.t1_stats?.all_score), t2: roundScore(bout.t2_stats?.all_score),
+            round: roundScore(bout.curr_round_num), stage: ({ fh: '上半场', sh: '下半场', ot: '加时' })[bout.curr_bout_stage] || ''
+        })).sort((a, b) => Number(a.number) - Number(b.number))
+    const active = status === '1' ? maps.find(map => map.status === '1') || null : null
+    const completed = maps.filter(map => map.status === '2')
+    return {
+        status, series: { t1: status === '0' ? '--' : roundScore(state.t1_score), t2: status === '0' ? '--' : roundScore(state.t2_score) },
+        maps, active, featured: active || (status === '2' ? completed.at(-1) || null : null)
+    }
+}
 export const teamName = team => team?.disp_name || team?.name || team?.abbr || 'TBD'
 export const statusText = status => ({ '0': '未开始', '1': '进行中', '2': '已结束', '-1': '待定', live: '进行中', upcoming: '未开始', past: '已结束' }[String(status)] || '待定')
 export function matchTime(value, full = false) {

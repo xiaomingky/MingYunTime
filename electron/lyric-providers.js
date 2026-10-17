@@ -62,6 +62,7 @@ function postJson(url, body, headers = {}) {
             })
         })
         req.on('error', reject)
+        req.setTimeout(8000, () => req.destroy(new Error('歌词请求超时')))
         req.write(data)
         req.end()
     })

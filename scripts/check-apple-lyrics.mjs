@@ -1,5 +1,16 @@
 import assert from 'node:assert/strict'
 import { toAppleLyrics } from '../src/utils/apple-lyrics.js'
+import { build } from 'esbuild'
+import { createRequire } from 'node:module'
+const require = createRequire(import.meta.url)
+const { createPinia, setActivePinia } = require('pinia')
+const bundled = await build({ entryPoints: ['src/store/song-detail.js'], bundle: true, platform: 'node', format: 'cjs', write: false, external: ['pinia', 'vue'] })
+for (const [saved, expected] of [[null, 'apple'], ['apple', 'apple'], ['classic', 'classic'], ['obsolete', 'apple']]) {
+  const module = { exports: {} }
+  new Function('require', 'module', 'exports', 'localStorage', bundled.outputFiles[0].text)(require, module, module.exports, { getItem: key => key === 'song_detail_style' ? saved : null, setItem() {} })
+  setActivePinia(createPinia())
+  assert.equal(module.exports.useSongDetailStore().style, expected, 'new accounts default to Apple while explicit classic preference remains selectable')
+}
 
 const lyrics = [{ time: 1.25, text: 'Hello world', ttext: 'Translation' }, { time: 4, text: 'Next line' }]
 const yrcLyrics = [{ time: 1.25, duration: 1500, text: 'Hello world', ttext: 'Translation', words: [

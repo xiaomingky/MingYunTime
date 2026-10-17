@@ -1,12 +1,18 @@
 <script setup>
-import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
+import SelectionMark from '../components/SelectionMark.vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useSongDetailStore } from '../store/song-detail'
 import { usePlatformStore } from '../store/platform'
 import { useMessageStore } from '../store/message'
 import { useUserStore } from '../store/user'
 import { useQQUserStore } from '../store/qq-user'
+import { useQishuiUserStore } from '../store/qishui-user'
+import { qishuiInvoke } from '../api/qishui'
+import { sessionValidity } from '../utils/session-validity'
+import { membership } from '../utils/membership'
 import { useKugouUserStore } from '../store/kugou-user'
+import { kugouLoginToken, setKugouCookie } from '../api/kugou'
 import {
     useSettingsStore,
     SHORTCUT_ITEMS,
@@ -15,7 +21,7 @@ import {
     eventToCombo
 } from '../store/settings'
 import { API_LINES, switchApiLine } from '../api/index'
-import { CheckSquare, Square, LogIn } from 'lucide-vue-next'
+import { LogIn } from 'lucide-vue-next'
 import { biliGetWebCookie, biliSetWebCookie, biliGetTvToken, biliSetTvToken } from '../api/index'
 
 // ===== 侧边栏分区显示（设置不可隐藏） =====
@@ -182,37 +188,85 @@ const messageStore = useMessageStore()
 const settingsStore = useSettingsStore()
 const userStore = useUserStore()
 const qqUserStore = useQQUserStore()
+const qishuiUserStore = useQishuiUserStore()
 const kugouUserStore = useKugouUserStore()
 
 // ===== 用户信息 =====
 const isLoggedIn = computed(() =>
-    platformStore.isQQ ? qqUserStore.isLoggedIn
+    platformStore.isQishui ? qishuiUserStore.isLoggedIn : platformStore.isQQ ? qqUserStore.isLoggedIn
     : platformStore.isKugou ? kugouUserStore.isLoggedIn
     : userStore.isLoggedIn
 )
 const profile = computed(() =>
-    platformStore.isQQ ? qqUserStore.profile
+    platformStore.isQishui ? qishuiUserStore.profile : platformStore.isQQ ? qqUserStore.profile
     : platformStore.isKugou ? kugouUserStore.profile
     : userStore.profile
 )
 const avatarUrl = computed(() => profile.value?.avatarUrl || '')
 const nickname = computed(() => {
+    if (platformStore.isQishui) return profile.value?.nickname || '未登录'
     if (platformStore.isQQ) return profile.value?.nickname || '未登录'
     if (platformStore.isKugou) return profile.value?.nickname || '未登录'
     return userStore.isLoggedIn ? (profile.value?.nickname || '网易云用户') : '未登录'
 })
 const logout = () => {
-    if (platformStore.isQQ) qqUserStore.logout()
+    if (platformStore.isQishui) qishuiUserStore.logout()
+    else if (platformStore.isQQ) qqUserStore.logout()
     else if (platformStore.isKugou) kugouUserStore.logout()
     else userStore.logout()
     messageStore.success('已退出登录', 1200)
 }
 const platformName = computed(() =>
-    platformStore.isQQ ? 'QQ音乐' : platformStore.isKugou ? '酷狗概念版' : '网易云音乐'
+    platformStore.isQishui ? '汽水音乐' : platformStore.isQQ ? 'QQ音乐' : platformStore.isKugou ? '酷狗概念版' : '网易云音乐'
 )
 
 // Cookie/Token 展示
+const qishuiCookie = ref(''), cookieVisible = ref(false), sessionBusy = ref(false), sessionError = ref('')
+const sessionNow = ref(Date.now())
+const currentAccount = computed(() => platformStore.isQishui ? qishuiUserStore : platformStore.isQQ ? qqUserStore : platformStore.isKugou ? kugouUserStore : userStore)
+const accountMembership = computed(() => membership(currentPlatform.value, currentAccount.value.profile, currentAccount.value.vipInfo))
+const currentPlatform = computed(() => platformStore.isQishui ? 'qishui' : platformStore.isQQ ? 'qq' : platformStore.isKugou ? 'kugou' : 'netease')
+let sessionRevision = 0
+watch([currentPlatform, () => currentAccount.value.revision, isLoggedIn], async () => {
+    const revision = ++sessionRevision
+    cookieVisible.value = false; qishuiCookie.value = ''; sessionError.value = ''; sessionBusy.value = false
+    if (platformStore.isQishui && isLoggedIn.value) {
+        try {
+            const result = await qishuiInvoke('session-info')
+            if (revision === sessionRevision) qishuiCookie.value = result.cookie || ''
+        } catch(e) { if (revision === sessionRevision) sessionError.value = e.message }
+    }
+}, { immediate: true })
+const sessionInfo = computed(() => sessionValidity({ platform: currentPlatform.value, cookie: cookieDisplayValue.value, loggedIn: isLoggedIn.value, checkedAt: currentAccount.value.sessionCheckedAt || 0, error: sessionError.value, now: sessionNow.value }))
+const sessionStateLabel = computed(() => ({ empty:'未登录',unconfirmed:'待验证',valid:'最近验证有效',expired:'凭据已到期，请重新登录' })[sessionInfo.value.state])
+const sessionTimeLabel = computed(() => sessionInfo.value.checkedAt ? new Date(sessionInfo.value.checkedAt).toLocaleString('zh-CN', {hour12:false}) : '尚未验证')
+async function validateCurrentSession() {
+    if (sessionBusy.value) return
+    const account = currentAccount.value, platform = currentPlatform.value, revision = sessionRevision
+    sessionBusy.value = true; sessionError.value = ''
+    try {
+        let valid, refreshedToken
+        if (platform === 'qishui') valid = await account.fetchVipInfo()
+        else if (platform === 'qq') valid = await account.fetchVipInfo()
+        else if (platform === 'netease') valid = await account.fetchStatus()
+        else {
+            const result = await kugouLoginToken(account.cookie, account.userid)
+            valid = result?.status === 1 && !result.error_code && String(result.data?.userid) === String(account.userid)
+            refreshedToken = result.data?.token
+        }
+        if (revision !== sessionRevision) return
+        if (!valid) throw new Error(account.vipError || '官方未确认凭据有效，请检查网络或重新登录')
+        if (platform === 'kugou' && refreshedToken) { account.cookie = refreshedToken; setKugouCookie(refreshedToken) }
+        account.sessionCheckedAt = Date.now(); sessionNow.value = Date.now()
+        messageStore.success('登录凭据验证有效')
+    } catch(e) { if (revision === sessionRevision) sessionError.value = e.message || '暂时无法验证' }
+    finally { if (revision === sessionRevision) sessionBusy.value = false }
+}
+const sessionClock = setInterval(() => { sessionNow.value = Date.now() }, 30000)
+onUnmounted(() => { sessionRevision++; clearInterval(sessionClock); qishuiCookie.value = '' })
 const cookieDisplayValue = computed(() => {
+    if (platformStore.isQishui) return qishuiCookie.value
+    if (platformStore.isNetease) return userStore.cookie || ''
     if (platformStore.isKugou) {
         const token = kugouUserStore.cookie || ''
         const userid = kugouUserStore.userid || ''
@@ -251,6 +305,7 @@ const copyCookie = async () => {
 
 // 用户统计项（按平台）
 const statItems = computed(() => {
+    if (platformStore.isQishui) return [{ label: '汽水ID', value: profile.value?.userId || '-' }]
     if (platformStore.isKugou) {
         return [
             { label: '酷狗ID', value: profile.value?.userid || '-' },
@@ -654,8 +709,9 @@ onUnmounted(() => {
             <div class="account-meta">
               <div class="account-nickname">
                 {{ isLoggedIn ? nickname : '未登录' }}
-                <span v-if="platformStore.isKugou && profile?.isVip" class="account-vip-badge">VIP</span>
-                <span v-if="platformStore.isQQ && profile?.isVip" class="account-vip-badge qq">VIP</span>
+                <img v-if="isLoggedIn && accountMembership.status === 'active' && accountMembership.icon" class="account-official-membership" :src="accountMembership.icon" :alt="accountMembership.label" :title="accountMembership.label" />
+                <img v-else-if="platformStore.isQQ && accountMembership.status === 'active' && profile?.vipIcon" class="account-official-membership" :src="profile.vipIcon" :alt="accountMembership.label" />
+                <span v-else-if="accountMembership.status === 'active'" class="account-vip-badge">{{ accountMembership.label }}</span>
               </div>
               <div class="account-platform">{{ platformName }}</div>
             </div>
@@ -684,18 +740,26 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Cookie / Token（QQ 与酷狗都要有；网易云无 Cookie 不展示） -->
-        <div v-if="!platformStore.isNetease && cookieDisplayValue" class="cookie-block">
+        <div v-if="isLoggedIn" class="cookie-block">
           <div class="cookie-head">
             <span class="cookie-title">
-              {{ platformStore.isKugou ? '酷狗 Token' : 'QQ 音乐 Cookie' }}
+              {{ platformName }} {{ platformStore.isKugou ? 'Token' : 'Cookie' }}
             </span>
-            <button class="copy-btn clickable" @click="copyCookie">
+            <button class="copy-btn clickable" @click="cookieVisible = !cookieVisible">{{ cookieVisible ? '隐藏' : '显示' }}</button>
+            <button class="copy-btn clickable" :disabled="!cookieDisplayValue" @click="copyCookie">
               <Copy :size="13" />
               {{ cookieCopied ? '已复制' : '复制' }}
             </button>
           </div>
-          <textarea class="cookie-value" :value="cookieDisplayValue" readonly rows="3"></textarea>
+          <textarea v-if="cookieVisible" class="cookie-value" :value="cookieDisplayValue" readonly rows="3" :aria-label="platformName + '登录凭据'"></textarea>
+          <div v-else class="cookie-masked">登录凭据已隐藏 · 点击显示或直接复制</div>
+          <div class="session-validity" aria-live="polite">
+            <div><span :class="['session-dot', sessionInfo.state]"></span><strong>{{ sessionStateLabel }}</strong><button class="copy-btn" :disabled="sessionBusy || !cookieDisplayValue" @click="validateCurrentSession">{{ sessionBusy ? '验证中…' : '立即验证' }}</button></div>
+            <p>Cookie / Token 有效期：{{ sessionInfo.expiryLabel }}</p>
+            <p v-if="sessionInfo.remaining !== null">剩余 {{ Math.ceil(sessionInfo.remaining / 3600000) }} 小时（平台凭据声明）</p>
+            <p>最近验证：{{ sessionTimeLabel }}</p>
+            <p v-if="sessionError" role="alert">{{ sessionError }}</p>
+          </div>
         </div>
 
         <!-- 酷狗概念版：领取 VIP（仅酷狗登录后展示，内嵌展开） -->
@@ -933,8 +997,7 @@ onUnmounted(() => {
             :title="isSectionHidden(sec.id) ? '点击显示该分区' : '点击隐藏该分区'"
             @click.prevent="toggleSection(sec.id)"
           >
-            <CheckSquare v-if="!isSectionHidden(sec.id)" :size="15" class="check-icon active" />
-            <Square v-else :size="15" class="check-icon" />
+            <SelectionMark :checked="!isSectionHidden(sec.id)" :size="15" class="check-icon" />
             <span>{{ sec.label }}</span>
           </label>
         </div>
@@ -948,8 +1011,7 @@ onUnmounted(() => {
         </div>
         <p class="card-tip">开启后长按/拖动可选中界面文字进行复制；关闭后全局禁用选中（输入框不受影响）。</p>
         <label class="section-check" @click.prevent="toggleLongPressSelect">
-          <CheckSquare v-if="longPressSelect" :size="15" class="check-icon active" />
-          <Square v-else :size="15" class="check-icon" />
+          <SelectionMark :checked="longPressSelect" :size="15" class="check-icon" />
           <span>{{ longPressSelect ? '已开启（可长按选择复制）' : '已关闭（禁止选中）' }}</span>
         </label>
       </section>
@@ -1141,6 +1203,7 @@ onUnmounted(() => {
     font-weight: 600;
     color: var(--text-main, #1a1a1a);
 }
+.account-official-membership { height: 22px; max-width: 76px; width: auto; object-fit: contain; vertical-align: middle; }
 .account-vip-badge {
     font-size: 10px;
     font-weight: 700;
@@ -1237,6 +1300,15 @@ onUnmounted(() => {
 }
 
 /* Cookie / Token */
+.cookie-masked { color: var(--text-secondary); padding: 10px 0; font-size: 12px; }
+.session-validity { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--border-color, #8883); border-radius: 14px; font-size: 12px; }
+.session-validity > div { display: flex; align-items: center; gap: 8px; }
+.session-validity .copy-btn { margin-left: auto; }
+.session-validity p { color: var(--text-secondary); margin: 8px 0 0; }
+.session-dot { width: 7px; height: 7px; border-radius: 50%; background: #b69c69; }
+.session-dot.valid { background: #41b984; }
+.session-dot.expired { background: #ed7777; }
+
 .cookie-block {
     margin-top: 18px;
 }

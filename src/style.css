@@ -35,6 +35,23 @@
     --active-bg: #E0F0E7;
 }
 
+/* 汽水音乐：青绿主题，与平台切换同步应用到导航、播放器和弹窗。 */
+[data-platform="qishui"] {
+    --primary-color: #257D72;
+    --header-bg: #257D72;
+    --bg-main: #FCFEFD;
+    --bg-sidebar: #F1F7F5;
+    --bg-footer: #FCFEFD;
+    --border-color: #DCE8E3;
+    --text-main: #203C36;
+    --text-secondary: #56716A;
+    --text-light: #879E97;
+    --hover-bg: #E8F3EF;
+    --active-bg: #DCEEE7;
+    --soda-hero-start: #153D37;
+    --soda-hero-end: #28665A;
+}
+
 /* 酷狗概念版主题：蓝白（在 #app 或 body 上设置 data-platform="kugou" 即可生效） */
 [data-platform="kugou"] {
     --primary-color: #2CA2F5;
@@ -444,6 +461,7 @@ footer.footer.is-apple-detail {
     cursor: pointer;
 }
 
+.song-cover-placeholder { display: grid; place-items: center; background: var(--bg-secondary); color: var(--text-secondary); }
 .song-cover {
     width: 45px;
     height: 45px;
@@ -888,3 +906,46 @@ html.reduce-motion *::after {
     user-select: text !important;
     -webkit-user-select: text !important;
 }
+/* Song detail settings: shared liquid glass for both page styles. */
+:root .detail-liquid-panel:is(.apple-settings-panel, .lyric-settings-wrap),
+:root .cs-dropdown.cs-dropdown-fixed.detail-liquid-menu {
+    --glass-spring: cubic-bezier(.22, 1, .36, 1);
+    color: #f7f8fc;
+    background: linear-gradient(145deg, #e7efff24, #d4e4ff08 38%, #ffffff12), #28354c70;
+    backdrop-filter: blur(var(--detail-glass-blur, 28px)) saturate(155%);
+    -webkit-backdrop-filter: blur(var(--detail-glass-blur, 28px)) saturate(155%);
+    border: 1px solid #ffffff38;
+    border-radius: 24px;
+    box-shadow: inset 0 1px 0 #ffffff45, inset 1px 0 0 #ffffff15, 0 24px 64px #06112645, 0 5px 20px #0002;
+    text-shadow: 0 1px 4px #0005;
+}
+:root .lyric-settings-wrap.detail-liquid-panel { box-sizing: border-box; padding: 20px 24px; gap: 16px 24px; justify-content: flex-start; overflow: visible; }
+:root .lyric-settings-wrap.detail-liquid-panel .label { color: #eef3ffdd; }
+:root .lyric-settings-wrap.detail-liquid-panel .group { color: #fff; }
+:root .detail-liquid-panel .cs-trigger { color: #fff; background: #ffffff12; border-color: #ffffff24; border-radius: 12px; }
+:root .detail-liquid-panel .cs-trigger:hover { background: #ffffff24; }
+:root .detail-liquid-panel .apple-segment { background: #0e1a2e40; border: 1px solid #ffffff12; border-radius: 12px; padding: 3px; }
+:root .detail-liquid-panel .apple-segment button { border-radius: 9px; transition: background .25s, box-shadow .25s, transform .35s cubic-bezier(.22,1,.36,1); }
+:root .detail-liquid-panel .apple-segment button.selected { background: #ffffff30; color: #fff; box-shadow: inset 0 1px #ffffff38, 0 2px 6px #0002; }
+:root .detail-liquid-panel .apple-setting-row { border-color: #ffffff12; min-height: 44px; }
+:root .detail-liquid-panel input[type=range] { accent-color: #e4ecff; cursor: pointer; }
+:root .detail-liquid-panel :is(button, .mode-chip) { transition: transform .35s cubic-bezier(.22,1,.36,1), background .25s, box-shadow .25s; }
+:root .detail-liquid-panel button:active { transform: scale(.95); }
+:root .cs-dropdown.cs-dropdown-fixed.detail-liquid-menu { border-radius: 16px; padding: 6px; animation: detail-glass-in .32s cubic-bezier(.22,1,.36,1) both; }
+:root .cs-dropdown.detail-liquid-menu .cs-option { color: #f4f7ff; border-radius: 10px; }
+:root .cs-dropdown.detail-liquid-menu .cs-option:hover,
+:root .cs-dropdown.detail-liquid-menu .cs-option.active { background: #ffffff22; color: #fff; }
+:root .apple-settings-fade-enter-active,
+:root .apple-settings-fade-leave-active { transform-origin: top right; transition: opacity .24s, transform .42s cubic-bezier(.22,1,.36,1); }
+:root .apple-settings-fade-enter-from,
+:root .apple-settings-fade-leave-to { opacity: 0; transform: translateY(-8px) scale(.94); }
+:root .lyric-settings-collapse-enter-active,
+:root .lyric-settings-collapse-leave-active { max-height: 420px; transition: max-height .42s cubic-bezier(.22,1,.36,1), opacity .24s, transform .42s cubic-bezier(.22,1,.36,1); }
+:root .lyric-settings-collapse-enter-from,
+:root .lyric-settings-collapse-leave-to { max-height: 0; opacity: 0; transform: translateY(-8px) scale(.98); }
+@keyframes detail-glass-in { from { opacity: 0; transform: translateY(-5px) scale(.97); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+    :root :is(.detail-liquid-panel, .detail-liquid-menu, .apple-settings-fade-enter-active, .apple-settings-fade-leave-active, .lyric-settings-collapse-enter-active, .lyric-settings-collapse-leave-active) { animation: none; transition: none; }
+}
+html.reduce-motion :is(.detail-liquid-panel *, .detail-liquid-menu, .apple-settings-fade-enter-active, .apple-settings-fade-leave-active, .lyric-settings-collapse-enter-active, .lyric-settings-collapse-leave-active) { animation: none; transition: none; }
+

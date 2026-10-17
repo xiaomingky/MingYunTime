@@ -1,4 +1,5 @@
 <script setup>
+import SongVipBadge from '../../components/SongVipBadge.vue'
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePlayerStore } from '../../store/player'
@@ -20,11 +21,14 @@ const banners = ref([])
 const newSongs = ref([])
 const newDisks = ref([])
 const recommendPlaylists = ref([])
+const error = ref('')
+let revision = 0
 
 // ===== Banner 轮播 =====
 const currentBanner = ref(0)
 let bannerTimer = null
 const startBannerAuto = () => {
+    stopBannerAuto()
     if (banners.value.length > 1) {
         bannerTimer = setInterval(() => {
             currentBanner.value = (currentBanner.value + 1) % banners.value.length
@@ -42,7 +46,10 @@ const onImgError = (e) => {
 }
 
 const fetchAll = async () => {
+    const requestRevision = ++revision
     loading.value = true
+    error.value = ''
+    stopBannerAuto()
     try {
         const [bannerRes, songRes, disksRes, hotRes] = await Promise.allSettled([
             kugouBanner(),
@@ -50,6 +57,8 @@ const fetchAll = async () => {
             kugouAlbumNew(1, 10),
             kugouPlaylist(0, 0, 0, 1, 10)
         ])
+        if (requestRevision !== revision) return
+        if ([bannerRes, songRes, disksRes, hotRes].some(result => result.status === 'rejected')) error.value = '部分内容加载失败，请重试'
 
         // Banner：/pc/diantai 实测返回 { status:1, data: { data: [ {code, title, url, isAd, jump_type, ...}, ... ] } }
         // code 是图片 URL，url 是跳转链接
@@ -89,7 +98,7 @@ const fetchAll = async () => {
         console.error('[Kugou Discovery] fetch error:', e)
         messageStore.error('酷狗概念版数据加载失败')
     } finally {
-        loading.value = false
+        if (requestRevision === revision) loading.value = false
     }
 }
 
@@ -111,11 +120,12 @@ const formatPlayCount = (n) => {
 }
 
 onMounted(fetchAll)
-onUnmounted(() => stopBannerAuto())
+onUnmounted(() => { revision++; stopBannerAuto() })
 </script>
 
 <template>
     <div class="kugou-page" v-loading="loading">
+        <div v-if="error" class="kugou-empty" role="alert">{{ error }} <button class="kugou-loadmore-btn" :disabled="loading" @click="fetchAll">重新加载</button></div>
         <!-- Banner 轮播 -->
         <section v-if="banners.length" class="kugou-banner-section">
             <div class="kugou-banner-container" @mouseenter="stopBannerAuto" @mouseleave="startBannerAuto">
@@ -125,6 +135,7 @@ onUnmounted(() => stopBannerAuto())
                         :src="banners[currentBanner].imageUrl"
                         :alt="banners[currentBanner].title"
                         class="kugou-banner-img"
+                        @click="banners[currentBanner].url.startsWith('/kugou/') && router.push(banners[currentBanner].url)"
                     />
                 </Transition>
                 <div v-if="banners.length > 1" class="kugou-banner-arrows">
@@ -177,7 +188,7 @@ onUnmounted(() => stopBannerAuto())
                     <div class="kugou-song-info">
                         <div class="kugou-song-name" :title="s.name">
                             <span class="name-text">{{ s.name }}</span>
-                            <span v-if="s.fee === 1 || s.isVip" class="kugou-vip-tag">VIP</span>
+                            <SongVipBadge :song="s" platform="kugou" />
                         </div>
                         <div class="kugou-song-artist" :title="s.artist">{{ s.artist }}</div>
                     </div>

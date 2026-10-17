@@ -1,10 +1,15 @@
 import { defineStore } from 'pinia'
+import { normalizeLocalFileUrl } from '../utils/local-file-url'
+import { qishuiInvoke } from '../api/qishui'
 import { lyricIndexAt } from '../utils/lyric-timing'
+import { neteasePlaybackLevels, neteaseStreamInfo, kugouStreamInfo } from '../utils/playback-quality'
+import { resolveKugouPlayback } from '../utils/kugou-playback'
+import { QISHUI_QUALITY_LABELS, qishuiQualityLabel } from '../utils/qishui-quality'
 import request, { getSongUrl, getLyric, getNewLyric, cloudSearch } from '../api'
 import { qqSongPlay, qqLyric, qqDownload, qqSongInfo, qqBatchSongInfo, normalizeQQSong } from '../api/qq'
 import {
     kugouSongUrl, kugouSongUrlNew, kugouSongDetail, normalizeKugouSong,
-    kugouVideoUrl, kugouSongMv, kugouVideoDetail, kugouSearch
+    kugouVideoUrl, kugouSongMv, kugouVideoDetail, kugouSearch, kugouNativeBridge, kugouDirect
 } from '../api/kugou'
 import { useMessageStore } from './message'
 import { useSettingsStore } from './settings'
@@ -19,7 +24,7 @@ const NETEASE_QUALITY_LABELS = {
     hires: 'Hi-Res',
     jyeffect: '高清环绕声'
 }
-// QQ 音乐真实音质映射（已实测：API 仅支持 128/320/m4a/flac）
+// QQ 音质偏好，实际档位从获授权的音频文件名确认
 const QQ_QUALITY_LABELS = {
     '128': '标准',
     '320': '高品',
@@ -33,7 +38,7 @@ const QQ_QUALITY_FALLBACK = {
     m4a: ['m4a', '128'],
     '128': ['128', '320']
 }
-// 酷狗概念版真实音质（已查 KuGouMusicApi song_url.js 源码确认）
+// 酷狗音质偏好；是否授权及实际格式由当前官方响应确认
 const KUGOU_QUALITY_LABELS = {
     '128': '标准',
     '320': '高品',
@@ -73,13 +78,16 @@ const initialPlaylist = Array.isArray(storedPlaylist)
     : []
 const isQQPlatform = () => getCurrentPlatform() === 'qq'
 const isKugouPlatform = () => getCurrentPlatform() === 'kugou'
-const qualityLabel = (lv) => {
-    if (isQQPlatform()) return QQ_QUALITY_LABELS[lv] || lv
-    if (isKugouPlatform()) return KUGOU_QUALITY_LABELS[lv] || lv
+const qualityLabel = (lv, platform = getCurrentPlatform()) => {
+    if (!lv || lv === 'unknown') return '平台未标注'
+    if (platform === 'qishui') return qishuiQualityLabel(lv)
+    if (platform === 'qq') return QQ_QUALITY_LABELS[lv] || lv
+    if (platform === 'kugou') return KUGOU_QUALITY_LABELS[lv] || lv
     return NETEASE_QUALITY_LABELS[lv] || lv
 }
 // 按平台读取对应的 localStorage 音质（网易云 music_quality / QQ qq_music_quality / 酷狗 kugou_music_quality）
 const readInitialQuality = () => {
+    if (getCurrentPlatform() === 'qishui') return localStorage.getItem('qishui_music_quality') in QISHUI_QUALITY_LABELS ? localStorage.getItem('qishui_music_quality') : 'auto'
     if (isQQPlatform()) {
         const val = localStorage.getItem('qq_music_quality')
         return val && QQ_QUALITY_LABELS[val] ? val : '128'
@@ -101,7 +109,7 @@ export const usePlayerStore = defineStore('player', {
             artist: '歌手',
             al: {
                 name: '专辑',
-                picUrl: 'https://p2.music.126.net/6y-U6QnSjd_5419m1B0R_g==/109951165034938831.jpg?param=64y64'
+                picUrl: ''
             },
             duration: 0,
         },
@@ -140,8 +148,8 @@ export const usePlayerStore = defineStore('player', {
         showMvSearchPicker: false, // 是否显示 MV 选择弹层
         // 启动时默认不自动开启桌面歌词（即使上次开启过），需用户手动点击开关
         showDesktopLyrics: false,
-        desktopLyricFont: '',
-        desktopLyricColor: '#00E5FF',
+        desktopLyricFont: localStorage.getItem('desktop_lyric_font') || '',
+        desktopLyricColor: localStorage.getItem('desktop_lyric_color') || '#00E5FF',
         // 桌面歌词模式：'complex' 复杂模式（封面+控制+歌词）/ 'simple' 简约模式（仅歌词）
         desktopLyricMode: localStorage.getItem('desktop_lyric_mode') || 'complex',
         // 桌面歌词背景透明度 0-100（百分比，100=不透明）
@@ -216,7 +224,14 @@ export const usePlayerStore = defineStore('player', {
             if (this.currentIndex < 0 || this.currentIndex >= this.playlist.length) {
                 this.currentIndex = 0
             }
-            this.currentSong = this.playlist[this.currentIndex]
+            const queued = this.playlist[this.currentIndex], saved = this.currentSong
+            const sameItem = saved?.id === queued.id && saved?.platform === queued.platform &&
+                (!saved.queueItemId || saved.queueItemId === queued.queueItemId)
+            // Queue metadata keeps provider units (Kugou milliseconds), whereas
+            // the active player stores seconds after the audio is resolved.
+            this.currentSong = sameItem ? {...queued,...saved,queueItemId:queued.queueItemId} : {
+                ...queued, duration:queued.dt ? queued.dt/1000 : queued.platform === 'kugou' ? (queued.duration || 0)/1000 : queued.duration || 0
+            }
         },
         initAudio() {
             // Keep one media element and one Web Audio source for its lifetime.
@@ -284,6 +299,12 @@ export const usePlayerStore = defineStore('player', {
                 if (this.currentSong?.platform === 'qq' || !this.currentSong.duration || this.currentSong.duration === 0) {
                     this.currentSong.duration = this.audio.duration
                 }
+                if (this.currentSong?.platform === 'qq' && this.currentSong.fullDuration > 0 && Number.isFinite(this.audio.duration)) {
+                    this.currentSong.isPreview = this.audio.duration + 3 < this.currentSong.fullDuration
+                }
+                if (['netease','kugou'].includes(this.currentSong?.platform) && this.currentSong.fullDuration > 0 && Number.isFinite(this.audio.duration)) {
+                    this.currentSong.isPreview = this.audio.duration + 3 < this.currentSong.fullDuration
+                }
                 this._updateMediaSessionPositionState()
             }
             // 播放状态变化直接挂 audio 事件：所有 play/pause 入口（UI/系统控制/MV 切换）都会经过这里，
@@ -331,7 +352,17 @@ export const usePlayerStore = defineStore('player', {
             await this._resumeAudioContexts()
             if (this.audio !== audio || this._playRequestId !== requestId) return false
             audio.playbackRate = this.playbackRate
-            await audio.play()
+            let timer, onError
+            const failed = new Promise((_, reject) => {
+                onError = () => reject(new Error('音频无法解码或加载失败，请重新播放'))
+                audio.addEventListener('error', onError, { once: true })
+                timer = setTimeout(() => {
+                    if (this.audio === audio && this._playRequestId === requestId) audio.pause()
+                    reject(new Error('音频加载超时，请检查网络后重试'))
+                }, 20000)
+            })
+            try { await Promise.race([audio.play(), failed]) }
+            finally { clearTimeout(timer); audio.removeEventListener('error', onError) }
             if (this.audio !== audio || this._playRequestId !== requestId) return false
             this.isPlaying = !audio.paused
             return true
@@ -493,13 +524,19 @@ export const usePlayerStore = defineStore('player', {
                 if (this.currentSong?.platform === 'qq' || !this.currentSong.duration || this.currentSong.duration === 0) {
                     this.currentSong.duration = this.audio.duration
                 }
+                if (this.currentSong?.platform === 'qq' && this.currentSong.fullDuration > 0 && Number.isFinite(this.audio.duration)) {
+                    this.currentSong.isPreview = this.audio.duration + 3 < this.currentSong.fullDuration
+                }
+                if (['netease','kugou'].includes(this.currentSong?.platform) && this.currentSong.fullDuration > 0 && Number.isFinite(this.audio.duration)) {
+                    this.currentSong.isPreview = this.audio.duration + 3 < this.currentSong.fullDuration
+                }
                 this._updateMediaSessionPositionState()
             }
             // 播放状态变化直接挂 audio 事件（与 initAudio 保持一致）
             this._bindPlaybackStateEvents(this.audio)
             this.audio.volume = Math.min(1, savedVolume / 100)
 
-            if (savedSrc) this.audio.src = savedSrc
+            if (savedSrc) this.audio.src = normalizeLocalFileUrl(savedSrc)
             this.playbackRate = savedRate
             this.audio.playbackRate = savedRate
             const audio = this.audio
@@ -535,7 +572,7 @@ export const usePlayerStore = defineStore('player', {
             const incomingQueueItemId = song.queueItemId
 
             // 同一首歌再次点击：直接从头播放，不重新设置 src（避免浏览器忽略重复 src 导致无反应）
-            if (!options.suppressQualityPrompt && this.currentSong && this.currentSong.id === song.id && this._hasAudioSource()) {
+            if (!options.suppressQualityPrompt && !options.forceResolve && this.currentSong && this.currentSong.id === song.id && this.currentSong.platform === song.platform && this._hasAudioSource()) {
                 if (list.length > 0) {
                     this.playlist = this._normalizeQueue(list)
                     this.currentIndex = incomingQueueItemId
@@ -580,12 +617,32 @@ export const usePlayerStore = defineStore('player', {
 
             try {
                 let url = song.url
+                let neteasePlayback = null
                 const isLocal = typeof song.id === 'string' && song.id.startsWith('local-')
                 const isCloud = typeof song.id === 'string' && song.id.startsWith('cloud-')
+                const isQishui = song.platform === 'qishui'
+                let sodaPlayback = null
                 const isQQ = song.platform === 'qq' || (song.songmid && !isLocal && !isCloud)
                 const isKugou = song.platform === 'kugou' || (song.hash && !isLocal && !isCloud && !isQQ)
+                const platform = isQishui ? 'qishui' : isQQ ? 'qq' : isKugou ? 'kugou' : 'netease'
+                const labels = isQishui ? QISHUI_QUALITY_LABELS : isQQ ? QQ_QUALITY_LABELS : isKugou ? KUGOU_QUALITY_LABELS : NETEASE_QUALITY_LABELS
+                const key = isQishui ? 'qishui_music_quality' : isQQ ? 'qq_music_quality' : isKugou ? 'kugou_music_quality' : 'music_quality'
+                const savedQuality = localStorage.getItem(key)
+                const selectedQuality = platform === getCurrentPlatform() && this.quality in labels ? this.quality
+                    : savedQuality in labels ? savedQuality : isQishui ? 'auto' : isQQ || isKugou ? '128' : 'standard'
+                // A normalized song carries its previous URL. Quality switching
+                // must resolve a fresh grant, while local/cloud URLs remain valid.
+                if (options.forceResolve && !isLocal && !isCloud) url = ''
 
-                if (isQQ && !url) {
+                if (isQishui) {
+                    sodaPlayback = await qishuiInvoke('playback', { id: String(song.qishuiId || song.id), quality: selectedQuality })
+                    if (!isCurrentRequest()) return
+                    url = sodaPlayback.url
+                    song = { ...song, ...sodaPlayback.track }
+                    const label = qishuiQualityLabel(sodaPlayback.quality)
+                    if (!options.suppressQualityPrompt && sodaPlayback.requestedQuality !== 'auto' && sodaPlayback.requestedQuality !== sodaPlayback.quality) useMessageStore().info(`所选音质未获授权或暂无资源，已回退至${label}`)
+                    else if (!options.suppressQualityPrompt) useMessageStore().info(sodaPlayback.preview ? `汽水试听 · ${Math.round(sodaPlayback.duration)} 秒片段` : `汽水音乐 · ${label}`)
+                } else if (isQQ && !url) {
                     // QQ 音乐：通过 IPC 调用 qq:song-play 获取播放地址
                     // 必须传 cookie，否则 QQ 服务器返回空 URL + "暂无播放链接"
                     // 音质按用户选择 + 回退链尝试（实测 API 支持 128/320/m4a/flac/ape）
@@ -594,22 +651,24 @@ export const usePlayerStore = defineStore('player', {
                     const { useQQUserStore } = await import('./qq-user')
                     const qqUserStore = useQQUserStore()
                     const cookie = qqUserStore.cookie || ''
-                    const tryQualities = QQ_QUALITY_FALLBACK[this.quality] || ['128', '320']
+                    const tryQualities = QQ_QUALITY_FALLBACK[selectedQuality] || ['128', '320']
                     let lastError = ''
                     for (const q of tryQualities) {
                         try {
                             const res = await qqSongPlay(songmid, q, cookie)
+                            if (!isCurrentRequest()) return
                             // 真实返回结构（无 response 包裹）：{ data: { playUrl: { [songmid]: { url, error } } } }
                             const data = res?.data || res
                             const playUrlEntry = data?.playUrl?.[songmid] || data?.playUrl?.[String(songmid)] || {}
                             const playUrl = playUrlEntry?.url || data?.url || data?.midurlinfo?.[0]?.purl
                             if (playUrl && typeof playUrl === 'string') {
                                 url = playUrl.startsWith('http') ? playUrl : `https:${playUrl}`
+                                song = { ...song, fullDuration: playUrlEntry.fullDuration || song.fullDuration || (song.dt || 0) / 1000, streamQuality: playUrlEntry.quality || 'unknown', streamCodec: playUrlEntry.codec, streamBitrate: playUrlEntry.bitrate }
                                 if (!options.suppressQualityPrompt) {
-                                    if (q !== this.quality) {
-                                        useMessageStore().info(`当前音质无资源，已回退到：${qualityLabel(q)}`)
+                                    if (song.streamQuality !== selectedQuality) {
+                                        useMessageStore().info(`当前音质无资源，实际播放：${qualityLabel(song.streamQuality, platform)}`)
                                     } else {
-                                        useMessageStore().info(`当前播放音质：${qualityLabel(q)}`)
+                                        useMessageStore().info(`当前播放音质：${qualityLabel(song.streamQuality, platform)}`)
                                     }
                                 }
                                 break
@@ -628,17 +687,35 @@ export const usePlayerStore = defineStore('player', {
                         } else {
                             useMessageStore().error(`播放失败：[${song.name}] ${lastError || '由于版权或 VIP 限制，QQ 音乐资源不可用'}`)
                         }
-                        this.next()
+                        // Permission failures must stop here. Advancing through a
+                        // VIP-only queue recursively floods the user with errors.
+                        this.isPlaying = false
                         return
                     }
+                } else if (isKugou && !url && kugouNativeBridge()?.invoke) {
+                    let result, lastError = ''
+                    try {
+                        result=await resolveKugouPlayback(q=>kugouDirect('/song/url',{hash:song.hash||song.id,quality:q,album_id:song.album_id||'',album_audio_id:song.album_audio_id||''}),KUGOU_QUALITY_FALLBACK[selectedQuality]||['128'],isCurrentRequest)
+                    } catch(error) { lastError=error.message }
+                    if (!isCurrentRequest()) return
+                    if (!result?.data?.url) {
+                        useMessageStore().error(`播放失败：[${song.name}] ${lastError || '酷狗未授予播放权限，请在官方客户端查看账号或版权要求'}`)
+                        this.isPlaying = false
+                        return
+                    }
+                    if (result.data.accountNotice) useMessageStore().warning(result.data.accountNotice)
+                    url = result.data.url
+                    song = { ...song, streamQuality:result.data.quality, streamCodec:result.data.codec, streamBitrate:result.data.bitrate, streamSampleRate:result.data.sampleRate, fullDuration:Math.max(result.data.fullDuration || 0, song.fullDuration || 0, (song.dt || 0) / 1000), isPreview:result.data.is_trial }
+                    if (!options.suppressQualityPrompt) useMessageStore().info(`当前播放音质：${qualityLabel(result.data.quality, platform)}`)
                 } else if (isKugou && !url) {
                     // 酷狗概念版：旧版 /song/url 优先（新版 /song/url/new 存在音频加密无法解码）
                     const hash = song.hash || song.id
                     const album_audio_id = song.album_audio_id || ''
                     const album_id = song.album_id || ''
                     let resolvedUrl = ''
-                    let resolvedQuality = ''
-                    const fallbackList = KUGOU_QUALITY_FALLBACK[this.quality] || ['128', '320']
+                    let resolvedQuality = 'unknown'
+                    let resolvedStream = {}
+                    const fallbackList = KUGOU_QUALITY_FALLBACK[selectedQuality] || ['128', '320']
                     // 实测 /song/url 响应字段：
                     //   url: [ "http://...", "http://..." ]  ← 数组，不是字符串
                     //   backupUrl: [ "http://..." ]
@@ -676,7 +753,6 @@ export const usePlayerStore = defineStore('player', {
                             const oldData = oldRes?.data || oldRes
                             // 打印完整请求参数和响应,便于排查 status:2 url_exists:false 问题
                             console.log(`[Kugou] /song/url 请求参数: hash=${hash}, quality=${q}, album_id=${album_id}, album_audio_id=${album_audio_id}`)
-                            console.log(`[Kugou] /song/url quality=${q} 完整响应:`, JSON.stringify(oldData).substring(0, 500))
                             console.log(`[Kugou] /song/url quality=${q} 响应摘要:`, JSON.stringify({
                                 errcode: oldData?.errcode,
                                 error: oldData?.error,
@@ -699,7 +775,8 @@ export const usePlayerStore = defineStore('player', {
                             const u = pickKugouUrl(oldData)
                             if (u) {
                                 resolvedUrl = u.startsWith('http') ? u : `https:${u}`
-                                resolvedQuality = q
+                                resolvedStream = kugouStreamInfo(oldData.data || oldData)
+                                resolvedQuality = resolvedStream.quality
                                 break
                             }
                         } catch (e) {
@@ -723,7 +800,7 @@ export const usePlayerStore = defineStore('player', {
                                 const u = pickKugouUrl(d)
                                 if (u) {
                                     resolvedUrl = u.startsWith('http') ? u : `https:${u}`
-                                    resolvedQuality = q
+                                    resolvedStream = kugouStreamInfo(d.data || d); resolvedQuality = resolvedStream.quality
                                     console.log(`[Kugou] 不传 album_audio_id 播放成功,使用 ${q} 音质`)
                                     break
                                 }
@@ -764,7 +841,7 @@ export const usePlayerStore = defineStore('player', {
                                             const u = pickKugouUrl(d)
                                             if (u) {
                                                 resolvedUrl = u.startsWith('http') ? u : `https:${u}`
-                                                resolvedQuality = q
+                                                resolvedStream = kugouStreamInfo(d.data || d); resolvedQuality = resolvedStream.quality
                                                 // 更新 song 的 hash，后续播放/下载用新 hash
                                                 song.hash = newHash
                                                 this.currentSong.hash = newHash
@@ -794,7 +871,8 @@ export const usePlayerStore = defineStore('player', {
                             const u = pickKugouUrl(trialData)
                             if (u) {
                                 resolvedUrl = u.startsWith('http') ? u : `https:${u}`
-                                resolvedQuality = '128(试听)'
+                                resolvedStream = kugouStreamInfo(trialData.data || trialData); resolvedQuality = resolvedStream.quality
+                                song = { ...song, isPreview: true }
                                 console.warn('[Kugou] 仅获取到试听版本，可能是 VIP 权限未生效或 cookie 失效')
                             }
                         } catch (e) {
@@ -808,7 +886,6 @@ export const usePlayerStore = defineStore('player', {
                         try {
                             const newRes = await kugouSongUrlNew(hash, album_audio_id)
                             const newData = newRes?.data || newRes
-                            console.log('[Kugou] /song/url/new 完整响应:', JSON.stringify(newData).substring(0, 500))
 
                             // 2a. 先尝试直接从 /song/url/new 响应中提取 URL
                             const newEntry = Array.isArray(newData) ? newData[0] : (newData?.[hash] || newData?.info?.[hash] || newData)
@@ -818,7 +895,7 @@ export const usePlayerStore = defineStore('player', {
                                 const found = newUrls.find(u => (u.quality === q || u.hash_quality === q) && u.url)
                                 if (found?.url) {
                                     resolvedUrl = found.url
-                                    resolvedQuality = q
+                                    resolvedStream = kugouStreamInfo(found); resolvedQuality = resolvedStream.quality
                                     console.log(`[Kugou] /song/url/new 成功获取 ${q} 音质 URL`)
                                     break
                                 }
@@ -844,7 +921,7 @@ export const usePlayerStore = defineStore('player', {
                                                 const u = pickKugouUrl(d)
                                                 if (u) {
                                                     resolvedUrl = u.startsWith('http') ? u : `https:${u}`
-                                                    resolvedQuality = q
+                                                    resolvedStream = kugouStreamInfo(d.data || d); resolvedQuality = resolvedStream.quality
                                                     song.hash = newHash
                                                     this.currentSong.hash = newHash
                                                     console.log(`[Kugou] 新 hash 播放成功,使用 ${q} 音质`)
@@ -864,7 +941,7 @@ export const usePlayerStore = defineStore('player', {
                                                     const u = pickKugouUrl(d)
                                                     if (u) {
                                                         resolvedUrl = u.startsWith('http') ? u : `https:${u}`
-                                                        resolvedQuality = q
+                                                        resolvedStream = kugouStreamInfo(d.data || d); resolvedQuality = resolvedStream.quality
                                                         song.hash = newHash
                                                         this.currentSong.hash = newHash
                                                         console.log(`[Kugou] 新hash 不传 album_audio_id 播放成功,使用 ${q} 音质`)
@@ -898,31 +975,30 @@ export const usePlayerStore = defineStore('player', {
                         return
                     }
                     url = resolvedUrl
+                    song = { ...song, streamQuality: resolvedQuality, streamCodec: resolvedStream.codec, streamBitrate: resolvedStream.bitrate, streamSampleRate: resolvedStream.sampleRate }
                     if (!options.suppressQualityPrompt) {
-                        if (resolvedQuality !== this.quality) {
-                            useMessageStore().info(`当前音质无资源，已回退到：${qualityLabel(resolvedQuality)}`)
+                        if (resolvedQuality !== selectedQuality) {
+                            useMessageStore().info(`当前音质无资源，已回退到：${qualityLabel(resolvedQuality, platform)}`)
                         } else {
-                            useMessageStore().info(`当前播放音质：${qualityLabel(resolvedQuality)}`)
+                            useMessageStore().info(`当前播放音质：${qualityLabel(resolvedQuality, platform)}`)
                         }
                     }
                 } else if (!url && !isLocal && !isCloud) {
                     // Hi-Res/高清环绕声等高阶音质多数歌曲无资源，逐级回退保证可播放
-                    const highFallback = ['jyeffect', 'hires', 'lossless']
-                    let tryLevels = [this.quality]
-                    if (highFallback.includes(this.quality)) {
-                        tryLevels = [this.quality, 'lossless', 'exhigh', 'standard']
-                    }
+                    const tryLevels = neteasePlaybackLevels(selectedQuality, localStorage.getItem('music_quality'))
                     for (const lv of tryLevels) {
                         const res = await getSongUrl(song.id, lv)
+                        if (!isCurrentRequest()) return
                         const songData = res.data?.[0] || res?.[0]
                         if (songData?.url) {
                             url = songData.url
-                            // 用请求参数 lv 作为音质提示依据（API 返回的 level 字段不可靠）
+                            if (song.platform === 'netease' || !song.platform) neteasePlayback = songData
+                            const actual = neteaseStreamInfo(songData).quality
                             if (!options.suppressQualityPrompt) {
-                                if (lv !== this.quality) {
-                                    useMessageStore().info(`当前音质无资源，已回退到：${qualityLabel(lv)}`)
+                                if (actual !== selectedQuality) {
+                                    useMessageStore().info(`当前音质无资源，实际播放：${qualityLabel(actual, platform)}`)
                                 } else {
-                                    useMessageStore().info(`当前播放音质：${qualityLabel(lv)}`)
+                                    useMessageStore().info(`当前播放音质：${qualityLabel(actual, platform)}`)
                                 }
                             }
                             break
@@ -933,7 +1009,7 @@ export const usePlayerStore = defineStore('player', {
                 if (!isCurrentRequest()) return
                 if (!url && !isLocal) {
                     useMessageStore().error(`播放失败：[${song.name}] 由于版权或VIP限制，${qualityLabel(this.quality)} 音质资源不可用`)
-                    this.next()
+                    this.isPlaying = false
                     return
                 }
 
@@ -948,12 +1024,25 @@ export const usePlayerStore = defineStore('player', {
                     // QQ 歌曲: duration 初始设为 0,强制由 onloadedmetadata 用 audio.duration 填充
                     // (QQ API interval 字段单位不稳定,有时秒有时毫秒,导致 4000+ 分钟错误)
                     // 其他歌曲: dt(毫秒)/1000 = 秒,本地歌曲直接用 duration(秒)
-                    duration: isQQ ? 0 : (isLocal ? (song.duration || song.dt / 1000 || 0) : ((song.dt || (song.song?.duration || 0)) / 1000)),
+                    duration: isQishui ? sodaPlayback.duration : isQQ ? 0 : (isLocal ? (song.duration || song.dt / 1000 || 0) : ((song.dt || (song.song?.duration || 0)) / 1000)),
                     url: url,
                     path: song.path,
                     // QQ 平台标识：用于切歌时识别 QQ 歌曲、获取歌词、预加载
                     platform: song.platform || (isQQ ? 'qq' : ''),
                     songmid: song.songmid,
+                    songid: song.songid || 0,
+                    qishuiId: isQishui ? String(song.qishuiId || song.id) : undefined,
+                    isPreview: isQishui ? sodaPlayback.preview : isKugou ? !!song.isPreview : !!neteasePlayback?.freeTrialInfo,
+                    fullDuration: isQishui ? sodaPlayback.fullDuration : isKugou ? song.fullDuration : isQQ ? song.fullDuration || (song.dt || 0) / 1000 : neteasePlayback ? (neteasePlayback.time || song.dt || 0) / 1000 : undefined,
+                    lyricOffsetMs: isQishui ? sodaPlayback.offsetMs : 0,
+                    streamQuality: isQishui ? sodaPlayback.quality : isQQ || isKugou ? song.streamQuality || 'unknown' : neteasePlayback ? neteaseStreamInfo(neteasePlayback).quality : 'unknown',
+                    availableQualities: isQishui ? sodaPlayback.availableQualities : undefined,
+                    streamBitrate: isQishui ? sodaPlayback.bitrate : neteasePlayback ? neteaseStreamInfo(neteasePlayback).bitrate : song.streamBitrate,
+                    streamCodec: isQishui ? sodaPlayback.codec : neteasePlayback ? neteaseStreamInfo(neteasePlayback).codec : song.streamCodec,
+                    streamSampleRate: neteasePlayback ? neteaseStreamInfo(neteasePlayback).sampleRate : song.streamSampleRate,
+                    streamError: '',
+                    collected: isQishui ? !!song.collected : undefined,
+                    downloadAllowed: isQishui ? true : undefined,
                     // 保留 QQ 歌曲的封面/专辑 mid/vid 等字段(切歌/显示封面/播放 MV 用)
                     picUrl: song.picUrl || song.al?.picUrl || '',
                     albummid: song.albummid || '',
@@ -965,7 +1054,11 @@ export const usePlayerStore = defineStore('player', {
                     album_audio_id: song.album_audio_id || '',
                     mixsongid: song.mixsongid || '',
                     album_id: song.album_id || song.albumid || '',
-                    isVip: song.isVip || false,
+                    // A fresh playback response can revoke a stale list/cache label.
+                    isVip: isQishui ? sodaPlayback.track?.isVip ?? song.isVip ?? false : song.isVip || false,
+                    vipPlayRequired: isQishui ? sodaPlayback.track?.isVip ?? song.vipPlayRequired ?? song.isVip ?? false : song.vipPlayRequired,
+                    fee: song.fee ?? song.song?.fee ?? song.privilege?.fee,
+                    vipDownloadOnly: isQishui ? !!(song.vipDownloadOnly || sodaPlayback.track?.vipDownloadOnly) : undefined,
                     mvHash: song.mvHash || ''
                 }
 
@@ -985,7 +1078,7 @@ export const usePlayerStore = defineStore('player', {
                 // custom protocol. Without this Chromium silences the source.
                 this.audio.crossOrigin = "anonymous"
 
-                this.audio.src = url
+                this.audio.src = normalizeLocalFileUrl(url)
                 this.audio.playbackRate = this.playbackRate
 
                 await this._applyAudioDevice()
@@ -1001,15 +1094,26 @@ export const usePlayerStore = defineStore('player', {
                 this.audio.currentTime = 0
 
                 try {
-                    if (!await this._startAudioPlayback(audio, requestId)) return
+                    if (options.startPaused) {
+                        if (audio.readyState < 1) await new Promise((resolve, reject) => {
+                            const finish = error => { clearTimeout(timer); audio.removeEventListener('loadedmetadata', loaded); audio.removeEventListener('error', failed); error ? reject(error) : resolve() }
+                            const loaded = () => finish(), failed = () => finish(new Error('音源加载失败'))
+                            const timer = setTimeout(() => finish(new Error('音源加载超时')), 15000)
+                            audio.addEventListener('loadedmetadata', loaded, { once: true }); audio.addEventListener('error', failed, { once: true })
+                        })
+                        if (!isCurrentRequest()) return
+                    } else if (!await this._startAudioPlayback(audio, requestId)) return
+                    if (!isCurrentRequest()) return
+                    if (Number.isFinite(options.startPosition)) this.seek(Math.max(0, Math.min(options.startPosition, Number.isFinite(audio.duration) ? Math.max(0, audio.duration - 0.25) : options.startPosition)))
                     this.playbackLoading = false
                 } catch (error) {
                     if (!isCurrentRequest()) return
                     this.isPlaying = false
+                    this.currentSong.streamError = '音源加载或解码失败，请更换音质后重试'
                     console.error('Playback fail:', error)
                     if (isLocal) {
                         useMessageStore().error('本地文件加载失败，请确定文件路径正确且协议已注册。')
-                    }
+                    } else useMessageStore().error('音源加载或解码失败，请更换音质后重试')
                     return
                 }
 
@@ -1020,7 +1124,12 @@ export const usePlayerStore = defineStore('player', {
                 // - QQ 歌曲：静默自动加载(和网易云同规格,不弹窗)
                 //   流程:缓存 → QQ 歌词源自动匹配 → 网易云 API 回退 → 都失败显示"纯音乐"
                 // - 酷狗歌曲：静默走酷狗歌词源 IPC（按 hash 直接获取，不走 QQ 优先）
-                if (isKugou) {
+                if (isQishui) {
+                    this.lyrics = []; this.yrcLyrics = null
+                    if (sodaPlayback.lrc) this.parseLyrics(sodaPlayback.lrc, sodaPlayback.tlrc || '')
+                    if (sodaPlayback.yrc) this.parseYrcLyrics(sodaPlayback.yrc, sodaPlayback.tlrc || '')
+                    this.lyricSource = 'qishui'
+                } else if (isKugou) {
                     ;(async () => {
                         try {
                             const hash = song.hash || song.id
@@ -1093,6 +1202,19 @@ export const usePlayerStore = defineStore('player', {
                             //    searchAndFetchQQ 内部用歌名+歌手+时长匹配,命中后直接返回 lrc/yrc/trans
                             const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler
                             const cleanArtist = String(normalized.artist).replace(/未知歌手|Unknown Artist/g, '').trim()
+                            // Fetch by the current QQ ID before cross-catalog name matching.
+                            // The main process also returns existing QRC word timing for this ID.
+                            try {
+                                const exact = await qqLyric(songmid, 0)
+                                if (!isCurrentRequest()) return
+                                if (exact?.code === 0 && (exact.lrc || exact.yrc)) {
+                                    if (exact.yrc) this.parseYrcLyrics(exact.yrc, exact.trans || '')
+                                    if (exact.lrc) this.parseLyrics(exact.lrc, exact.trans || '')
+                                    this.lyricSource = 'qq'
+                                    try { localStorage.setItem(cacheKey, JSON.stringify({ lrc: exact.lrc || '', yrc: exact.yrc || '', tlrc: exact.trans || '', ytlrc: exact.trans || '' })) } catch { /* storage may be full */ }
+                                    return
+                                }
+                            } catch { if (!isCurrentRequest()) return }
                             if (bridge && bridge.getQQLyric) {
                                 try {
                                     const res = await bridge.getQQLyric({
@@ -1100,6 +1222,7 @@ export const usePlayerStore = defineStore('player', {
                                         artist: cleanArtist,
                                         duration: normalized.duration
                                     })
+                                    if (!isCurrentRequest()) return
                                     if (res && res.matched && (res.lrc || res.yrc)) {
                                         if (res.yrc) this.parseYrcLyrics(res.yrc, res.trans || '')
                                         if (res.lrc) this.parseLyrics(res.lrc, res.trans || '')
@@ -1126,9 +1249,11 @@ export const usePlayerStore = defineStore('player', {
                                     keywords: `${normalized.name} ${cleanArtist}`.trim(),
                                     limit: 5
                                 })
+                                if (!isCurrentRequest()) return
                                 const neteaseSong = searchRes?.body?.result?.songs?.[0]
                                 if (neteaseSong && neteaseSong.id) {
                                     const lyricRes = await getNewLyric(neteaseSong.id)
+                                    if (!isCurrentRequest()) return
                                     const lrc = lyricRes?.lrc?.lyric || ''
                                     const yrc = lyricRes?.yrc?.lyric || ''
                                     const tlc = lyricRes?.tlyric?.lyric || ''
@@ -1154,13 +1279,14 @@ export const usePlayerStore = defineStore('player', {
                                 console.warn('[Lyric] 网易云回退失败:', e.message)
                             }
                             // 4. 都失败：显示"纯音乐"(和网易云无歌词时的表现一致,不弹窗)
+                            if (!isCurrentRequest()) return
                             console.log(`--- [Lyric] QQ 歌曲无歌词,显示纯音乐: ${normalized.name}`)
                             this.lyrics = [{ time: 0, text: '纯音乐，请欣赏' }]
                             this.yrcLyrics = null
                             this.lyricSource = ''
                         } catch (err) {
                             console.error('[Lyric] QQ lyric error:', err)
-                            if (!this.lyrics.length) this.lyrics = []
+                            if (isCurrentRequest() && !this.lyrics.length) this.lyrics = []
                         }
                     })()
                 } else if (isLocal && song.path) {
@@ -1436,10 +1562,12 @@ export const usePlayerStore = defineStore('player', {
 
                 this.checkIfLiked(song.id)
                 this.addToRecent(normalized)
+                return isCurrentRequest() ? { requestId, platform, songId: normalized.id } : undefined
 
             } catch (err) {
                 if (!isCurrentRequest()) return
                 this.isPlaying = false
+                useMessageStore().error(err.message || '播放失败，请重试')
                 console.error('playSong error:', err)
             } finally {
                 if (isCurrentRequest()) this.playbackLoading = false
@@ -1448,10 +1576,17 @@ export const usePlayerStore = defineStore('player', {
         async checkIfLiked(id) {
             this.isLiked = false
             if (!id) return
-            // QQ 平台：使用本地收藏列表（QQ API 无喜欢接口）
+            if (this.currentSong?.platform === 'qishui') {
+                const { useQishuiUserStore } = await import('./qishui-user')
+                const user = useQishuiUserStore(), song = this.currentSong
+                if (song.platform === 'qishui' && String(song.id) === String(id)) this.isLiked = user.isLoggedIn && (!!song.collected || user.likedIds.includes(String(id)))
+                return
+            }
             if (this.currentSong?.platform === 'qq') {
-                const liked = JSON.parse(localStorage.getItem('qq_liked_songs') || '[]')
-                this.isLiked = liked.some(s => (s.songmid || s.id) === (this.currentSong.songmid || id))
+                const { useQQUserStore } = await import('./qq-user')
+                const user = useQQUserStore(), identity = this.currentSong.songmid || id
+                if (user.isLoggedIn && !user.likedLoaded) { try { await user.fetchLikedSongs() } catch {} }
+                if ((this.currentSong.songmid || this.currentSong.id) === identity) this.isLiked = user.isSongLiked(this.currentSong)
                 return
             }
             // 酷狗平台：通过 likedSongsHashes 判断
@@ -1473,11 +1608,22 @@ export const usePlayerStore = defineStore('player', {
         },
         async toggleLike() {
             if (!this.currentSong.id) return
-            // QQ 平台:线上红心收藏需要前端动态 sign 参数(QQ 音乐反爬限制)
-            // 桌面端无法实现 sign 计算,红心状态仅显示线上"我喜欢"歌单的同步结果
-            // 点击红心时提示用户去官方 App 操作,不修改本地状态
+            if (this.currentSong.platform === 'qishui') {
+                const { useQishuiUserStore } = await import('./qishui-user')
+                const song = this.currentSong
+                try {
+                    const liked = await useQishuiUserStore().toggleLike(song, this.isLiked)
+                    if (this.currentSong.id === song.id && this.currentSong.platform === 'qishui') { this.isLiked = liked; this.currentSong.collected = liked }
+                    useMessageStore().success(liked ? '已加入汽水收藏' : '已取消汽水收藏')
+                } catch (e) { useMessageStore().error(e.message) }
+                return
+            }
             if (this.currentSong.platform === 'qq') {
-                useMessageStore().info('QQ 音乐红心请前往 QQ 音乐官方 App 操作', 3000)
+                const { useQQUserStore } = await import('./qq-user')
+                const song = this.currentSong
+                const result = await useQQUserStore().toggleLikeSong(song)
+                if (result.success && this.currentSong.id === song.id) this.isLiked = result.liked
+                else if (!result.success) useMessageStore().error(result.message)
                 return
             }
             // 酷狗平台：通过"我喜欢"歌单操作
@@ -1665,7 +1811,7 @@ export const usePlayerStore = defineStore('player', {
                 this._preloadAudio = null
             }
             const nextSong = this.playlist[nextIndex]
-            if (!nextSong || !nextSong.id) return
+            if (!nextSong || !nextSong.id || nextSong.platform === 'qishui') return
             const isLocal = String(nextSong.id).startsWith('local-')
             if (isLocal) return // 本地歌曲不预加载（路径协议已注册，加载快）
             const isQQ = nextSong.platform === 'qq' || !!nextSong.songmid
@@ -1696,6 +1842,13 @@ export const usePlayerStore = defineStore('player', {
                     }
                 }).catch(e => console.error('[Preload] QQ song error:', e))
             } else if (isKugou) {
+                if(kugouNativeBridge()?.invoke) {
+                    const preference=localStorage.getItem('kugou_music_quality')||'128'
+                    resolveKugouPlayback(q=>kugouDirect('/song/url',{hash:nextSong.hash||nextSong.id,quality:q,album_id:nextSong.album_id||'',album_audio_id:nextSong.album_audio_id||''}),KUGOU_QUALITY_FALLBACK[preference]||['128'],()=>this._preloadAudio===preload).then(result=>{
+                        if(this._preloadAudio===preload&&result?.data?.url){preload.src=result.data.url;preload.load()}
+                    }).catch(()=>{})
+                    return
+                }
                 // 酷狗歌曲预加载：旧版 /song/url 优先（新版有加密无法解码）
                 import('../api/kugou').then(({ kugouSongUrl }) => {
                     const hash = nextSong.hash || nextSong.id
@@ -2374,6 +2527,7 @@ export const usePlayerStore = defineStore('player', {
             }
         },
         addToRecent(song) {
+            if (song.platform === 'qishui') { const { url, ...metadata } = song; song = metadata }
             const index = this.recentSongs.findIndex(s => s.id === song.id)
             if (index !== -1) {
                 this.recentSongs.splice(index, 1)
@@ -2416,57 +2570,27 @@ export const usePlayerStore = defineStore('player', {
             this.localSongs = list
             localStorage.setItem('local_songs', JSON.stringify(this.localSongs))
         },
-        setQuality(q) {
+        async setQuality(q) {
+            const platform = getCurrentPlatform()
+            const labels = platform === 'qishui' ? QISHUI_QUALITY_LABELS : platform === 'qq' ? QQ_QUALITY_LABELS : platform === 'kugou' ? KUGOU_QUALITY_LABELS : NETEASE_QUALITY_LABELS
+            if (!(q in labels)) return
+            const key = platform === 'qishui' ? 'qishui_music_quality' : platform === 'qq' ? 'qq_music_quality' : platform === 'kugou' ? 'kugou_music_quality' : 'music_quality'
             this.quality = q
-            // 三平台音质独立存储，避免互相覆盖
-            const key = isQQPlatform() ? 'qq_music_quality'
-                : isKugouPlatform() ? 'kugou_music_quality'
-                : 'music_quality'
             localStorage.setItem(key, q)
-            // QQ 平台：4 种真实音质（128/320/m4a/flac），无沉浸声型
-            if (this.currentSong?.platform === 'qq') {
-                if (this.currentSong.id && this.isPlaying) {
-                    const currentTime = this.currentTime
-                    const songName = this.currentSong.name
-                    this.playSong(this.currentSong, [], { suppressQualityPrompt: true }).then(() => {
-                        this.seek(currentTime)
-                        useMessageStore().success(`${songName} 已切换至 ${qualityLabel(q)} 音质`)
-                    }).catch(() => {
-                        useMessageStore().error('切换音质失败，请稍后重试')
-                    })
-                } else {
-                    useMessageStore().success(`已设置默认音质为 ${qualityLabel(q)}`)
-                }
+            const song = this.currentSong
+            const source = song?.platform || (song?.songmid ? 'qq' : song?.hash ? 'kugou' : 'netease')
+            if (!song?.id || source !== platform || /^(local|cloud)-/.test(String(song.id))) {
+                useMessageStore().success(`默认音质：${qualityLabel(q, platform)}`)
                 return
             }
-            // 酷狗概念版：7 档真实音质（128/320/flac/high/viper_atmos/viper_clear/super）
-            if (this.currentSong?.platform === 'kugou') {
-                if (this.currentSong.id && this.isPlaying) {
-                    const currentTime = this.currentTime
-                    const songName = this.currentSong.name
-                    this.playSong(this.currentSong, [], { suppressQualityPrompt: true }).then(() => {
-                        this.seek(currentTime)
-                        useMessageStore().success(`${songName} 已切换至 ${qualityLabel(q)} 音质`)
-                    }).catch(() => {
-                        useMessageStore().error('切换音质失败，请稍后重试')
-                    })
-                } else {
-                    useMessageStore().success(`已设置默认音质为 ${qualityLabel(q)}`)
-                }
-                return
-            }
-            if (this.currentSong && this.currentSong.id && !String(this.currentSong.id).startsWith('local-') && this.isPlaying) {
-                const currentTime = this.currentTime
-                const songName = this.currentSong.name
-                this.playSong(this.currentSong, [], { suppressQualityPrompt: true }).then(() => {
-                    this.seek(currentTime)
-                    useMessageStore().success(`${songName} 已切换至 ${qualityLabel(q)} 音质`)
-                }).catch(() => {
-                    useMessageStore().error(`切换 ${qualityLabel(q)} 音质失败，请稍后重试`)
-                })
-            } else {
-                useMessageStore().success(`已设置默认音质为 ${qualityLabel(q)}`)
-            }
+            const position = this.currentTime, paused = !this.isPlaying
+            const result = await this.playSong(song, [], { suppressQualityPrompt: true, forceResolve: true, startPaused: paused, startPosition: position })
+            if (!result || result.requestId !== this._playRequestId || this.currentSong.id !== song.id) return
+            const actual = this.currentSong.streamQuality
+            const message = `${paused ? '已加载' : '正在播放'}：${qualityLabel(actual, platform)}`
+            if (actual === q || q === 'auto') useMessageStore().success(message)
+            else useMessageStore().info(`所选音质未获授权或暂无资源，${message}`)
+            return result
         },
         setPlaybackRate(rate) {
             this.playbackRate = rate
@@ -2591,10 +2715,12 @@ export const usePlayerStore = defineStore('player', {
         },
         setFont(font) {
             this.desktopLyricFont = font
+            localStorage.setItem('desktop_lyric_font', font)
             this.updateDesktopLyricsState()
         },
         setColor(color) {
             this.desktopLyricColor = color
+            localStorage.setItem('desktop_lyric_color', color)
             this.updateDesktopLyricsState()
         },
         setDesktopLyricMode(mode) {
@@ -2777,9 +2903,9 @@ export const usePlayerStore = defineStore('player', {
             const cookie = qqUserStore.cookie || ''
             // 本地收藏歌曲已有 url 时直接复用
             let url = song.url
+            let lastError = ''
             if (!url) {
                 const tryQualities = QQ_QUALITY_FALLBACK[this.quality] || ['128', '320']
-                let lastError = ''
                 for (const q of tryQualities) {
                     try {
                         const res = await qqDownload(songmid, q, cookie)
@@ -2831,7 +2957,7 @@ export const usePlayerStore = defineStore('player', {
             }
         },
 
-        // 酷狗下载：默认走新版 /song/url/new 拿高品质 URL，失败回退旧版逐档请求
+        // 酷狗下载：原生链路按平台偏好请求并核对实际授权音质，旧环境保留兼容流程
         // 然后调用主进程 download-song 落盘（与 QQ/网易云使用同一通道）
         async downloadKugouSong(song) {
             if (!song || !(song.hash || song.id)) {
@@ -2841,6 +2967,22 @@ export const usePlayerStore = defineStore('player', {
             const hash = song.hash || song.id
             const album_audio_id = song.album_audio_id || ''
             const album_id = song.album_id || ''
+
+            if (kugouNativeBridge()?.invoke) {
+                try {
+                    const preference=localStorage.getItem('kugou_music_quality')||'128'
+                    const result=await resolveKugouPlayback(q=>kugouDirect('/song/url',{hash,quality:q,album_id,album_audio_id}),KUGOU_QUALITY_FALLBACK[preference]||['128'])
+                    if(result.data.is_trial)throw Error('当前账号仅取得试听授权，请在酷狗官方客户端确认下载权限')
+                    useMessageStore().info(`正在下载酷狗音乐（${qualityLabel(result.data.quality,'kugou')}）…`)
+                    const response=await kugouNativeBridge().invoke('download-song',{url:result.data.url,name:song.name||'未知歌曲',artist:song.artist||song.ar?.map(a=>a.name).join('/')||'',picUrl:song.picUrl||song.al?.picUrl||''})
+                    if(response?.success)useMessageStore().success('酷狗音乐下载并保存成功！')
+                    else if(!response?.canceled)useMessageStore().error(response?.error||'下载失败，请重试')
+                    return response||{success:false}
+                } catch(error) {
+                    useMessageStore().error(`下载失败：${error.message}`)
+                    return {success:false,error:error.message}
+                }
+            }
 
             // 0. 优先复用当前播放 URL（避免重复请求被限流/URL 过期）
             // 播放时获取的 URL 有时效性，下载同一首歌时直接复用

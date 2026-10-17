@@ -12,6 +12,7 @@ export const usePlatformStore = defineStore('platform', {
     getters: {
         isNetease: (state) => state.current === 'netease',
         isQQ: (state) => state.current === 'qq',
+        isQishui: (state) => state.current === 'qishui',
         isKugou: (state) => state.current === 'kugou',
         currentPlatform: (state) => PLATFORMS[state.current] || PLATFORMS.netease,
         themeColor: (state) => (PLATFORMS[state.current] || PLATFORMS.netease).themeColor

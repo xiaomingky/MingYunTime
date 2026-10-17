@@ -4,7 +4,7 @@
 // - 多任务并行展示，可取消
 import { ref, onMounted, onUnmounted } from 'vue'
 import { Download, X, CheckCircle2, AlertCircle, Loader2 } from 'lucide-vue-next'
-import { onVideoDownloadProgress, onVideoDownloadStarted, onVideoDownloadDone, onVideoDownloadError, cancelVideoDownload } from '../api'
+import { onVideoDownloadProgress, onVideoDownloadStarted, onVideoDownloadDone, onVideoDownloadError, cancelVideoDownload, downloadCancel } from '../api'
 import { useMessageStore } from '../store/message'
 
 const messageStore = useMessageStore()
@@ -46,7 +46,8 @@ const removeTask = (id) => {
 
 const onCancel = async (id) => {
     try {
-        await cancelVideoDownload(id)
+        if (id.startsWith('dl_')) await downloadCancel(id)
+        else await cancelVideoDownload(id)
     } catch (e) {}
     delete tasks.value[id]
 }
@@ -74,11 +75,13 @@ onMounted(() => {
         if (t) {
             t.status = 'done'
             t.percent = 100
+            t.coverError = data.coverError || ''
             if (data.speed) t.speed = data.speed
         }
         // 用事件中的 name 兜底（防止快速下载时 task 还没建立）
         const name = t?.name || data.name || ''
-        messageStore.success(`下载完成：${name}`, 3500)
+        if (data.coverError) messageStore.warning(`下载完成：${name}；${data.coverError}`, 5000)
+        else messageStore.success(`下载完成：${name}`, 3500)
         // 5 秒后自动移除
         setTimeout(() => removeTask(data.downloadId), 5000)
     })
@@ -123,6 +126,7 @@ onUnmounted(() => {
                     <div class="vdl-item-meta">
                         <span v-if="t.status === 'done'" class="meta-done">
                             <CheckCircle2 :size="11" /> 已完成
+                            <span v-if="t.coverError" :title="t.coverError"> · 封面未保存</span>
                             <span v-if="t.speed" style="margin-left: 4px; color: #888;">{{ formatSpeed(t.speed) }}</span>
                         </span>
                         <span v-else-if="t.status === 'error'" class="meta-error">

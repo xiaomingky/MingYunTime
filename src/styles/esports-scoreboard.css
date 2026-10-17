@@ -1,0 +1,53 @@
+.es-banner-center .es-score-label {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--es-muted);
+    letter-spacing: .04em;
+}
+.es-banner-center .es-series-score { font-size: 30px; line-height: 1.15; }
+.es-current-map {
+    display: grid;
+    justify-items: center;
+    gap: 5px;
+    width: 100%;
+    padding: 12px 8px;
+    margin: 3px 0;
+    border: 1px solid var(--es-line);
+    border-radius: 12px;
+    background: var(--bg-main);
+}
+.es-current-map.live { border-color: #329b8260; background: #edf8f3; }
+.es-current-map.live .es-score-label { color: #28735e; }
+.es-banner-center .es-round-score { font-size: 35px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.es-banner-center .es-round-score span { padding: 0 10px; color: var(--es-muted); }
+.es-current-map small { margin: 0; }
+.es-banner-maps { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 4px 0 20px; }
+.es-banner-map {
+    display: grid;
+    justify-items: center;
+    gap: 7px;
+    flex: 0 1 160px;
+    min-width: 0;
+    padding: 11px 15px;
+    background: var(--bg-main);
+    color: var(--text-main);
+    border: 1px solid var(--es-line);
+    border-radius: 9px;
+    cursor: pointer;
+}
+.es-banner-map:hover, .es-banner-map:focus-visible, .es-banner-map.selected { border-color: var(--es-accent); outline-offset: 3px; }
+.es-banner-map.live { border-color: #329b8280; background: #edf8f3; }
+.es-banner-map-title { font-size: 11px; overflow-wrap: anywhere; }
+.es-banner-map b { font-size: 20px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.es-banner-map b span { margin: 0 10px; color: var(--es-muted); font-weight: 400; }
+.es-banner-map small { font-size: 10px; color: var(--es-muted); }
+.es-banner-map.live small { color: #28735e; }
+@media(max-width:650px) {
+    .es-banner-center .es-series-score { font-size: 25px; }
+    .es-banner-center .es-score-label { font-size: 9px; letter-spacing: 0; }
+    .es-current-map { padding: 9px 3px; border-radius: 8px; }
+    .es-banner-center .es-round-score { font-size: 28px; }
+    .es-banner-center .es-round-score span { padding: 0 5px; }
+    .es-banner-center .es-map-waiting, .es-current-map small { font-size: 9px; }
+    .es-banner-map { flex-basis: 125px; padding: 9px 8px; }
+}

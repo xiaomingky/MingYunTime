@@ -59,17 +59,21 @@ const dropdownStyle = ref({})
 const dropdownRef = ref(null)
 // 展开方向（空间不足时向上弹），用于方向感知的展开动画
 const dropUp = ref(false)
+const liquid = ref(false)
 const highlightedIndex = ref(0)
 
 // 打开时计算浮层位置（基于触发器在视口中的位置）
 const updateDropdownPosition = () => {
     if (!rootRef.value) return
     const rect = rootRef.value.getBoundingClientRect()
+    const panel = rootRef.value.closest('.detail-liquid-panel')
+    liquid.value = !!panel
     const spaceBelow = window.innerHeight - rect.bottom
     // 向下展开空间不足且上方空间更大时，向上展开
     const showAbove = spaceBelow < 240 && rect.top > spaceBelow
     dropUp.value = showAbove
     dropdownStyle.value = {
+        ...(panel ? { '--detail-glass-blur': getComputedStyle(panel).getPropertyValue('--detail-glass-blur') } : {}),
         left: rect.left + 'px',
         minWidth: rect.width + 'px',
         [showAbove ? 'bottom' : 'top']: showAbove
@@ -209,7 +213,7 @@ onUnmounted(() => {
         <Teleport to="body">
             <!-- 常驻浮层容器：v-show 显隐，打开时同步定位不卡。
                  选项列表仅在 open 时渲染（v-if），关闭即销毁 —— 避免大选项列表永久挂在 DOM 里撑内存 -->
-            <div v-show="open" class="cs-dropdown cs-dropdown-fixed" :class="{ compact, 'drop-up': dropUp, 'apple-select-menu': apple }" :role="apple ? 'listbox' : undefined" :aria-label="apple ? label : undefined" ref="dropdownRef" :style="dropdownStyle" @click.stop>
+            <div v-show="open" class="cs-dropdown cs-dropdown-fixed" :class="{ compact, 'drop-up': dropUp, 'apple-select-menu': apple, 'detail-liquid-menu': liquid }" :role="apple ? 'listbox' : undefined" :aria-label="apple ? label : undefined" ref="dropdownRef" :style="dropdownStyle" @click.stop>
                 <template v-if="open">
                     <template v-for="(opt, gi) in normalizedOptions" :key="opt.group ? 'g' + gi : opt.value">
                         <!-- 分组 -->

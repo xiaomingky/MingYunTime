@@ -1,10 +1,24 @@
 import axios from 'axios'
 import { ensureLocalService } from '../utils/local-service'
+import { isKugouDirectRoute } from './kugou-direct'
+import { kugouVipPlayRequired } from '../utils/song-vip'
+
+export function kugouNativeBridge() {
+    return window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer
+}
+export async function kugouDirect(route, params = {}) {
+    if (['/search','/song/url','/user/vip/detail','/user/playlist','/playlist/track/all/new','/playlist/tracks/add','/playlist/tracks/del'].includes(route)) params = { ...params, token:getKugouCookie(), userid:getKugouUserid(), dfid:getKugouDfid() || '-' }
+    const result = await kugouNativeBridge().invoke('kugou:request', { route, params })
+    if (result?.status === 0 || result?.error_code) {
+        const error=new Error(result?.error_msg || '酷狗请求失败，请重试')
+        error.code=result.error_code;error.requiresVerification=!!result.requiresVerification
+        throw error
+    }
+    return result
+}
 
 // ========== 酷狗概念版 API ==========
-// 优先使用本地部署的 KuGouMusicApi(localhost:3300,platform=lite),彻底杜绝 502
-// 本地服务不可用时回退到在线线路
-// 接口路径严格对照官方文档 https://kugoumusicapi-docs.4everland.app/
+// 已独立实现的路由通过 Electron 直接请求官方；尚未替换的功能保留旧服务。
 // 注意：baseURL 末尾不带 /，避免与接口路径开头的 / 拼成双斜杠导致反代 502
 
 // 本地 API 基地址(Electron 主进程启动的 KuGouMusicApi 子进程)
@@ -112,6 +126,12 @@ async function ensureDfid() {
 // 实测多个接口（/search、/user/playlist、/playlist/track/all 等）在未带认证信息时返回 502 或 error_code:152
 // 统一策略：只要存在 token/dfid，就把 cookie 参数附加到所有请求上
 kugouRequest.interceptors.request.use(async config => {
+    const route = new URL(config.url, 'https://www.kugou.com')
+    const params = { ...Object.fromEntries(route.searchParams), ...(config.params || {}) }
+    if (kugouNativeBridge()?.invoke && isKugouDirectRoute(route.pathname, params)) {
+        config.adapter = async cfg => ({ data: await kugouDirect(route.pathname, params), status:200, statusText:'OK', headers:{}, config:cfg })
+        return config
+    }
     // 每次请求前更新 baseURL(确保本地→在线切换生效)
     if (!config._retried) {
         _localAvailable = await ensureLocalService('kugou')
@@ -185,6 +205,7 @@ export const kugouQrKey = () => kugouRequest.get('/login/qr/key')
 export const kugouQrCreate = (key) =>
     kugouRequest.get('/login/qr/create', { params: { key, qrimg: true } })
 export const kugouQrCheck = (key) => kugouRequest.get('/login/qr/check', { params: { key } })
+export const kugouQrCancel = key => kugouRequest.get('/login/qr/cancel', { params: { key } })
 // 5. 微信扫码登录：create 返回 uuid + 二维码 base64，check 状态码：
 //    408=等待扫描 404=已扫描 403=拒绝 405=成功(返回 wx_code，需调 /login/openplat 换 token) 402=已过期
 export const kugouWxCreate = () => kugouRequest.get('/login/wx/create')
@@ -352,16 +373,16 @@ export const kugouPlaylistDel = (listid) =>
     kugouRequest.get('/playlist/del', { params: { listid } })
 // 添加歌曲到歌单：data 格式 "歌曲名|hash|专辑id|album_audio_id"，多个用逗号分隔
 export const kugouPlaylistTracksAdd = (listid, data) =>
-    kugouRequest.get('/playlist/tracks/add', { params: { listid, data } })
+    kugouDirect('/playlist/tracks/add', { listid, songs: Array.isArray(data) ? data : [data] })
 // 删除歌曲从歌单：fileids 可多个,用逗号隔开
 export const kugouPlaylistTracksDel = (listid, fileids) =>
-    kugouRequest.get('/playlist/tracks/del', { params: { listid, fileids } })
+    kugouDirect('/playlist/tracks/del', { listid, fileids })
 
 // 喜欢/取消喜欢歌曲（基于"我喜欢"歌单操作）
 // 文档无单独 like 接口，通过添加/删除到"我喜欢"歌单实现
 // data 参数格式："歌曲名|hash|专辑id|album_audio_id"
 export const kugouLikeSong = (likedListId, songName, hash, albumId = '', mixsongid = '') => {
-    const data = [songName, hash, albumId, mixsongid].filter(Boolean).join('|')
+    const data = { name: songName, hash, album_id: albumId, mixsongid }
     return kugouPlaylistTracksAdd(likedListId, data)
 }
 export const kugouUnlikeSong = (likedListId, fileid) =>
@@ -550,7 +571,8 @@ export const normalizeKugouSong = (song) => {
     if (!song) return null
     // 幂等保护
     if (song.platform === 'kugou' && song.hash && song.name && Array.isArray(song.singer)) {
-        return song
+        const isVip = kugouVipPlayRequired(song)
+        return { ...song, isVip, vipPlayRequired: isVip, fee: isVip ? 1 : 0 }
     }
     // 字段兼容：搜索响应是 PascalCase，其他接口是小写/snake_case
     // 搜索字段：SongName/SingerName/FileHash/AlbumID/AlbumName/Image/Duration(秒)/MixSongID/Audioid/MvHash/Privilege/PayType/FileName/Singers[]
@@ -579,8 +601,9 @@ export const normalizeKugouSong = (song) => {
             authors: au.length ? au : song.authors
         }
     }
-    let songName = song.songname || song.SongName || song.name || song.audio_name || song.FileName || song.filename || ''
+    let songName = song.songname || song.SongName || song.name || song.audio_name || song.OriSongName || song.FileName || song.filename || ''
     songName = String(songName || '').trim()
+    if (!song.SongName && song.OriSongName && song.Auxiliary && !songName.includes(song.Auxiliary)) songName += ` ${song.Auxiliary}`
     // 去除文件扩展名（audio_name/FileName 常带 .mp3/.flac/.m4a 后缀）
     songName = songName.replace(/\.(mp3|flac|m4a|ape|ogg|wma|aac)$/i, '')
     // 歌手优先级（兼容搜索 PascalCase 和其他接口）：
@@ -624,41 +647,13 @@ export const normalizeKugouSong = (song) => {
     const hash = song.FileHash || song.hash || song.Hash || song.filehash || song.Filehash || ''
     // mixsongid：文档明确 mixsongid = album_audio_id(同一个东西)
     // 评论接口 /comment/music 用的是 mixsongid(即 album_audio_id),不是 songid!
-    // 优先取 MixSongID/mixsongid,没有则用 album_audio_id/Audioid 兜底
-    const album_audio_id = song.album_audio_id || song.Audioid || ''
+    // MixSongID/mixsongid 与 album_audio_id 同义；Audioid 不能用于此授权字段
+    const album_audio_id = song.album_audio_id || song.MixSongID || song.mixsongid || ''
     const mixsongid = song.MixSongID || song.mixsongid || album_audio_id || ''
-    // VIP 判断（兼容搜索 PascalCase 和其他接口 snake_case）
-    // 酷狗 Privilege 值：0=免费 1=VIP 4=付费 5=VIP+付费 8=仅试听 10=数字专辑/仅试听+下载
-    // 搜索响应：顶层无 Privilege，VIP 信息在 AlbumPrivilege 和嵌套 HQ/SQ/Res.Privilege 里
-    // 歌单/歌手响应：顶层有 privilege（小写）
-    // PayType/pay_type: 数字 0=免费 1=VIP / 字符串 "vip"
-    // trans_param: { pay_type, play_type, is_vip }（部分接口有）
-    const _toNum = v => Number(v ?? 0)
-    // 收集所有可能的 Privilege 值（顶层 + 嵌套 HQ/SQ/Res + media_privilege）
-    // ⚠️ /playlist/track/all/new(新版,我喜欢/我创建的歌单) 返回的是 media_privilege,
-    //    没有顶层 privilege!必须兼容 media_privilege/MediaPrivilege
-    const _privValues = [
-        _toNum(song.Privilege), _toNum(song.privilege),
-        _toNum(song.AlbumPrivilege), _toNum(song.album_privilege),
-        _toNum(song.HQ?.Privilege), _toNum(song.SQ?.Privilege), _toNum(song.Res?.Privilege),
-        _toNum(song.hq?.privilege), _toNum(song.sq?.privilege), _toNum(song.res?.privilege),
-        _toNum(song.media_privilege), _toNum(song.MediaPrivilege)
-    ]
-    // 任一 Privilege 值 > 0（非免费），判定为 VIP（2=仅下载权限也视为 VIP）
-    const _hasVipPriv = _privValues.some(p => p > 0)
-    const _payTypeNum = _toNum(song.PayType ?? song.pay_type)
-    const _payTypeStr = String(song.PayType ?? song.pay_type ?? '').toLowerCase()
-    const _transParam = song.trans_param || {}
-    const _transPayType = _toNum(_transParam.pay_type)
-    const _transPlayType = _toNum(_transParam.play_type)
-    const isVip = !!(
-        song.is_vip || song.IsVip || _transParam.is_vip ||
-        _hasVipPriv ||
-        _payTypeNum === 1 || _payTypeStr.includes('vip') ||
-        _transPayType === 1 || _transPayType === 4 || _transPayType === 8 ||
-        _transPlayType === 1 || _transPlayType === 4 || _transPlayType === 8 ||
-        false
-    )
+    // Only standard playback requirements label a song VIP. HQ/SQ/download
+    // privileges cannot turn a free standard recording into a VIP recording.
+    // APK MusicPkgFeeUtilsV3.n uses musicpack_advance; search returns TransParam.
+    const isVip = kugouVipPlayRequired(song)
     return {
         id: hash,
         hash,
@@ -669,7 +664,7 @@ export const normalizeKugouSong = (song) => {
         // fileid: 从歌单删除歌曲时需要的字段(酷狗文档 /playlist/tracks/del 需要 fileids)
         // ⚠️ delete_songs 接口会 Number(fileid)，必须是数字！hash 是字符串会导致 NaN
         // 优先取数字字段: album_audio_id / songid / Audioid，最后才回退到 hash
-        fileid: song.fileid || song.file_id || song.FileID || song.album_audio_id || song.Audioid || song.songid || song.song_id || song.SongID || hash,
+        fileid: song.fileid || song.file_id || song.FileID || '',
         songname: songName,
         name: songName,
         singer: Array.isArray(singers) ? singers : [],
@@ -679,8 +674,9 @@ export const normalizeKugouSong = (song) => {
         album: song.albuminfo?.name || song.album_name || song.AlbumName || '',
         duration,
         // fee: 模板用 s.fee === 1 判断 VIP，此处统一设置(isVip 时 fee=1)
-        fee: isVip ? 1 : (song.fee || song.feetype || 0),
+        fee: isVip ? 1 : 0,
         isVip,
+        vipPlayRequired: isVip,
         mvHash: song.mvhash || song.MvHash || song.video_hash || '',
         picUrl,
         platform: 'kugou'
@@ -700,11 +696,13 @@ export const toKugouTrack = (song) => {
         album_id: s.album_id,
         album_audio_id: s.album_audio_id,
         mixsongid: s.mixsongid,
+        fileid: s.fileid,
         album: s.albumName,
         al: { name: s.albumName, picUrl: s.picUrl },
         duration: s.duration,
         fee: s.fee,
         isVip: s.isVip,
+        vipPlayRequired: s.vipPlayRequired,
         mvHash: s.mvHash,
         picUrl: s.picUrl,
         platform: 'kugou'
@@ -730,7 +728,7 @@ export const normalizeKugouPlaylist = (p, currentUserId = '') => {
     // 推荐歌单没有 listid，自动回退到 global_collection_id
     // 注意:搜索结果返回 gid 字段(即 global_collection_id),/playlist/track/all 需用它而非 specialid
     const gcid = p.global_collection_id || p.gid || ''
-    const id = p.listid || gcid || p.specialid || p.id || ''
+    const id = p._officialPublic && p.specialid ? `special:${p.specialid}` : p.listid || gcid || p.specialid || p.id || ''
     // 区分创建/收藏：list_create_userid === 当前用户id 则为创建，否则为收藏
     // type 字段不可靠（实测自己创建的 type 也是 0）
     const creatorId = p.list_create_userid || p.create_userid || p.suid || ''
@@ -772,7 +770,7 @@ export const normalizeKugouAlbum = (a) => {
         name: a.albumname || a.album_name || a.name || a.albumname_min || '',
         picUrl: cover,
         artist: a.singername || a.author_name || (a.authors?.[0]?.author_name) || a.singer || a.artist || '',
-        publishTime: a.publishdate || a.publish_date || a.publishtime || '',
+        publishTime: a.publishdate || a.publish_date || a.publishtime || a.publish_time || '',
         intro: a.intro || a.description || ''
     }
 }
@@ -873,14 +871,14 @@ export const parseKugouPlaylistFull = (res) => {
     if (cover && cover.indexOf('{size}') >= 0) cover = cover.replace('{size}', '480')
     if (cover && cover.startsWith('//')) cover = 'https:' + cover
     const detail = {
-        id: info.global_collection_id || info.parent_global_collection_id || info.specialid || data.global_collection_id || '',
-        global_collection_id: info.global_collection_id || info.parent_global_collection_id || data.global_collection_id || '',
+        id: info._officialPublic ? `special:${info.specialid}` : info.global_collection_id || info.parent_global_collection_id || info.specialid || data.global_collection_id || '',
+        global_collection_id: info.global_collection_id || info.gid || info.parent_global_collection_id || data.global_collection_id || '',
         specialid: info.specialid || '',
         listid: info.listid || data.listid || '',
         name: info.name || info.specialname || info.special_name || data.name || '未知歌单',
         coverImgUrl: cover,
         creator: info.list_create_username || info.nickname || info.create_username || data.list_create_username || '',
-        creatorId: info.list_create_userid || info.create_userid || data.list_create_userid || '',
+        creatorId: info.list_create_userid || info.create_userid || info.suid || data.list_create_userid || '',
         description: info.intro || data.intro || '',
         playCount: info.heat || info.collect_total || info.play_count || data.heat || 0,
         songCount: data.count || info.count || info.song_count || data.total || 0,
@@ -892,7 +890,7 @@ export const parseKugouPlaylistFull = (res) => {
     const rawList = Array.isArray(songList) ? songList : []
     // 排序：酷狗接口返回的是按添加时间正序(最早添加的在前)
     // 用户要求最新添加的在前，所以反序
-    const finalList = rawList.slice().reverse()
+    const finalList = info._officialPublic ? rawList : rawList.slice().reverse()
     const songs = finalList.map(normalizeKugouSong).filter(Boolean)
     return { detail, songs }
 }

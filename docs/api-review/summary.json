@@ -1,0 +1,357 @@
+{
+  "generatedFrom": "APK extraction + existing conservative platform coverage; no live requests",
+  "totals": [
+    {
+      "platform": "qishui",
+      "name": "汽水音乐",
+      "total": 2323,
+      "declared": 293,
+      "retained": 2129,
+      "excluded": 194,
+      "mapped": 39,
+      "loginCandidates": 311,
+      "categories": [
+        {
+          "category": "专辑",
+          "total": 7,
+          "retained": 7
+        },
+        {
+          "category": "云盘与上传",
+          "total": 33,
+          "retained": 32
+        },
+        {
+          "category": "商业与支付",
+          "total": 70,
+          "retained": 62
+        },
+        {
+          "category": "推荐与电台",
+          "total": 50,
+          "retained": 47
+        },
+        {
+          "category": "搜索",
+          "total": 19,
+          "retained": 18
+        },
+        {
+          "category": "播放与音源",
+          "total": 59,
+          "retained": 52
+        },
+        {
+          "category": "榜单",
+          "total": 7,
+          "retained": 7
+        },
+        {
+          "category": "歌单与收藏",
+          "total": 118,
+          "retained": 117
+        },
+        {
+          "category": "歌手",
+          "total": 22,
+          "retained": 22
+        },
+        {
+          "category": "歌词",
+          "total": 9,
+          "retained": 9
+        },
+        {
+          "category": "登录与会话",
+          "total": 313,
+          "retained": 309
+        },
+        {
+          "category": "视频与 MV",
+          "total": 64,
+          "retained": 56
+        },
+        {
+          "category": "评论与互动",
+          "total": 24,
+          "retained": 24
+        },
+        {
+          "category": "账号与资料",
+          "total": 258,
+          "retained": 249
+        },
+        {
+          "category": "配置、统计与其他",
+          "total": 1270,
+          "retained": 1118
+        }
+      ]
+    },
+    {
+      "platform": "qq",
+      "name": "QQ 音乐",
+      "total": 3140,
+      "declared": 448,
+      "retained": 2814,
+      "excluded": 326,
+      "mapped": 6,
+      "loginCandidates": 86,
+      "categories": [
+        {
+          "category": "专辑",
+          "total": 28,
+          "retained": 27
+        },
+        {
+          "category": "云盘与上传",
+          "total": 312,
+          "retained": 110
+        },
+        {
+          "category": "商业与支付",
+          "total": 24,
+          "retained": 23
+        },
+        {
+          "category": "推荐与电台",
+          "total": 97,
+          "retained": 94
+        },
+        {
+          "category": "搜索",
+          "total": 23,
+          "retained": 23
+        },
+        {
+          "category": "播放与音源",
+          "total": 251,
+          "retained": 242
+        },
+        {
+          "category": "榜单",
+          "total": 38,
+          "retained": 35
+        },
+        {
+          "category": "歌单与收藏",
+          "total": 117,
+          "retained": 117
+        },
+        {
+          "category": "歌手",
+          "total": 88,
+          "retained": 86
+        },
+        {
+          "category": "歌词",
+          "total": 28,
+          "retained": 28
+        },
+        {
+          "category": "登录与会话",
+          "total": 84,
+          "retained": 84
+        },
+        {
+          "category": "视频与 MV",
+          "total": 100,
+          "retained": 99
+        },
+        {
+          "category": "评论与互动",
+          "total": 27,
+          "retained": 26
+        },
+        {
+          "category": "账号与资料",
+          "total": 260,
+          "retained": 237
+        },
+        {
+          "category": "配置、统计与其他",
+          "total": 1663,
+          "retained": 1583
+        }
+      ]
+    },
+    {
+      "platform": "netease",
+      "name": "网易云音乐",
+      "total": 3084,
+      "declared": 0,
+      "retained": 2540,
+      "excluded": 544,
+      "mapped": 4,
+      "loginCandidates": 137,
+      "categories": [
+        {
+          "category": "专辑",
+          "total": 213,
+          "retained": 29
+        },
+        {
+          "category": "云盘与上传",
+          "total": 54,
+          "retained": 54
+        },
+        {
+          "category": "商业与支付",
+          "total": 35,
+          "retained": 35
+        },
+        {
+          "category": "推荐与电台",
+          "total": 85,
+          "retained": 85
+        },
+        {
+          "category": "搜索",
+          "total": 57,
+          "retained": 57
+        },
+        {
+          "category": "播放与音源",
+          "total": 141,
+          "retained": 141
+        },
+        {
+          "category": "榜单",
+          "total": 18,
+          "retained": 18
+        },
+        {
+          "category": "歌单与收藏",
+          "total": 150,
+          "retained": 150
+        },
+        {
+          "category": "歌手",
+          "total": 93,
+          "retained": 93
+        },
+        {
+          "category": "歌词",
+          "total": 19,
+          "retained": 19
+        },
+        {
+          "category": "登录与会话",
+          "total": 135,
+          "retained": 135
+        },
+        {
+          "category": "视频与 MV",
+          "total": 69,
+          "retained": 69
+        },
+        {
+          "category": "评论与互动",
+          "total": 53,
+          "retained": 53
+        },
+        {
+          "category": "账号与资料",
+          "total": 229,
+          "retained": 228
+        },
+        {
+          "category": "配置、统计与其他",
+          "total": 1733,
+          "retained": 1374
+        }
+      ]
+    },
+    {
+      "platform": "kugou",
+      "name": "酷狗概念版",
+      "total": 2710,
+      "declared": 34,
+      "retained": 2388,
+      "excluded": 322,
+      "mapped": 4,
+      "loginCandidates": 83,
+      "categories": [
+        {
+          "category": "专辑",
+          "total": 15,
+          "retained": 15
+        },
+        {
+          "category": "云盘与上传",
+          "total": 72,
+          "retained": 69
+        },
+        {
+          "category": "商业与支付",
+          "total": 27,
+          "retained": 26
+        },
+        {
+          "category": "推荐与电台",
+          "total": 76,
+          "retained": 75
+        },
+        {
+          "category": "搜索",
+          "total": 30,
+          "retained": 30
+        },
+        {
+          "category": "播放与音源",
+          "total": 237,
+          "retained": 234
+        },
+        {
+          "category": "榜单",
+          "total": 29,
+          "retained": 29
+        },
+        {
+          "category": "歌单与收藏",
+          "total": 27,
+          "retained": 26
+        },
+        {
+          "category": "歌手",
+          "total": 55,
+          "retained": 55
+        },
+        {
+          "category": "歌词",
+          "total": 13,
+          "retained": 13
+        },
+        {
+          "category": "登录与会话",
+          "total": 82,
+          "retained": 81
+        },
+        {
+          "category": "视频与 MV",
+          "total": 94,
+          "retained": 90
+        },
+        {
+          "category": "评论与互动",
+          "total": 30,
+          "retained": 28
+        },
+        {
+          "category": "账号与资料",
+          "total": 220,
+          "retained": 215
+        },
+        {
+          "category": "配置、统计与其他",
+          "total": 1703,
+          "retained": 1402
+        }
+      ]
+    }
+  ],
+  "totalRecords": 11257,
+  "retainedRecords": 9871,
+  "excludedRecords": 1386,
+  "verifiedSourceFiles": 5799
+}

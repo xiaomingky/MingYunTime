@@ -23,6 +23,8 @@ const categoryFilter = ref('all') // all | music | movie | anime | mv | video
 const expandedId = ref(null) // 展开详情的记录 id
 const customUrl = ref('')   // 自定义下载链接
 const customName = ref('')  // 自定义文件名
+const namePlaceholder = ref('文件名（可选，自动识别）')
+const starting = ref(false)
 
 // 分类配置
 const categoryConfig = {
@@ -209,34 +211,49 @@ const toggleExpand = (id) => {
 // ===== 自定义下载请求头设置（仅作用于自定义链接下载；持久化） =====
 const showDlSettings = ref(false)
 const dlHeaders = ref(JSON.parse(localStorage.getItem('download_headers') || '{"ua":"","referer":"","extra":""}'))
-const dlThreads = ref(Number(localStorage.getItem('download_threads')) || 32)
+const dlThreads = ref(Math.max(32, Math.min(128, Number(localStorage.getItem('download_threads')) || 32)))
 watch(dlThreads, (v) => localStorage.setItem('download_threads', String(v)))
+
+// Provider downloads intentionally do not persist signed CDN URLs: those URLs
+// expire and exposing them in history makes the download entry unusable after
+// restart. Use a stable reference when the live URL is no longer available.
+const displayDownloadLink = (task) => {
+    if (task?.url || task?.urlMasked) return task.url || task.urlMasked
+    if (task?.provider === 'qishui' && task?.source?.id) {
+        return `qishui://track/${encodeURIComponent(String(task.source.id))}`
+    }
+    return '-'
+}
 watch(dlHeaders, (v) => localStorage.setItem('download_headers', JSON.stringify(v)), { deep: true })
 async function probeNameNow() {
     const url = customUrl.value.trim()
     if (!url || !/^https?:\/\//i.test(url)) return messageStore.warning('请先粘贴下载链接')
+    clearTimeout(probeTimer)
     nameManuallyEdited = false
+    const seq = ++probeSeq
     customName.value = ''
-    customName.placeholder = '识别文件名中...'
+    namePlaceholder.value = '识别文件名中…'
     try {
-        const res = await downloadProbeName(url)
+        const res = await downloadProbeName(url, buildCustomHeaders())
+        if (seq !== probeSeq || nameManuallyEdited) return
         if (res?.success && res.name) customName.value = res.name
-        else messageStore.warning('未能识别文件名，可手动填写')
+        else messageStore.warning(res?.error || '未能识别文件名，可手动填写')
+        namePlaceholder.value = '文件名（可选，自动识别）'
     } catch (e) {
+        if (seq !== probeSeq || nameManuallyEdited) return
+        namePlaceholder.value = '未能识别文件名，可手动填写'
         messageStore.error('识别失败：' + (e.message || '未知错误'))
     }
 }
 
 const THREAD_OPTIONS = [
-    { value: 8, label: '8 线程（最稳）' },
-    { value: 16, label: '16 线程' },
-    { value: 32, label: '32 线程' },
-    { value: 64, label: '64 线程' },
-    { value: 128, label: '128 线程（最快）' }
+    { value: 32, label: '32 线程（不限速，推荐）' },
+    { value: 64, label: '64 线程（不限速）' },
+    { value: 128, label: '128 线程（不限速）' }
 ]
 function setDlThreads(v) {
-    dlThreads.value = Number(v)
-    localStorage.setItem('download_threads', String(v))
+    dlThreads.value = Math.max(32, Math.min(128, Number(v) || 32))
+    localStorage.setItem('download_threads', String(dlThreads.value))
 }
 
 function resetDlHeaders() {
@@ -266,34 +283,32 @@ const startCustomDownload = async () => {
         messageStore.error('请输入有效的 http/https 链接', 3000)
         return
     }
-    let name = customName.value.trim() || ''
-    if (!nameManuallyEdited) {
-        // 未手动改名：以深层探测的实际文件名为准
-        try {
-            const res = await downloadProbeName(url)
-            if (res?.success && res.name) name = res.name
-        } catch (e) {}
-    }
-    name = name || undefined
+    if (starting.value) return
+    starting.value = true
+    const name = customName.value.trim() || undefined
     try {
         const result = await downloadStart({
             url,
             name,
             category: 'video',
             autoName: !nameManuallyEdited,
+            resolveLink: true,
             threads: dlThreads.value,
             headers: buildCustomHeaders()
         })
         if (result?.success) {
             messageStore.success('已添加到下载队列', 2000)
+            ++probeSeq
+            clearTimeout(probeTimer)
             customUrl.value = ''
             customName.value = ''
+            namePlaceholder.value = '文件名（可选，自动识别）'
         } else {
             messageStore.error(result?.error || '下载失败', 3000)
         }
     } catch (e) {
         messageStore.error(e.message || '下载失败', 3000)
-    }
+    } finally { starting.value = false }
 }
 
 // URL 变化时自动填充文件名
@@ -305,21 +320,24 @@ const onCustomUrlInput = () => {
     const url = customUrl.value.trim()
     clearTimeout(probeTimer)
     const seq = ++probeSeq
+    customName.value = ''
+    namePlaceholder.value = '文件名（可选，自动识别）'
     if (!url || !/^https?:\/\//i.test(url)) return
     // 只取深层真实文件名（Content-Disposition / 最终 URL / Content-Type），不用链接表面路径名
     customName.value = ''
-    customName.placeholder = '识别文件名中...'
+    namePlaceholder.value = '识别文件名中…'
     probeTimer = setTimeout(async () => {
         if (seq !== probeSeq || nameManuallyEdited) return
         try {
-            const res = await downloadProbeName(url)
+            const res = await downloadProbeName(url, buildCustomHeaders())
             if (seq === probeSeq && !nameManuallyEdited && res?.success && res.name) {
                 customName.value = res.name
+                namePlaceholder.value = '文件名（可选，自动识别）'
             } else if (seq === probeSeq && !nameManuallyEdited) {
-                customName.placeholder = '未能识别文件名，可手动填写'
+                namePlaceholder.value = '未能识别文件名，可手动填写'
             }
         } catch (e) {
-            customName.placeholder = '未能识别文件名，可手动填写'
+            if (seq === probeSeq && !nameManuallyEdited) namePlaceholder.value = '未能识别文件名，可手动填写'
         }
     }, 600)
 }
@@ -344,12 +362,10 @@ onMounted(() => {
     loadList()
     unsubStarted = onDownloadStarted((data) => {
         if (data?.id) tasks.value[data.id] = { ...tasks.value[data.id], ...data }
-        if (!unsubPaused) {
-        unsubPaused = onDownloadPaused(({ id }) => {
-            const t = tasks.value[id]
-            if (t) { t.status = 'paused'; t.speed = 0 }
-        })
-        }
+    })
+    unsubPaused = onDownloadPaused(({ id }) => {
+        const t = tasks.value[id]
+        if (t) { t.status = 'paused'; t.speed = 0 }
     })
     unsubProgress = onDownloadProgress((data) => {
         const id = data?.id
@@ -357,7 +373,7 @@ onMounted(() => {
         const t = tasks.value[id]
         if (t) {
             Object.assign(t, data)
-            t.status = t.status || 'downloading'
+            if (['pending','paused'].includes(t.status)) t.status = 'downloading'
         }
     })
     unsubDone = onDownloadDone((data) => {
@@ -366,6 +382,7 @@ onMounted(() => {
         const t = tasks.value[id]
         if (t) {
             t.status = 'done'
+            Object.assign(t, data)
             t.percent = 100
             t.path = data.path || t.path
             t.endTime = Date.now()
@@ -377,7 +394,7 @@ onMounted(() => {
         if (!id) return
         const t = tasks.value[id]
         if (t) {
-            t.status = 'error'
+            t.status = data.status || 'error'
             t.error = data.error
             t.endTime = Date.now()
         }
@@ -385,6 +402,8 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+    clearTimeout(probeTimer)
+    ++probeSeq
     unsubPaused?.()
     unsubStarted?.()
     unsubProgress?.()
@@ -443,12 +462,12 @@ onUnmounted(() => {
                 v-model="customName"
                 type="text"
                 class="custom-name-input"
-                placeholder="文件名（可选，自动识别）"
+                :placeholder="namePlaceholder"
                 @input="nameManuallyEdited = customName.trim() ? true : false"
                 @keyup.enter="startCustomDownload"
             />
             <button class="custom-name-btn" title="识别真实文件名" @click="probeNameNow">识别</button>
-            <button class="custom-download-btn" @click="startCustomDownload" :disabled="!customUrl.trim()">
+            <button class="custom-download-btn" @click="startCustomDownload" :disabled="starting || !customUrl.trim()">
                 <Download :size="14" />
                 开始下载
             </button>
@@ -612,8 +631,8 @@ onUnmounted(() => {
                     <div class="collapse-inner">
                         <div class="card-details">
                     <div class="detail-row">
-                        <span class="detail-label">下载链接</span>
-                        <span class="detail-value link" :title="t.urlMasked || t.url">{{ t.urlMasked || t.url || '-' }}</span>
+                        <span class="detail-label">{{ t.provider && !t.url ? '歌曲引用' : '下载链接' }}</span>
+                        <span class="detail-value link" :title="displayDownloadLink(t)">{{ displayDownloadLink(t) }}</span>
                         <Copy v-if="t.url" :size="12" class="clickable copy-btn" title="复制链接" @click="copyText(t.url, '下载链接')" />
                     </div>
                     <div class="detail-row">
@@ -636,6 +655,7 @@ onUnmounted(() => {
                         <span class="detail-label">错误信息</span>
                         <span class="detail-value error">{{ t.error }}</span>
                     </div>
+                    <div class="detail-row" v-if="t.coverPath || t.coverError"><span class="detail-label">歌曲封面</span><span class="detail-value" :class="{ error: t.coverError }" :title="t.coverPath || t.coverError">{{ t.coverPath || t.coverError }}<FolderOpen v-if="t.coverPath" :size="12" class="clickable" @click="openFolder(t.coverPath)" /></span></div>
                         </div>
                     </div>
                 </div>

@@ -1,5 +1,4 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
-import { useUserStore } from '../store/user'
 const Discovery = () => import('../views/Discovery.vue')
 const PlaylistDetail = () => import('../views/PlaylistDetail.vue')
 const Video = () => import('../views/Video.vue')
@@ -48,7 +47,19 @@ const BiliUserSpace = () => import('../views/BiliUserSpace.vue')
 // 智慧教育教材专区（国家中小学智慧教育平台，懒加载）
 const SmartEduTextbook = () => import('../views/SmartEduTextbook.vue')
 
+const QishuiMusic = () => import('../views/qishui/Music.vue')
 const routes = [
+    { path: '/library', name: 'PlaylistLibrary', component: () => import('../views/PlaylistLibrary.vue'), meta: { libraryPlatform: 'netease' } },
+    { path: '/qq/library', name: 'QQPlaylistLibrary', component: () => import('../views/PlaylistLibrary.vue'), meta: { libraryPlatform: 'qq' } },
+    { path: '/kugou/library', name: 'KugouPlaylistLibrary', component: () => import('../views/PlaylistLibrary.vue'), meta: { libraryPlatform: 'kugou' } },
+    { path: '/qishui', name: 'QishuiDiscovery', component: QishuiMusic, meta: { qishuiMode: 'discover' } },
+    { path: '/qishui/search', name: 'QishuiSearch', component: QishuiMusic, meta: { qishuiMode: 'search' } },
+    { path: '/qishui/playlist/:id', name: 'QishuiPlaylist', component: QishuiMusic, meta: { qishuiMode: 'playlist' } },
+    { path: '/qishui/album/:id', name: 'QishuiAlbum', component: QishuiMusic, meta: { qishuiMode: 'album' } },
+    { path: '/qishui/artist/:id', name: 'QishuiArtist', component: QishuiMusic, meta: { qishuiMode: 'artist' } },
+    { path: '/qishui/user/:id', name: 'QishuiUser', component: QishuiMusic, meta: { qishuiMode: 'user' } },
+    { path: '/qishui/recent', name: 'QishuiRecent', component: QishuiMusic, meta: { qishuiMode: 'recent' } },
+    { path: '/qishui/library', name: 'QishuiLibrary', component: QishuiMusic, meta: { qishuiMode: 'library' } },
     { path: '/entertainment', name: 'Esports', component: () => import('../views/Esports.vue') },
     { path: '/entertainment/:game/match/:matchId', name: 'EsportsMatch', component: () => import('../views/EsportsMatch.vue') },
     { path: '/entertainment/:game/event/:eventId', name: 'EsportsEvent', component: () => import('../views/EsportsEvent.vue') },
@@ -187,6 +198,7 @@ const routes = [
         name: 'QQPlaylistDetail',
         component: QQPlaylistDetail
     },
+    { path: '/qq/rank/:id', name: 'QQRankDetail', component: QQPlaylistDetail, meta: { qqRank: true } },
     {
         path: '/qq/singer/:id',
         name: 'QQSingerDetail',
@@ -261,53 +273,16 @@ const router = createRouter({
     routes
 })
 
-// 账号密码锁路由守护：访问“我喜欢的音乐”或自己创建的歌单时拦截
-let pendingLockTarget = null
-
-export function setPendingLockTarget(path) {
-    pendingLockTarget = path
-}
-
-export function getPendingLockTarget() {
-    const t = pendingLockTarget
-    pendingLockTarget = null
-    return t
-}
-
 router.beforeEach((to, from, next) => {
     // 平台路由守卫:根据当前平台重定向首页（三平台互斥）
     // QQ/酷狗 平台访问 / → 跳转到对应平台首页
     // 网易云平台访问 /qq 或 /kugou → 跳回 /
     // QQ 平台访问 /kugou → 跳 /qq;酷狗平台访问 /qq → 跳 /kugou
     const platform = localStorage.getItem('current_platform') || 'netease'
-    if ((platform === 'qq' || platform === 'kugou') && to.path === '/') {
-        return next(platform === 'qq' ? '/qq' : '/kugou')
-    }
-    if (platform === 'netease' && (to.path === '/qq' || to.path === '/kugou') &&
-        !from.path.startsWith('/qq') && !from.path.startsWith('/kugou')) {
-        return next('/')
-    }
-    if (platform === 'qq' && to.path === '/kugou') {
-        return next('/qq')
-    }
-    if (platform === 'kugou' && to.path === '/qq') {
-        return next('/kugou')
-    }
+    const homes = { netease: '/', qq: '/qq', kugou: '/kugou', qishui: '/qishui' }
+    if (to.path === '/' && homes[platform] && homes[platform] !== '/') return next(homes[platform])
+    if (['/qq', '/kugou', '/qishui'].includes(to.path) && to.path !== homes[platform]) return next(homes[platform] || '/')
 
-    // 账号密码锁路由守护:访问"我喜欢的音乐"或自己创建的歌单时拦截
-    const userStore = useUserStore()
-    if (!userStore.isLoggedIn || !userStore.lockStatus.locked || userStore.lockStatus.unlocked) {
-        return next()
-    }
-    const id = to.params.id
-    if (!id) return next()
-
-    const isOwn = String(id) === String(userStore.likedPlaylistId) ||
-        userStore.playlists.some(p => String(p.id) === String(id))
-    if (isOwn) {
-        setPendingLockTarget(to.fullPath)
-        return next(false)
-    }
     next()
 })
 

@@ -8,6 +8,7 @@ import { usePlatformStore } from '../store/platform'
 import { cloudSearch, animeSearch, movieSearch, biliVideoSearch } from '../api'
 import { qqSearch, normalizeQQSong } from '../api/qq'
 import { kugouSearch, normalizeKugouSong } from '../api/kugou'
+import { qishuiInvoke } from '../api/qishui'
 
 const props = defineProps({
     module: { type: String, required: true }, // music | anime | movie | video
@@ -32,10 +33,12 @@ const hotKeywords = computed(() => historyStore.getHotKeywords(historyModule.val
 const liveResults = ref([])        // 实时搜索结果列表
 const liveLoading = ref(false)     // 加载中状态
 let liveSearchTimer = null
+let liveRevision = 0
 
-async function doLiveSearch(kw) {
+async function doLiveSearch(kw, revision) {
+    let result = []
     if (!kw || !kw.trim()) {
-        liveResults.value = []
+        result = []
         return
     }
     liveLoading.value = true
@@ -43,13 +46,18 @@ async function doLiveSearch(kw) {
         const module = props.module
         if (module === 'music') {
             // 根据当前平台调用相应的搜索 API
-            if (platformStore.isQQ) {
+            if (platformStore.isQishui) {
+                const res = await qishuiInvoke('search', { query: kw, type: 'track' })
+                result = (res.songs || []).slice(0, 6).map(s => ({
+                    id: s.id, name: s.name, sub: s.artist || '', cover: s.picUrl || '', type: 'song', platform: 'qishui'
+                }))
+            } else if (platformStore.isQQ) {
                 // QQ 音乐：catZhida=0 表示搜索歌曲
                 const res = await qqSearch(kw, 6, 1, 0)
                 const data = res?.data || res
                 const list = data?.list || data?.song?.list || data?.songlist?.list || []
                 const songs = (Array.isArray(list) ? list : []).map(normalizeQQSong).filter(Boolean)
-                liveResults.value = songs.slice(0, 6).map(s => ({
+                result = songs.slice(0, 6).map(s => ({
                     id: s.id,
                     name: s.name,
                     sub: s.artist || '',
@@ -61,7 +69,7 @@ async function doLiveSearch(kw) {
                 const res = await kugouSearch(kw, 1, 6, 'song')
                 const list = res?.data?.lists || res?.data?.info || res?.data?.list || []
                 const songs = (Array.isArray(list) ? list : []).map(normalizeKugouSong).filter(Boolean)
-                liveResults.value = songs.slice(0, 6).map(s => ({
+                result = songs.slice(0, 6).map(s => ({
                     id: s.id,
                     name: s.name,
                     sub: s.artist || '',
@@ -72,7 +80,7 @@ async function doLiveSearch(kw) {
                 // 网易云：type=1 单曲
                 const res = await cloudSearch(kw, 1)
                 const songs = res?.result?.songs || res?.songs || []
-                liveResults.value = songs.slice(0, 6).map(s => ({
+                result = songs.slice(0, 6).map(s => ({
                     id: s.id,
                     name: s.name,
                     sub: (s.ar || s.artists || []).map(a => a.name).join(' / '),
@@ -84,7 +92,7 @@ async function doLiveSearch(kw) {
             // type=1004 MV
             const res = await cloudSearch(kw, 1004)
             const mvs = res?.result?.mvs || res?.mvs || []
-            liveResults.value = mvs.slice(0, 6).map(m => ({
+            result = mvs.slice(0, 6).map(m => ({
                 id: m.id,
                 name: m.name,
                 sub: (m.artists || []).map(a => a.name).join(' / '),
@@ -95,7 +103,7 @@ async function doLiveSearch(kw) {
             // 动漫搜索：用默认线路 yhf。返回 { success, data: [...] }
             const res = await animeSearch('yhf', kw)
             const list = Array.isArray(res?.data) ? res.data : (res?.data?.list || res?.list || [])
-            liveResults.value = list.slice(0, 6).map(a => ({
+            result = list.slice(0, 6).map(a => ({
                 id: a.id,
                 source: a.source || 'yhf',
                 name: a.title,
@@ -107,7 +115,7 @@ async function doLiveSearch(kw) {
             // 影视搜索。返回 { success, data: [...] }
             const res = await movieSearch('smdyu', kw)
             const list = Array.isArray(res?.data) ? res.data : (res?.data?.list || res?.list || [])
-            liveResults.value = list.slice(0, 6).map(m => ({
+            result = list.slice(0, 6).map(m => ({
                 id: m.id,
                 source: m.source || 'smdyu',
                 name: m.title,
@@ -119,7 +127,7 @@ async function doLiveSearch(kw) {
             // B站视频专区实时搜索。返回 { success, data: { list: [...] } }
             const res = await biliVideoSearch({ keyword: kw, page: 1 })
             const list = Array.isArray(res?.data?.list) ? res.data.list : []
-            liveResults.value = list.slice(0, 6).map(v => ({
+            result = list.slice(0, 6).map(v => ({
                 id: v.bvid,
                 bvid: v.bvid,
                 name: v.title,
@@ -130,26 +138,29 @@ async function doLiveSearch(kw) {
         }
     } catch (e) {
         console.error('[SearchSuggest] 实时搜索失败:', props.module, kw, e?.message || e)
-        liveResults.value = []
+        result = []
     } finally {
-        liveLoading.value = false
+        if (revision === liveRevision) {
+            liveResults.value = result
+            liveLoading.value = false
+        }
     }
 }
 
-// 监听输入变化，防抖触发实时搜索（immediate 让初次显示时也能触发）
-watch(() => props.query, (newQ) => {
+// Invalidate pending results immediately on input or platform changes, including
+// while the replacement request is still waiting for the debounce timer.
+watch(() => [props.query, props.module, platformStore.current], ([newQ]) => {
+    const revision = ++liveRevision
     if (liveSearchTimer) clearTimeout(liveSearchTimer)
+    liveResults.value = []
     const q = (newQ || '').trim()
-    if (!q) {
-        liveResults.value = []
-        liveLoading.value = false
-        return
-    }
-    liveSearchTimer = setTimeout(() => doLiveSearch(q), 350)
+    liveLoading.value = !!q
+    if (!q) return
+    liveSearchTimer = setTimeout(() => doLiveSearch(q, revision), 350)
 }, { immediate: true })
 
-// 组件卸载时清理
 onBeforeUnmount(() => {
+    ++liveRevision
     if (liveSearchTimer) clearTimeout(liveSearchTimer)
 })
 

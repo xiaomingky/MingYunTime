@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
 import { useMessageStore } from './message'
+import { resolveKugouPlaylistFileIds } from '../utils/kugou-playlists'
 import {
     kugouLoginCellphone, kugouLoginUsername, kugouLoginOpenplat,
-    kugouCaptchaSent, kugouQrKey, kugouQrCreate, kugouQrCheck,
+    kugouCaptchaSent, kugouQrKey, kugouQrCreate, kugouQrCheck, kugouQrCancel,
     kugouWxCreate, kugouWxCheck,
     kugouLoginToken, kugouUserDetail, kugouUserVip, kugouUserPlaylist,
     getKugouCookie, setKugouCookie, clearKugouCookie,
@@ -13,19 +14,48 @@ import {
 } from '../api/kugou'
 
 export const useKugouUserStore = defineStore('kugouUser', {
-    state: () => ({
-        isLoggedIn: !!getKugouCookie() && !!getKugouProfile(),
+    state: () => ({ sessionCheckedAt: 0,
+        isLoggedIn: false,
+        revision: 0,
         profile: getKugouProfile(),
         cookie: getKugouCookie(),
         userid: getKugouUserid(),
         playlists: [],
+        playlistsLoading: false,
+        playlistsError: '',
+        playlistsRequest: 0,
         likedPlaylistId: '',
         likedSongsHashes: [],  // 已喜欢歌曲的 hash 集合(用于快速判断 isLiked)
         vipInfo: null,
+        vipLoading: false,
+        vipError: '',
+        vipCheckedAt: 0,
+        vipRequest: 0,
         logining: false,
         loginMessage: ''
     }),
     actions: {
+        async _acceptKugouCredentials(data, revision, stillActive = () => true) {
+            if (revision !== this.revision || !stillActive()) return false
+            const token = data?.token, userid = data?.userid
+            if (!token || !userid) throw new Error('登录响应缺少完整凭据')
+            const result = await kugouLoginToken(token, userid)
+            if (revision !== this.revision || !stillActive()) return false
+            if (result?.status !== 1 || result.error_code || String(result.data?.userid) !== String(userid)) throw new Error('酷狗未确认有效登录')
+            this._applyKugouLogin(result.data.token || token, userid, { ...data, ...result.data })
+            return true
+        },
+        async restoreSession() {
+            if (!this.cookie || !this.userid) return false
+            const revision = this.revision
+            try {
+                const result = await kugouLoginToken(this.cookie, this.userid)
+                if (revision !== this.revision) return false
+                if (result?.status !== 1 || result.error_code || String(result.data?.userid) !== String(this.userid)) return false
+                this._applyKugouLogin(result.data.token || this.cookie, this.userid, result.data)
+                return true
+            } catch { return false }
+        },
         // 手机号 + 验证码登录
         // 实测 /login/cellphone 在验证码错误/过期时返回 HTTP 502 + body "error code: 502"（非 JSON）
         // 拦截器会把 502 body 原样返回（字符串），需在此检测
@@ -33,10 +63,12 @@ export const useKugouUserStore = defineStore('kugouUser', {
         //   - 不自动重试，返回 { multiAccounts: [...] } 让调用方弹窗选择
         //   - 调用方选择后用 phoneLoginWithUserid(mobile, code, userid) 完成登录
         async phoneLogin(mobile, code) {
+            const revision = this.revision
             this.logining = true
             this.loginMessage = ''
             try {
                 const res = await kugouLoginCellphone(mobile, code)
+                if (revision !== this.revision) return false
                 // 502 字符串响应（验证码错误/过期）
                 if (typeof res === 'string') {
                     if (res.includes('502')) {
@@ -48,7 +80,6 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 const errCode = res?.error_code || res?.data?.error_code || 0
                 if (errCode === 34175) {
                     const infoList = res?.data?.info_list || res?.info_list || []
-                    console.log('[Kugou] 多账户登录, info_list:', JSON.stringify(infoList).slice(0, 500))
                     // 标准化账户列表，供 UI 显示
                     const accounts = (Array.isArray(infoList) ? infoList : []).map(u => ({
                         userid: String(u?.userid || u?.user_id || u?.id || ''),
@@ -73,8 +104,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
                     else errMsg = data?.error_msg || data?.msg || '验证码错误或已过期'
                     throw new Error(errMsg)
                 }
-                this._applyKugouLogin(token, userid, data)
-                return true
+                return await this._acceptKugouCredentials({ ...data, token, userid }, revision)
             } catch (e) {
                 this.loginMessage = e.message || '登录失败'
                 useMessageStore().error(this.loginMessage)
@@ -86,10 +116,12 @@ export const useKugouUserStore = defineStore('kugouUser', {
 
         // 多账户场景：用指定 userid 完成登录
         async phoneLoginWithUserid(mobile, code, userid) {
+            const revision = this.revision
             this.logining = true
             this.loginMessage = ''
             try {
                 const res = await kugouLoginCellphone(mobile, code, userid)
+                if (revision !== this.revision) return false
                 if (typeof res === 'string') {
                     if (res.includes('502')) {
                         throw new Error('验证码错误或已过期，请重新获取')
@@ -106,8 +138,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
                     else errMsg = data?.error_msg || data?.msg || errMsg
                     throw new Error(errMsg)
                 }
-                this._applyKugouLogin(token, finalUserid, data)
-                return true
+                return await this._acceptKugouCredentials({ ...data, token, userid: finalUserid }, revision)
             } catch (e) {
                 this.loginMessage = e.message || '登录失败'
                 useMessageStore().error(this.loginMessage)
@@ -119,8 +150,15 @@ export const useKugouUserStore = defineStore('kugouUser', {
 
         // 内部：应用登录态（phoneLogin 和 phoneLoginWithUserid 共用）
         _applyKugouLogin(token, userid, data) {
+            this.sessionCheckedAt = Date.now()
+            this.revision++
             setKugouCookie(token)
-            const profile = { userid, ...(data.user || data.userInfo || {}) }
+            const previous = String(this.profile?.userid) === String(userid) ? this.profile : {}
+            const profile = { ...previous, ...data, ...(data.user || data.userInfo || {}), userid, nickname:data.nickname || data.username || data.user?.nickname || previous.nickname || '', avatarUrl:data.pic || data.user?.pic || previous.avatarUrl || '' }
+            delete profile.token
+            this.playlists = []; this.likedSongsHashes = []; this.likedPlaylistId = ''; this.vipInfo = null
+            this.vipError = ''; this.vipLoading = false; this.vipCheckedAt = 0; this.vipRequest++
+            this.playlistsError = ''; this.playlistsLoading = false; this.playlistsRequest++
             setKugouProfile(profile)
             this.cookie = token
             this.userid = userid
@@ -133,10 +171,9 @@ export const useKugouUserStore = defineStore('kugouUser', {
             useMessageStore().success('酷狗登录成功')
         },
 
-        // Cookie/Token 粘贴登录：解析 "token=xxx;userid=xxx" 或纯 token
-        // 实测 /login/token 返回 502 字符串（接口缓存问题），不能依赖它判断有效性
-        // 策略：只要 token 格式合法 + 有 userid，直接设为登录态，再调 /user/detail 验证
+        // 候选凭据必须经过官方 token 验证，失败时保留当前有效会话。
         async cookieLogin(rawCookie) {
+            const revision = this.revision
             this.logining = true
             this.loginMessage = ''
             try {
@@ -157,20 +194,10 @@ export const useKugouUserStore = defineStore('kugouUser', {
                     throw new Error('缺少 userid，请复制完整的 "token=xxx;userid=xxx" 格式（在设置中可一键复制）')
                 }
 
-                // 直接设置登录态（token 由拦截器自动附加到所有请求）
-                setKugouCookie(token)
-                const profile = { userid }
-                setKugouProfile(profile)
-                this.cookie = token
-                this.userid = userid
-                this.profile = profile
-                this.isLoggedIn = true
-
-                // 调 /user/detail 验证 token 是否有效（异步，不阻塞登录成功提示）
-                this.fetchRealProfile()
-                this.fetchVipInfo()
-                this.fetchUserPlaylists()
-                useMessageStore().success('酷狗 Cookie 登录成功')
+                const result = await kugouLoginToken(token, userid)
+                if (revision !== this.revision) return false
+                if (result?.status !== 1 || result.error_code || String(result.data?.userid) !== String(userid)) throw new Error('酷狗未确认有效登录，请检查 Cookie')
+                this._applyKugouLogin(result.data.token || token, userid, result.data)
                 return true
             } catch (e) {
                 this.loginMessage = e.message || 'Cookie 登录失败'
@@ -185,60 +212,52 @@ export const useKugouUserStore = defineStore('kugouUser', {
         // 实测 /login/qr/key 响应：{ data: { qrcode: "key_string", qrcode_img: "data:image/png;base64,..." } }
         // 实测 /login/qr/create 响应：{ data: { base64: "...", url: "..." } }
         // 文档状态码：0=过期 1=等待扫码 2=待确认 4=成功(返回 token)
-        async qrLogin(qrImgRef, statusRef, messageRef) {
+        async qrLogin(qrImgRef, statusRef, messageRef, stillActive = () => true) {
+            const revision = this.revision
+            let key = '', timer = null, stopped = false
+            const active = () => !stopped && revision === this.revision && stillActive()
+            const stop = () => { stopped = true; clearTimeout(timer); if (key) kugouQrCancel(key).catch(() => {}) }
             try {
                 const keyRes = await kugouQrKey()
-                // 实测 key 字段名是 qrcode（不是 qrkey）
-                const key = keyRes?.data?.qrcode || keyRes?.data?.qrkey || keyRes?.data?.key || keyRes?.qrcode
-                if (!key) throw new Error('获取二维码 key 失败')
-                // key 接口已返回 qrcode_img，优先用它；否则调 /login/qr/create
-                let qrImg = keyRes?.data?.qrcode_img || ''
-                if (!qrImg) {
-                    const qrcodeRes = await kugouQrCreate(key)
-                    qrImg = qrcodeRes?.data?.base64 || qrcodeRes?.data?.qrcode || qrcodeRes?.data?.qrimg || ''
+                key = keyRes?.data?.qrcode || keyRes?.data?.qrkey || keyRes?.data?.key || keyRes?.qrcode
+                if (!key) throw new Error('获取二维码失败，请重试')
+                if (!active()) { stop(); return stop }
+                let image = keyRes?.data?.qrcode_img
+                if (!image) {
+                    const result = await kugouQrCreate(key)
+                    image = result?.data?.base64 || result?.data?.qrimg
                 }
-                qrImgRef.value = qrImg
-                if (messageRef) messageRef.value = '请使用酷狗概念版 APP 扫码'
-                // 轮询 check
-                const timer = setInterval(async () => {
+                if (!active()) { stop(); return stop }
+                if (!image) throw new Error('二维码图片加载失败，请重试')
+                qrImgRef.value = image; statusRef.value = 1
+                if (messageRef) messageRef.value = '请使用酷狗概念版 App 扫码，并在手机上确认'
+                const poll = async () => {
+                    if (!active()) { stop(); return }
                     try {
-                        const r = await kugouQrCheck(key)
-                        const st = r?.data?.status ?? 0
-                        statusRef.value = st
-                        // 0=过期 1=等待扫码 2=待确认 4=成功
-                        if (st === 4) {
-                            clearInterval(timer)
-                            const token = r?.data?.token || r?.token
-                            const userid = r?.data?.userid || r?.userid
-                            if (token && userid) {
-                                setKugouCookie(token)
-                                const profile = { userid, ...(r?.data?.user || {}) }
-                                setKugouProfile(profile)
-                                this.cookie = token
-                                this.userid = userid
-                                this.profile = profile
-                                this.isLoggedIn = true
-                                this.fetchRealProfile()
-                                this.fetchVipInfo()
-                                this.fetchUserPlaylists()
-                                useMessageStore().success('酷狗扫码登录成功')
-                            }
-                        } else if (st === 1 || st === 2) {
-                            const tipMap = { 1: '等待扫码', 2: '已扫描，待确认' }
-                            if (messageRef) messageRef.value = tipMap[st] || '处理中'
-                        } else {
-                            // st === 0 为过期
-                            clearInterval(timer)
-                            if (messageRef) messageRef.value = '二维码已过期'
+                        const result = await kugouQrCheck(key)
+                        if (!active()) { stop(); return }
+                        const data = result?.data, state = data?.status
+                        if (![0,1,2,4].includes(state)) throw new Error('扫码状态异常，请刷新重试')
+                        if (state === 4) {
+                            if (!data.token || !data.userid) throw new Error('登录响应缺少凭据，请重新扫码')
+                            const accepted = await kugouLoginToken(data.token, data.userid)
+                            if (!active()) { stop(); return }
+                            if (accepted?.status !== 1 || accepted.error_code || String(accepted.data?.userid) !== String(data.userid)) throw new Error('酷狗未确认有效登录')
+                            stop(); this._applyKugouLogin(accepted.data.token || data.token, data.userid, accepted.data)
+                            statusRef.value = 4
+                            return
                         }
-                    } catch (e) {
-                        // 静默重试
-                    }
-                }, 2000)
-                return () => clearInterval(timer)
+                        statusRef.value = state
+                        if (messageRef) messageRef.value = state === 2 ? '已扫描，请在手机上确认' : state === 0 ? '二维码已过期，请刷新' : '等待扫码'
+                        if (state === 0) { stop(); return }
+                        timer = setTimeout(poll, 2500)
+                    } catch (e) { if (active() && messageRef) messageRef.value = e.message; stop() }
+                }
+                timer = setTimeout(poll, 1000)
+                return stop
             } catch (e) {
-                useMessageStore().error(e.message || '二维码登录失败')
-                return null
+                if (active() && messageRef) messageRef.value = e.message || '二维码登录失败'
+                stop(); return stop
             }
         },
 
@@ -248,10 +267,15 @@ export const useKugouUserStore = defineStore('kugouUser', {
         //   注意：qrcode 是对象不是字符串，qrcodebase64 是裸 base64（无 data:image 前缀，是 JPEG 格式）
         // 文档状态码：408=等待扫描 404=已扫描 403=拒绝 405=成功(返 wx_code) 402=已过期
         // 成功后需调 /login/openplat 用 wx_code 换 token
-        async wxQrLogin(qrImgRef, statusRef, messageRef) {
+        async wxQrLogin(qrImgRef, statusRef, messageRef, stillActive = () => true) {
+            const revision = this.revision
+            let stopped = false, busy = false, timer = null
+            const active = () => !stopped && revision === this.revision && stillActive()
+            const stopFn = () => { stopped = true; clearInterval(timer) }
             this.loginMessage = ''
             try {
                 const createRes = await kugouWxCreate()
+                if (!active()) return stopFn
                 // wx/create 响应是扁平结构，没有 data 包裹
                 const data = createRes?.data || createRes
                 const uuid = data?.uuid || createRes?.uuid || ''
@@ -275,11 +299,13 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 statusRef.value = 408
 
                 // 返回停止函数给调用方，轮询在后台进行（不阻塞 logining）
-                let timer = null
-                const stopFn = () => { if (timer) clearInterval(timer) }
                 timer = setInterval(async () => {
+                    if (!active()) { stopFn(); return }
+                    if (busy) return
+                    busy = true
                     try {
                         const r = await kugouWxCheck(uuid)
+                        if (!active()) return
                         // 处理字符串响应（502 等错误被拦截器转为字符串）
                         if (typeof r === 'string') {
                             console.warn('[Kugou WX] check 返回字符串:', r.slice(0, 200))
@@ -294,8 +320,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
                         const st = r?.data?.status ?? r?.data?.errcode ?? r?.status ?? r?.errcode ?? r?.code ?? 0
                         // 过滤掉酷狗请求状态码 1（成功），只认扫码状态码（408/404/403/405/402）
                         const scanSt = (st === 1) ? 0 : st
-                        console.log('[Kugou WX] check 响应:', JSON.stringify(r).slice(0, 300), '状态码:', scanSt)
-                        statusRef.value = scanSt
+                        if (scanSt !== 405) statusRef.value = scanSt
                         if (scanSt === 405) {
                             // 登录成功，拿到 wx_code 换 token
                             clearInterval(timer)
@@ -306,7 +331,9 @@ export const useKugouUserStore = defineStore('kugouUser', {
                                 return
                             }
                             try {
-                                await this._loginWithWxCode(wxCode)
+                                const accepted = await this._loginWithWxCode(wxCode, active)
+                                if (!accepted) return
+                                statusRef.value = 405
                                 if (messageRef) messageRef.value = '微信登录成功'
                             } catch (e) {
                                 useMessageStore().error(e.message || '微信登录换 token 失败')
@@ -330,10 +357,11 @@ export const useKugouUserStore = defineStore('kugouUser', {
                     } catch (e) {
                         // wx/check 在 uuid 无效时返回 502 字符串，静默重试
                         console.warn('[Kugou WX] check 异常:', e?.message || e)
-                    }
+                    } finally { busy = false }
                 }, 2500)
                 return stopFn
             } catch (e) {
+                stopFn()
                 this.loginMessage = e.message || '微信扫码登录失败'
                 useMessageStore().error(this.loginMessage)
                 return null
@@ -341,68 +369,34 @@ export const useKugouUserStore = defineStore('kugouUser', {
         },
 
         // 微信 wx_code 换 token 完成登录
-        async _loginWithWxCode(wxCode) {
+        async _loginWithWxCode(wxCode, stillActive = () => true) {
+            const revision = this.revision
             const res = await kugouLoginOpenplat(wxCode)
-            console.log('[Kugou] /login/openplat 原始响应:', res)
+            if (revision !== this.revision || !stillActive()) return false
             const data = res?.data || res
             const token = data?.token || res?.token
             const userid = data?.userid || res?.userid
             if (!token || !userid) {
                 throw new Error(data?.error_msg || data?.msg || '微信登录换 token 失败')
             }
-            setKugouCookie(token)
-            // openplat 响应中可能直接含用户信息，提取所有可能的字段
-            const userInfo = data.user || data.userInfo || data.data || {}
-            // 注意：先展开 userInfo，再设置 avatarUrl/nickname，避免被覆盖
-            const profile = {
-                ...this.profile,
-                ...userInfo,
-                userid,
-                nickname: userInfo.nickname || userInfo.nick_name || data.nickname || '',
-                avatarUrl: userInfo.avatarUrl || userInfo.pic_url || userInfo.pic ||
-                    data.avatarUrl || data.pic || data.pic_url || ''
-            }
-            console.log('[Kugou] 登录后初始 profile:', { userid, nickname: profile.nickname, avatarUrl: profile.avatarUrl })
-            setKugouProfile(profile)
-            this.cookie = token
-            this.userid = userid
-            this.profile = profile
-            this.isLoggedIn = true
-            // 同步触发，await 确保完成后再返回（避免 UI 立即显示"未登录"）
-            try {
-                await this.fetchRealProfile()
-                console.log('[Kugou] fetchRealProfile 完成，profile:', { nickname: this.profile?.nickname, avatarUrl: this.profile?.avatarUrl })
-            } catch (e) { console.warn('[Kugou] fetchRealProfile after wx login:', e.message) }
-            this.fetchVipInfo()
-            this.fetchUserPlaylists()
-            useMessageStore().success('酷狗微信登录成功')
-            return true
+            return this._acceptKugouCredentials({ ...data, token, userid }, revision, stillActive)
         },
 
         // 用户名 + 密码登录（文档标注可能需要验证，不推荐）
         async usernameLogin(username, password) {
+            const revision = this.revision
             this.logining = true
             this.loginMessage = ''
             try {
                 const res = await kugouLoginUsername(username, password)
+                if (revision !== this.revision) return false
                 const data = res?.data || res
                 const token = data?.token || res?.token
                 const userid = data?.userid || res?.userid
                 if (!token || !userid) {
                     throw new Error(data?.error_msg || data?.msg || '用户名或密码错误')
                 }
-                setKugouCookie(token)
-                const profile = { userid, ...(data.user || data.userInfo || {}) }
-                setKugouProfile(profile)
-                this.cookie = token
-                this.userid = userid
-                this.profile = profile
-                this.isLoggedIn = true
-                this.fetchRealProfile()
-                this.fetchVipInfo()
-                this.fetchUserPlaylists()
-                useMessageStore().success('酷狗登录成功')
-                return true
+                return await this._acceptKugouCredentials({ ...data, token, userid }, revision)
             } catch (e) {
                 this.loginMessage = e.message || '登录失败'
                 useMessageStore().error(this.loginMessage)
@@ -414,8 +408,10 @@ export const useKugouUserStore = defineStore('kugouUser', {
 
         async fetchRealProfile() {
             if (!this.userid) return
+            const revision = this.revision
             try {
                 const res = await kugouUserDetail()
+                if (revision !== this.revision || !this.isLoggedIn || res?.status !== 1 || res.error_code) return
                 // /user/detail 响应（实测）：
                 // { "data": { "nickname":"小茗", "pic":"http://...", "k_pic":"...", "fx_pic":"...", "gender":1, "svip_level":5 }, "error_code":0, "status":1 }
                 const data = res?.data || res
@@ -447,10 +443,15 @@ export const useKugouUserStore = defineStore('kugouUser', {
         },
 
         async fetchVipInfo() {
-            if (!this.userid) return
+            if (!this.userid || !this.isLoggedIn) return false
+            const revision = this.revision
+            const request = ++this.vipRequest
+            const active = () => revision === this.revision && request === this.vipRequest && this.isLoggedIn
+            this.vipLoading = true; this.vipError = ''
             try {
                 const res = await kugouUserVip()
-                console.log('[Kugou] /user/vip/detail 原始响应:', res)
+                if (!active()) return false
+                if (res?.status !== 1 || res.error_code) throw new Error(`酷狗会员查询失败（${res?.error_code || '响应异常'}）`)
                 // 响应结构（实测）：
                 // {
                 //   "data": {
@@ -464,56 +465,82 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 //   }
                 // }
                 const data = res?.data || res
+                if (!Array.isArray(data.busi_vip)) throw new Error('酷狗会员响应不完整，请重试')
                 this.vipInfo = data
                 // VIP 判定：只有 busi_vip 数组中有 is_vip:1 才判定为 VIP
                 // 顶层 is_vip 不可靠(用户有 VIP 但显示 0)
                 // svip_level > 0 也不可靠(可能导致非 VIP 用户误判),去掉此兜底
                 const busiVipList = Array.isArray(data?.busi_vip) ? data.busi_vip : []
-                const conceptVip = busiVipList.find(v => v?.busi_type === 'concept' && v?.is_vip === 1)
-                const anyVip = busiVipList.find(v => v?.is_vip === 1)
-                const isVip = !!(conceptVip || anyVip)
-                console.log('[Kugou] VIP 判定结果:', isVip, 'busi_vip:', JSON.stringify(busiVipList.map(v => ({
-                    is_vip: v?.is_vip, busi_type: v?.busi_type, product_type: v?.product_type,
-                    vip_end_time: v?.vip_end_time
-                }))))
+                const conceptVip = busiVipList.find(v => v?.busi_type === 'concept' && [1,'1',true].includes(v?.is_vip))
+                const anyVip = busiVipList.find(v => [1,'1',true].includes(v?.is_vip))
+                const isVip = !!(conceptVip || anyVip) || [1,'1',true].includes(data.is_vip)
                 if (this.profile) {
                     const profile = { ...this.profile, isVip, vipInfo: data }
                     setKugouProfile(profile)
                     this.profile = profile
                 }
+                this.vipCheckedAt = Date.now()
+                return true
             } catch (e) {
-                console.warn('[Kugou] fetchVipInfo error:', e.message)
-            }
+                if (active()) this.vipError = e.message || '会员查询失败，请重试'
+                return false
+            } finally { if (active()) this.vipLoading = false }
         },
 
         async fetchUserPlaylists() {
-            if (!this.isLoggedIn) return
+            if (!this.isLoggedIn) return false
+            const revision = this.revision
+            const request = ++this.playlistsRequest
+            const active = () => revision === this.revision && this.isLoggedIn && request === this.playlistsRequest
+            this.playlistsLoading = true
+            this.playlistsError = ''
             try {
-                const res = await kugouUserPlaylist(1, 100)
-                console.log('[Kugou] /user/playlist 原始响应:', res)
+                const all = []
+                let page = 1, res
+                do {
+                    res = await kugouUserPlaylist(page, 100)
+                    if (!active()) return false
+                    if (res?.status !== 1 || res.error_code) break
+                    if (!Array.isArray(res.data?.info)) throw new Error('酷狗歌单响应不完整，请重试')
+                    all.push(...res.data.info)
+                    if (res.data.info.length < 100) break
+                    if (++page > 100) throw new Error('酷狗歌单分页未完成，请稍后重试')
+                } while (true)
+                if (!active()) return false
+                if (res?.status !== 1 || res.error_code) {
+                    const code = Number(res?.error_code || 0)
+                    throw new Error(code === 20017
+                        ? '酷狗歌单服务未接受当前登录凭据，请重试或重新登录（20017）'
+                        : `酷狗歌单加载失败${code ? `（${code}）` : '，请稍后重试'}`)
+                }
                 // 响应结构（实测）：
                 // { "data": { "info": [ { "listid":1, "name":"默认收藏", "pic":"...", "global_collection_id":"...", "count":8 } ] } }
                 // ⚠️ 字段是 data.info，不是 data.list！
-                const list = res?.data?.info || res?.data?.list || res?.data?.special_list ||
-                    (Array.isArray(res?.data) ? res.data : []) ||
-                    res?.list || res?.info || res?.special_list || []
-                this.playlists = (Array.isArray(list) ? list : []).map(p => normalizeKugouPlaylist(p, this.userid)).filter(p => p.id)
+                const list = res?.data?.info ?? res?.data?.list ?? res?.data?.special_list ??
+                    (Array.isArray(res?.data) ? res.data : undefined) ??
+                    res?.list ?? res?.info ?? res?.special_list
+                if (!Array.isArray(list)) throw new Error('酷狗歌单响应不完整，请重试')
+                this.playlists = [...new Map(all.map(p => normalizeKugouPlaylist(p, this.userid)).filter(p => p.id).map(p=>[p.id,p])).values()]
                 // 识别"我喜欢"歌单（名称包含"喜欢"或"favorite"）
                 const liked = this.playlists.find(p =>
                     /我喜欢|我喜歡|favorite|喜歡的歌/i.test(p.name)
                 )
                 this.likedPlaylistId = liked?.id || ''
-                console.log('[Kugou] 解析到歌单数:', this.playlists.length, this.playlists.slice(0, 3))
                 // 拉取"我喜欢"歌单的歌曲 hash 列表,用于播放时判断 isLiked
                 if (this.likedPlaylistId) {
                     this.fetchLikedSongs()
                 }
+                return true
             } catch (e) {
-                console.warn('[Kugou] fetchUserPlaylists error:', e.message)
+                if (active()) this.playlistsError = e.message || '酷狗歌单加载失败，请重试'
+                return false
+            } finally {
+                if (active()) this.playlistsLoading = false
             }
         },
 
         logout() {
+            this.revision++
             clearKugouCookie()
             clearKugouProfile()
             this.isLoggedIn = false
@@ -521,15 +548,20 @@ export const useKugouUserStore = defineStore('kugouUser', {
             this.cookie = ''
             this.userid = ''
             this.playlists = []
+            this.playlistsRequest++
+            this.playlistsLoading = false
+            this.playlistsError = ''
             this.likedPlaylistId = ''
             this.likedSongsHashes = []
             this.vipInfo = null
+            this.vipRequest++; this.vipLoading = false; this.vipError = ''; this.vipCheckedAt = 0
             useMessageStore().success('已退出酷狗登录')
         },
 
         // 喜欢/取消喜欢歌曲（基于"我喜欢"歌单操作）
         // song: 标准化后的歌曲对象（含 hash/album_audio_id/album_id/name）
         async toggleLikeSong(song) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
@@ -547,31 +579,25 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 const isLiked = this.isSongLiked(song.hash)
                 if (isLiked) {
                     // 取消喜欢：复用 removeSongFromPlaylist 逻辑（与删除歌单歌曲一致）
-                    // 外部传入的 song 可能只有 hash 缺少 album_audio_id（如播放器 currentSong），
-                    // 需要从"我喜欢"歌单拉取完整数据来补全数字 ID
-                    let fullSong = song
-                    if (!song.album_audio_id) {
-                        try {
-                            const res = await kugouPlaylistSongsNew(this.likedPlaylistId, 1, 300)
-                            const list = res?.data?.info || res?.data?.lists || res?.data?.list || []
-                            const found = (Array.isArray(list) ? list : []).map(normalizeKugouSong).find(s => s?.hash === song.hash)
-                            if (found) fullSong = { ...song, ...found }
-                        } catch (_) {}
-                    }
-                    const ok = await this.removeSongFromPlaylist(this.likedPlaylistId, fullSong)
-                    if (!ok) return false
+                    const ok = await this.removeSongFromPlaylist(this.likedPlaylistId, song)
+                    if (!ok || revision !== this.revision) return false
                     // 从 likedSongsHashes 中移除
                     this.likedSongsHashes = this.likedSongsHashes.filter(h => h !== song.hash)
                     useMessageStore().success('已取消喜欢')
                 } else {
                     // 添加喜欢
-                    await kugouLikeSong(
+                    const result = await kugouLikeSong(
                         this.likedPlaylistId,
                         song.name || song.songname || '',
                         song.hash,
                         song.album_id || '',
                         song.mixsongid || song.album_audio_id || ''
                     )
+                    if (revision !== this.revision) return false
+                    if (!this._isKugouSuccess(result)) {
+                        useMessageStore().error(this._getKugouError(result) || '添加喜欢失败')
+                        return false
+                    }
                     // 添加到 likedSongsHashes
                     if (!this.likedSongsHashes.includes(song.hash)) {
                         this.likedSongsHashes.push(song.hash)
@@ -597,6 +623,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
         // 分页获取全部喜欢歌曲,避免超过100首的歌曲遗漏爱心状态
         async fetchLikedSongs() {
             if (!this.likedPlaylistId) return
+            const revision = this.revision
             try {
                 const { kugouPlaylistSongsNew, normalizeKugouSong } = await import('../api/kugou')
                 const PAGE_SIZE = 300
@@ -605,6 +632,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 // 循环加载直到没有更多
                 while (true) {
                     const res = await kugouPlaylistSongsNew(this.likedPlaylistId, page, PAGE_SIZE)
+                    if (revision !== this.revision || !this.isLoggedIn) return
                     const data = res?.data || res
                     const list = data?.info || data?.lists || data?.songs || data?.list || []
                     const arr = Array.isArray(list) ? list : []
@@ -630,10 +658,9 @@ export const useKugouUserStore = defineStore('kugouUser', {
         // 响应体可能是 { status:1, data:{...} } 或 { errcode:0, ... } 或 { data:{ status:1 } }
         // 需要检查所有可能的 status/errcode 位置
         _isKugouSuccess(res) {
-            const status = res?.status ?? res?.errcode ?? res?.data?.status ?? res?.data?.errcode
-            // 酷狗成功状态：status=1 或 errcode=0
-            const ok = status === 1 || status === 0
-            if (!ok) console.log('[Kugou] API 响应判定失败,完整响应:', JSON.stringify(res).slice(0, 500))
+            const error = res?.error_code ?? res?.errcode ?? res?.data?.error_code ?? res?.data?.errcode
+            const status = res?.status ?? res?.data?.status
+            const ok = (status === 1 || (status === undefined && error === 0)) && (!error || error === 0)
             return ok
         },
 
@@ -643,6 +670,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
 
         // 新建歌单 (type=0) / 收藏歌单 (type=1)
         async createPlaylist(name, is_pri = 0) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
@@ -653,6 +681,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
             }
             try {
                 const res = await kugouPlaylistAdd(name.trim(), '', '', 0, is_pri)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (this._isKugouSuccess(res)) {
                     useMessageStore().success('歌单创建成功')
                     await this.fetchUserPlaylists()
@@ -670,6 +699,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
 
         // 收藏歌单(把别人的歌单收藏到自己账号)
         async collectPlaylist(playlist) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
@@ -685,6 +715,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
                     playlist.listid || playlist.id || '',
                     1
                 )
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (this._isKugouSuccess(res)) {
                     useMessageStore().success('歌单收藏成功')
                     await this.fetchUserPlaylists()
@@ -702,6 +733,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
 
         // 删除歌单 / 取消收藏歌单
         async deletePlaylist(listid) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
@@ -712,6 +744,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
             }
             try {
                 const res = await kugouPlaylistDel(listid)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (this._isKugouSuccess(res)) {
                     useMessageStore().success('歌单已删除')
                     await this.fetchUserPlaylists()
@@ -729,6 +762,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
 
         // 添加歌曲到指定歌单
         async addSongToPlaylist(listid, song) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
@@ -738,13 +772,10 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 return false
             }
             try {
-                const data = [
-                    song.name || song.songname || '',
-                    song.hash,
-                    song.album_id || '',
-                    song.album_audio_id || song.mixsongid || ''
-                ].filter(Boolean).join('|')
+                const data = { name: song.name || song.songname || '', hash: song.hash,
+                    album_id: song.album_id || '', mixsongid: song.mixsongid || song.album_audio_id || '' }
                 const res = await kugouPlaylistTracksAdd(listid, data)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (this._isKugouSuccess(res)) {
                     useMessageStore().success('已添加到歌单')
                     return true
@@ -759,20 +790,28 @@ export const useKugouUserStore = defineStore('kugouUser', {
             }
         },
 
+        _playlistFileIds(listid, songs, revision) {
+            return resolveKugouPlaylistFileIds(listid, songs, kugouPlaylistSongsNew,
+                () => revision === this.revision && this.isLoggedIn)
+        },
+
         // 从指定歌单删除歌曲(单首)
         async removeSongFromPlaylist(listid, song) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
             }
-            // delete_songs 接口：优先用数字 ID，否则用 hash
-            const fileId = song.album_audio_id || song.fileid || song.songid || song.hash
-            if (!listid || !fileId) {
+            // 按 hash 从目标歌单读取真实条目 fileid，禁止使用曲库 ID
+            if (!listid || !song?.hash) {
                 useMessageStore().warning('参数不完整')
                 return false
             }
             try {
-                const res = await kugouPlaylistTracksDel(listid, fileId)
+                const fileids = await this._playlistFileIds(listid, [song], revision)
+                if (revision !== this.revision || !this.isLoggedIn) return false
+                const res = await kugouPlaylistTracksDel(listid, fileids)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (this._isKugouSuccess(res)) {
                     useMessageStore().success('已从歌单移除')
                     return true
@@ -788,8 +827,9 @@ export const useKugouUserStore = defineStore('kugouUser', {
         },
 
         // 批量从歌单删除歌曲
-        // songs: 标准化后的歌曲对象数组(需含 album_audio_id 或 fileid 字段)
+        // songs: 标准化后的歌曲对象数组(需含 hash 字段)
         async batchRemoveFromPlaylist(listid, songs) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
@@ -798,14 +838,12 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 useMessageStore().warning('参数不完整')
                 return false
             }
-            // delete_songs 接口：优先用数字 ID，否则用 hash
-            const fileids = songs.map(s => s.album_audio_id || s.fileid || s.songid || s.hash).filter(Boolean)
-            if (!fileids.length) {
-                useMessageStore().warning('未找到歌曲ID')
-                return false
-            }
+            // 按 hash 从目标歌单读取真实条目 fileid，禁止使用曲库 ID
             try {
-                const res = await kugouPlaylistTracksDel(listid, fileids.join(','))
+                const fileids = await this._playlistFileIds(listid, songs, revision)
+                if (revision !== this.revision || !this.isLoggedIn) return false
+                const res = await kugouPlaylistTracksDel(listid, fileids)
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 if (this._isKugouSuccess(res)) {
                     useMessageStore().success(`已移除 ${fileids.length} 首歌曲`)
                     return true
@@ -823,6 +861,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
         // 批量取消喜欢歌曲
         // songs: 标准化后的歌曲对象数组(需含 hash 字段)
         async batchUnlikeSongs(songs) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
@@ -830,8 +869,10 @@ export const useKugouUserStore = defineStore('kugouUser', {
             if (!songs?.length) return false
             let successCount = 0
             for (const song of songs) {
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 try {
                     const ok = await this.toggleLikeSong(song)
+                    if (revision !== this.revision || !this.isLoggedIn) return false
                     if (ok) successCount++
                 } catch (e) {
                     console.warn('[Kugou] batchUnlikeSongs 单首失败:', song?.name, e.message)
@@ -849,6 +890,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
         // 批量取消收藏歌单/删除歌单
         // listids: 歌单 id 数组
         async batchDeletePlaylists(listids) {
+            const revision = this.revision
             if (!this.isLoggedIn) {
                 useMessageStore().warning('请先登录酷狗')
                 return false
@@ -856,8 +898,10 @@ export const useKugouUserStore = defineStore('kugouUser', {
             if (!listids?.length) return false
             let successCount = 0
             for (const listid of listids) {
+                if (revision !== this.revision || !this.isLoggedIn) return false
                 try {
                     const res = await kugouPlaylistDel(listid)
+                    if (revision !== this.revision || !this.isLoggedIn) return false
                     if (this._isKugouSuccess(res)) successCount++
                 } catch (e) {
                     console.warn('[Kugou] batchDeletePlaylists 单个失败:', listid, e.message)

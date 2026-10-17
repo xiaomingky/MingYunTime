@@ -1,6 +1,5 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { Readable } from 'node:stream'
 
 export const mimeMap = {
                 '.mp3': 'audio/mpeg',
@@ -47,7 +46,9 @@ export const mimeMap = {
 
 export function decodeLocalPath(url, scheme) {
     // Generated paths are URI-encoded in full, preserving Chinese, spaces, # and ?.
-    let raw = url.replace(new RegExp(`^${scheme}://`, 'i'), '').replace(/\?param=.*$/, '')
+    let raw = url.replace(new RegExp(`^${scheme}://`, 'i'), '').replace(/^localhost\//i, '').replace(/\?param=.*$/, '')
+    // Removing a standard URL's host must retain POSIX absolute paths.
+    if (process.platform !== 'win32' && url.startsWith(`${scheme}://localhost/`) && !raw.startsWith('/')) raw = '/' + raw
     let decoded = decodeURIComponent(raw)
     if (process.platform === 'win32') decoded = decoded.replace(/^\/+(?=[a-z]:)/i, '')
     return path.normalize(decoded)
@@ -96,9 +97,28 @@ export async function localFileResponse(request) {
             await handle.close(); handle = null
             return new Response(null, { status: range ? 206 : 200, headers })
         }
-        const stream = handle.createReadStream({ ...(range || {}), autoClose: true, signal: request.signal })
-        handle = null // Stream now owns the descriptor; cancellation closes it.
-        return new Response(Readable.toWeb(stream), { status: range ? 206 : 200, headers })
+        // Chromium cancels the previous response when seeking. Keep each range's
+        // descriptor and read position isolated, and close on body cancellation.
+        const fileHandle = handle
+        handle = null
+        let position = range?.start ?? 0, remaining = length, closed = false
+        const close = async () => { if (!closed) { closed = true; await fileHandle.close().catch(() => {}) } }
+        const body = new ReadableStream({
+            async pull(controller) {
+                try {
+                    if (closed) return
+                    const buffer = new Uint8Array(Math.min(64 * 1024, remaining))
+                    const { bytesRead } = await fileHandle.read(buffer, 0, buffer.length, position)
+                    if (closed) return
+                    if (!bytesRead) { await close(); controller.error(new Error('本地文件读取不完整')); return }
+                    position += bytesRead; remaining -= bytesRead
+                    controller.enqueue(buffer.subarray(0, bytesRead))
+                    if (!remaining) { controller.close(); await close() }
+                } catch (error) { if (!closed) { await close(); controller.error(error) } }
+            },
+            cancel: close
+        })
+        return new Response(body, { status: range ? 206 : 200, headers })
     } catch (error) {
         await handle?.close().catch(() => {})
         return new Response(null, { status: error.code === 'ENOENT' ? 404 : error instanceof URIError ? 400 : 500 })

@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { MoreHorizontal, Play, ListPlus, SkipForward } from 'lucide-vue-next'
+import { MoreHorizontal, Play, ListPlus, SkipForward, Share2, Download } from 'lucide-vue-next'
+import { copyQishuiShare, downloadQishuiTrack } from '../api/qishui'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
 
@@ -31,6 +32,20 @@ const enqueue = () => {
   playerStore.enqueue(props.song)
   messageStore.success('已加入播放队列')
 }
+const share = async () => {
+  open.value = false
+  try { await copyQishuiShare('track', props.song.qishuiId || props.song.id); messageStore.success('已复制汽水官方分享链接') }
+  catch (error) { messageStore.error(error.message || '复制分享链接失败') }
+}
+
+const downloadBusy = ref(false)
+const download = async () => {
+  if (downloadBusy.value) return
+  open.value = false; downloadBusy.value = true
+  try { const result = await downloadQishuiTrack(props.song); if (result.success) messageStore.success(result.preview ? '已加入下载专区：汽水试听片段' : '已加入下载专区：汽水歌曲') }
+  catch(e) { messageStore.error(e.message || '下载失败') }
+  finally { downloadBusy.value = false }
+}
 
 const onDocumentClick = (event) => {
   if (root.value && !root.value.contains(event.target)) open.value = false
@@ -58,6 +73,8 @@ onUnmounted(() => {
         <button type="button" role="menuitem" @click="playNow"><Play :size="14" />立即播放</button>
         <button type="button" role="menuitem" @click="playNext"><SkipForward :size="14" />下一首播放</button>
         <button type="button" role="menuitem" @click="enqueue"><ListPlus :size="14" />加入播放队列</button>
+        <button v-if="song.platform === 'qishui'" type="button" role="menuitem" :disabled="downloadBusy" @click="download"><Download :size="14" />下载歌曲</button>
+        <button v-if="song.platform === 'qishui'" type="button" role="menuitem" @click="share"><Share2 :size="14" />复制分享链接</button>
       </div>
     </Transition>
   </div>

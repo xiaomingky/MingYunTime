@@ -1,9 +1,10 @@
 <script setup>
+import SelectionMark from '../components/SelectionMark.vue'
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { smartEduCatalog, smartEduDetail, smartEduPreview, smartEduAudios, smartEduLoginOpen, smartEduLoginStatus, smartEduLoginManual, smartEduTestToken, smartEduLogout, smartEduDownloadPdf, smartEduDownloadAudio, smartEduProbeAudio, smartEduFetchImage, onSmartEduLoginDone } from '../api'
 import { useMessageStore } from '../store/message'
 import CustomSelect from '../components/CustomSelect.vue'
-import { ChevronLeft, BookOpen, Download, LogOut, Search, Loader2, FileText, Headphones, RefreshCw, KeyRound, X, ZoomIn, Highlighter, Eraser, Play, Pause, Trash2, Maximize, Minimize, CheckSquare, Square, GripVertical, Move } from 'lucide-vue-next'
+import { ChevronLeft, BookOpen, Download, LogOut, Search, Loader2, FileText, Headphones, RefreshCw, KeyRound, X, ZoomIn, Highlighter, Eraser, Play, Pause, Trash2, Maximize, Minimize, GripVertical, Move } from 'lucide-vue-next'
 
 defineOptions({ name: 'SmartEduTextbook' })
 
@@ -1027,21 +1028,14 @@ function fmtCount(n) {
                                     :class="{ on: allAudioSelected }"
                                     @click="toggleSelectAllAudios"
                                 >
-                                    <CheckSquare v-if="allAudioSelected" :size="16" class="check-icon active" />
-                                    <Square v-else :size="16" class="check-icon" />
+                                    <SelectionMark :checked="allAudioSelected" :size="16" class="check-icon" :mixed="audioSelected.length > 0" />
                                     全选
                                 </span>
                             </div>
                             <ul class="audio-list">
                                 <li v-for="(a, i) in audios" :key="i" class="audio-item" :class="{ playing: playingIdx === i }">
-                                    <CheckSquare
-                                        v-if="audioSelected.includes(i)"
-                                        :size="16"
-                                        class="check-icon audio-check active"
-                                        @click.stop="toggleAudioSelect(i)"
-                                    />
-                                    <Square
-                                        v-else
+                                    <SelectionMark
+                                        :checked="audioSelected.includes(i)"
                                         :size="16"
                                         class="check-icon audio-check"
                                         @click.stop="toggleAudioSelect(i)"

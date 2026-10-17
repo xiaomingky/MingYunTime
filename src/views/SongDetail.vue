@@ -1,4 +1,5 @@
 <script setup>
+import SongVipBadge from '../components/SongVipBadge.vue'
 import { computed, ref, shallowRef, watch, onMounted, onUnmounted, nextTick, defineAsyncComponent } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useSettingsStore } from '../store/settings'
@@ -16,6 +17,9 @@ import { qqOperSonglist } from '../api/qq'
 import { kugouCommentSong, kugouSongDetail } from '../api/kugou'
 import { useKugouUserStore } from '../store/kugou-user'
 import KugouComment from '../components/KugouComment.vue'
+import QishuiComment from '../components/QishuiComment.vue'
+import { copyQishuiShare, downloadQishuiTrack } from '../api/qishui'
+import QishuiPlaylistPicker from '../components/QishuiPlaylistPicker.vue'
 
 const playerStore = usePlayerStore()
 const settings = useSettingsStore()
@@ -33,7 +37,8 @@ const isQQSong = computed(() => playerStore.currentSong.platform === 'qq' || !!p
 // 是否酷狗概念版平台歌曲
 const isKugouSong = computed(() => playerStore.currentSong.platform === 'kugou' || !!playerStore.currentSong.hash)
 // 非网易云歌曲(用于统一隐藏网易云专属功能:歌单管理、云盘等)
-const isNonNeteaseSong = computed(() => isQQSong.value || isKugouSong.value)
+const isQishuiSong = computed(() => playerStore.currentSong.platform === 'qishui')
+const isNonNeteaseSong = computed(() => isQQSong.value || isKugouSong.value || isQishuiSong.value)
 const lyricFontSize = ref(Number(localStorage.getItem('song_detail_lyric_size')) || 32)
 watch(lyricFontSize, (v) => { localStorage.setItem('song_detail_lyric_size', v) })
 const coverMode = ref(localStorage.getItem('song_detail_cover_mode') || 'classic')
@@ -352,7 +357,7 @@ const scrollToCenter = async (index, instant = false) => {
 
 // 歌词源切换 ===
 const lyricSourceText = computed(() => {
-    const map = { qq: 'QQ音乐', kugou: '酷狗', netease: '网易云', local: '本地', '': '未加载' }
+    const map = { qishui: '汽水', qq: 'QQ音乐', kugou: '酷狗', netease: '网易云', local: '本地', '': '未加载' }
     return map[playerStore.lyricSource] || '未加载'
 })
 
@@ -468,7 +473,16 @@ watch(showMvMenu, (val) => {
     }
 })
 
+const qishuiDownloading = ref(false)
 const handleDownload = async () => {
+    if (isQishuiSong.value) {
+        if (qishuiDownloading.value) return
+        qishuiDownloading.value = true
+        try { const result = await downloadQishuiTrack(playerStore.currentSong); if (result.success) messageStore.success('已加入下载专区，可查看进度与保存位置') }
+        catch(e) { messageStore.error(e.message || '汽水下载失败') }
+        finally { qishuiDownloading.value = false }
+        return
+    }
     // 本地音乐已有路径，无需下载
     if (playerStore.currentSong.path) {
         messageStore.info('此歌曲已在本地')
@@ -520,7 +534,12 @@ const handleDownload = async () => {
     }
 }
 
-const handleShare = () => {
+const handleShare = async () => {
+    if (isQishuiSong.value) {
+        try { await copyQishuiShare('track', playerStore.currentSong.qishuiId || playerStore.currentSong.id); messageStore.success('已复制汽水官方分享链接') }
+        catch (e) { messageStore.error(e.message || '复制分享链接失败') }
+        return
+    }
     const url = `https://music.163.com/#/song?id=${playerStore.currentSong.id}`
     navigator.clipboard.writeText(url).then(() => {
         messageStore.success('链接已复制到剪贴板')
@@ -529,7 +548,7 @@ const handleShare = () => {
 
 const goToAlbum = () => {
     if (playerStore.currentSong.al?.id) {
-        router.push(`/album/${playerStore.currentSong.al.id}`)
+        router.push(`${isQishuiSong.value ? '/qishui' : ''}/album/${playerStore.currentSong.al.id}`)
     }
 }
 
@@ -561,6 +580,7 @@ const fetchComments = async (reset = true) => {
     }
     commentLoading.value = true
     try {
+        if (isQishuiSong.value) { comments.value = []; return }
         // QQ 平台:调用 fcg_global_comment_h5.fcg(用 songid 作 topid)
         // QQ 评论排序: 2=热评(cmd=6), 其他=最新(cmd=8)
         if (isQQSong.value) {
@@ -758,6 +778,7 @@ const formatDate = (timestamp) => {
 const showPlaylistSelector = ref(false)
 const addingToPlaylist = ref(false)
 const handleAddToPlaylist = async (pid) => {
+    if (isQishuiSong.value) { messageStore.info('汽水歌单写入暂未开放'); return }
     if (addingToPlaylist.value) return
     
     // 更加稳健的本地歌曲判定：检查 ID 前缀或是否存在物理路径
@@ -770,7 +791,7 @@ const handleAddToPlaylist = async (pid) => {
     
     addingToPlaylist.value = true
     try {
-        const result = await userStore.addTrackToPlaylist(pid, playerStore.currentSong.id)
+        const result = isQQSong.value ? await qqUserStore.addSongToPlaylist(pid, playerStore.currentSong) : await userStore.addTrackToPlaylist(pid, playerStore.currentSong.id)
         if (result.success) {
             messageStore.success('已成功添加到歌单')
             showPlaylistSelector.value = false
@@ -882,6 +903,8 @@ onMounted(() => {
             <div class="song-name-container">
                 <h1 class="song-name">
                     {{ playerStore.currentSong.name }}
+                    <SongVipBadge :song="playerStore.currentSong" />
+                    <small v-if="playerStore.currentSong.isPreview" style="font-size:13px;opacity:.7">试听 {{ Math.round(playerStore.currentSong.duration) }} 秒 / 完整 {{ Math.round(playerStore.currentSong.fullDuration) }} 秒</small>
                 </h1>
             </div>
                 <div class="song-info">
@@ -894,16 +917,16 @@ onMounted(() => {
            <div class="action-item" :class="{ active: playerStore.isLiked }" @click="playerStore.toggleLike()">
               <Heart :size="22" :fill="playerStore.isLiked ? '#EC4141' : 'none'" :color="playerStore.isLiked ? '#EC4141' : 'currentColor'" />
            </div>
-           <!-- QQ 平台取消歌单管理,网易云和酷狗显示添加到歌单 -->
-           <div v-if="!isQQSong" class="action-item" @click="showPlaylistSelector = true"><Plus :size="24" /></div>
-           <div class="action-item" @click="handleDownload"><Download :size="22" /></div>
-           <div v-if="!isNonNeteaseSong" class="action-item" @click="handleShare"><Share2 :size="22" /></div>
-           <!-- 评论按钮:所有平台显示 -->
+            <!-- 仅显示平台已接入的操作 -->
+           <div class="action-item" @click="showPlaylistSelector = true"><Plus :size="24" /></div>
+           <div class="action-item" title="下载歌曲" @click="handleDownload"><Download :size="22" /></div>
+           <div v-if="!isNonNeteaseSong || isQishuiSong" class="action-item" @click="handleShare"><Share2 :size="22" /></div>
            <div class="action-item" @click="handleComment"><MessageSquare :size="22" /></div>
         </div>
 
         <!-- Playlist Selector Modal (网易云 + 酷狗) -->
-        <div v-if="showPlaylistSelector" class="playlist-selector-overlay" @click="showPlaylistSelector = false">
+        <QishuiPlaylistPicker v-if="isQishuiSong" :show="showPlaylistSelector" :song-id="playerStore.currentSong.id" @close="showPlaylistSelector = false" />
+        <div v-if="showPlaylistSelector && !isQishuiSong" class="playlist-selector-overlay" @click="showPlaylistSelector = false">
             <div class="playlist-selector-modal" @click.stop>
                 <div class="modal-header">
                     <h3>收藏到歌单</h3>
@@ -924,6 +947,15 @@ onMounted(() => {
                             </div>
                             <div class="name">{{ p.name }}</div>
                             <div class="count">{{ p.songCount || 0 }}首</div>
+                        </div>
+                    </template>
+                    <template v-else-if="isQishuiSong"><p>汽水歌单写入暂未开放，请在官方 App 中操作</p></template>
+                    <template v-else-if="isQQSong">
+                        <p v-if="!qqUserStore.isLoggedIn">请先登录 QQ 音乐</p>
+                        <p v-else-if="!qqUserStore.playlists.length">暂无歌单，<button @click="qqUserStore.fetchUserPlaylists()">刷新歌单</button></p>
+                        <div v-for="p in qqUserStore.playlists" :key="p.id" class="playlist-item clickable" @click="handleAddToPlaylist(p.id)">
+                            <div class="cover"><img v-if="p.coverImgUrl" :src="p.coverImgUrl" /></div>
+                            <div class="name">{{ p.name }}</div><div class="count">{{ p.songCount }}首</div>
                         </div>
                     </template>
                     <!-- 网易云平台: 原有逻辑 -->
@@ -988,7 +1020,8 @@ onMounted(() => {
             </div>
             <!-- 歌词设置项：默认折叠，点击「设置」按钮展开 -->
             <transition name="lyric-settings-collapse">
-                <div v-show="showLyricSettings" class="lyric-settings-wrap">
+                <div v-show="showLyricSettings" class="lyric-settings-wrap detail-liquid-panel" :style="{ '--detail-glass-blur': detailPreferences.glassBlur + 'px' }">
+                    <label class="group"><span class="label">玻璃朦胧</span><div class="opacity-row"><input v-model.number="detailPreferences.glassBlur" type="range" min="0" max="60" step="1" aria-label="玻璃朦胧程度" /><output>{{ detailPreferences.glassBlur }} px</output></div></label>
                     <div class="group">
                         <span class="label">页面风格</span>
                         <CustomSelect v-model="detailPreferences.style" :options="[{label: '经典', value: 'classic'}, {label: 'Apple Music', value: 'apple'}]" compact />
@@ -1103,7 +1136,8 @@ onMounted(() => {
               <button class="close-panel-btn" @click="showCommentPanel = false">返回歌词</button>
           </div>
           <!-- 酷狗平台:使用 KugouComment 组件(只读) -->
-          <div v-if="isKugouSong && playerStore.currentSong.mixsongid" class="comments-list">
+          <div v-if="isQishuiSong" class="comments-list"><QishuiComment v-if="showCommentPanel && playerStore.showSongDetail" :id="playerStore.currentSong.id" /></div>
+          <div v-else-if="isKugouSong && playerStore.currentSong.mixsongid" class="comments-list">
               <KugouComment
                   :id="playerStore.currentSong.mixsongid"
                   type="song"
@@ -1226,10 +1260,23 @@ onMounted(() => {
 .is-apple-detail .left-section > .cover-container,
 .is-apple-detail .left-section > .song-header,
 .is-apple-detail .left-section > .record-actions { display: none; }
-.is-apple-detail .right-comments { grid-column: 2; grid-row: 1; width: 100%; min-width: 0; height: 100%; color: #fff; background: #202623ee; border-radius: 8px; padding: 18px; }
+.is-apple-detail .right-comments {
+  --text-main: #f8fafc; --text-secondary: #d2dae4; --text-light: #bcc7d5;
+  --primary-color: #ffc4ce; --border-color: #ffffff26; --hover-bg: #ffffff12;
+  grid-column: 2; grid-row: 1; width: 100%; min-width: 0; height: 100%; box-sizing: border-box;
+  color: var(--text-main); background: linear-gradient(145deg, #4b5366f5, #343c4bf5);
+  border: 1px solid #ffffff30; box-shadow: 0 16px 48px #0002; border-radius: 18px; padding: 22px;
+}
 .is-apple-detail .right-comments :deep(.content-text),
 .is-apple-detail .right-comments :deep(.username),
 .is-apple-detail .right-comments :deep(.title) { color: #fff; }
+.is-apple-detail .right-comments :is(.bottom-info, .qq-like-count, .action-btn, .sort-btn, .comment-loading, .no-comment) { color: var(--text-secondary); }
+.is-apple-detail .right-comments :is(.comments-header, .comment-item, .comment-input-box, .sort-btn, .comment-input) { border-color: var(--border-color); }
+.is-apple-detail .right-comments :is(.replied-content, .comment-input, .reply-banner) { background: var(--hover-bg); color: var(--text-main); }
+.is-apple-detail .right-comments .comment-input::placeholder { color: var(--text-secondary); }
+.is-apple-detail .right-comments .sort-btn.active { background: #ffc4ce; border-color: #ffc4ce; color: #352630; }
+.is-apple-detail .right-comments :is(button, textarea):focus-visible { outline: 2px solid #ffc4ce; outline-offset: 3px; }
+.is-apple-detail .right-comments .action-btn:hover { background: var(--hover-bg); color: #fff; }
 @media (max-width: 760px) {
   .is-apple-detail .main-content { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 18px; padding: 8px 22px 12px; }
   .is-apple-detail .right-comments { grid-column: 1; grid-row: 2; }

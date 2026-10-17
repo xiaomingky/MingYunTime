@@ -1,5 +1,6 @@
 <script setup>
-import { ref, onMounted, watch } from 'vue'
+import SongVipBadge from '../../components/SongVipBadge.vue'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { usePlayerStore } from '../../store/player'
 import { useMessageStore } from '../../store/message'
@@ -14,11 +15,15 @@ const messageStore = useMessageStore()
 const loading = ref(false)
 const album = ref(null)
 const songs = ref([])
+const loadError = ref(''), page = ref(1), hasMore = ref(false), loadingMore = ref(false)
+let revision = 0
 
 const fetchAlbum = async () => {
+    const requestId = ++revision
     const albumid = route.params.id
     if (!albumid) return
     loading.value = true
+    loadError.value = ''; album.value = null; songs.value = []; page.value = 1; hasMore.value = false; loadingMore.value = false
     try {
         // /album/detail 实测返回 { status:1, data: [ {...} ] }（data 是数组，取第一个）
         // 字段：album_id/album_name/sizable_cover/author_name/publish_date/intro
@@ -27,6 +32,9 @@ const fetchAlbum = async () => {
             kugouAlbumDetail(albumid),
             kugouAlbumSongs(albumid, 1, 50)
         ])
+        if (requestId !== revision) return
+        if (infoRes.status === 'rejected') throw infoRes.reason
+        if (songsRes.status === 'rejected') throw songsRes.reason
         // 专辑详情：data 是数组，取第一个；兼容 data 是对象
         const infoData = (infoRes.status === 'fulfilled' && infoRes.value?.data) || {}
         const infoObj = Array.isArray(infoData) ? (infoData[0] || {}) : infoData
@@ -48,15 +56,33 @@ const fetchAlbum = async () => {
         const songList = Array.isArray(songsData) ? songsData :
             (songsData?.list || songsData?.songs || songsData?.info || songsData?.lists || [])
         songs.value = (Array.isArray(songList) ? songList : []).map(normalizeKugouSong).filter(Boolean)
+        hasMore.value = songsData.total !== undefined ? songs.value.length < Number(songsData.total) : songList.length === 50
         if (songs.value.length === 0 && songList.length > 0) {
             console.warn('[Kugou Album] 歌曲标准化后为空,原始字段:', songList.slice(0, 2))
         }
     } catch (e) {
+        if (requestId !== revision) return
+        loadError.value = e.message || '酷狗专辑加载失败'
         console.error('[Kugou Album] error:', e)
         messageStore.error('酷狗专辑加载失败')
     } finally {
-        loading.value = false
+        if (requestId === revision) loading.value = false
     }
+}
+
+const loadMore = async () => {
+    if (loadingMore.value || loading.value || !hasMore.value) return
+    const requestId = revision
+    loadingMore.value = true; loadError.value = ''
+    try {
+        const result = await kugouAlbumSongs(route.params.id, page.value + 1, 50)
+        if (requestId !== revision) return
+        const data = result?.data || {}, list = Array.isArray(data) ? data : data.list || data.info || []
+        const added = list.map(normalizeKugouSong).filter(s => s && !songs.value.some(old => old.hash === s.hash))
+        songs.value.push(...added); page.value++
+        hasMore.value = added.length > 0 && (data.total !== undefined ? songs.value.length < Number(data.total) : list.length === 50)
+    } catch (e) { if (requestId === revision) loadError.value = e.message }
+    finally { if (requestId === revision) loadingMore.value = false }
 }
 
 const playSong = (song, event = null) => {
@@ -71,10 +97,12 @@ const viewTab = ref('songs')
 
 watch(() => route.params.id, fetchAlbum)
 onMounted(fetchAlbum)
+onBeforeUnmount(() => revision++)
 </script>
 
 <template>
     <div class="kugou-album-page" v-loading="loading">
+        <div v-if="loadError" role="alert">{{ loadError }} <button @click="songs.length ? loadMore() : fetchAlbum()">重试</button></div>
         <div class="kugou-album-header" v-if="album">
             <img :src="album.picUrl" class="kugou-album-cover" />
             <div class="kugou-album-info">
@@ -96,7 +124,7 @@ onMounted(fetchAlbum)
                 <div class="kugou-song-info">
                     <div class="kugou-song-name">
                         <span class="name-text">{{ s.name }}</span>
-                        <span v-if="s.fee === 1 || s.isVip" class="kugou-vip-tag">VIP</span>
+                        <SongVipBadge :song="s" platform="kugou" />
                     </div>
                     <div class="kugou-song-artist">{{ s.artist }}</div>
                 </div>
@@ -106,6 +134,7 @@ onMounted(fetchAlbum)
         </div>
 
         <div v-if="viewTab === 'songs' && !loading && !songs.length" class="kugou-empty">专辑为空或加载失败</div>
+        <button v-if="viewTab === 'songs' && hasMore" :disabled="loadingMore" @click="loadMore">{{ loadingMore ? '加载中…' : '加载更多歌曲' }}</button>
 
         <!-- 评论区 (专辑评论) -->
         <KugouComment v-if="viewTab === 'comments' && album" :id="route.params.id" type="album" />

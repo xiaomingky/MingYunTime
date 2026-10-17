@@ -15,6 +15,9 @@ release_v171/
 token
 *.env
 .env
+# Local authenticated preview (Cookies, safeStorage state and browser databases)
+/dev/platform-user-profile/
+/dev/qishui-cdn-probe-profile/
 
 # 系统文件
 .DS_Store
@@ -82,3 +85,6 @@ installer/obj/
 /resources/*-api/libs/**/libs/
 
 /resources/.netease-build-dependencies/
+
+# Native helpers extracted and verified by prepare:qishui
+/resources/qishui-runtime/

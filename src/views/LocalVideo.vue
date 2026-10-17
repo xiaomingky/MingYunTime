@@ -1,12 +1,14 @@
 <script setup>
+import SelectionMark from '../components/SelectionMark.vue'
 // 本地视频 + 链接/直播流 播放
 // - 本地视频：通过文件对话框导入，扫描元数据
 // - 链接/直播流：用户添加 http(s)://...mp4/m3u8/flv 或直播流地址
 //   支持：mp4/webm 直链、HLS(m3u8)、FLV；直播流自动识别并标记 LIVE
 import { ref, computed, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { usePlayerStore } from '../store/player'
+import { normalizeLocalFileUrl } from '../utils/local-file-url'
 import { useMessageStore } from '../store/message'
-import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube, Copy, Send, MonitorPlay, ListFilter, ImagePlus, Bookmark, Square, CheckSquare, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { FolderOpen, Play, Trash2, FolderPlus, Film, Clock, Link2, Radio, Plus, Pencil, Check, X, Download, Search, Globe, User, LogOut, RefreshCw, Youtube, Copy, Send, MonitorPlay, ListFilter, ImagePlus, Bookmark, Settings, ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { downloadVideo, parseVideoUrl, biliLoginQr, biliLoginCheck, biliLoginStatus, biliLogout, biliTvLoginQr, biliTvLoginCheck, biliTvLoginStatus, biliTvLogout, youtubeLoginOpen, youtubeLoginClose, youtubeLoginStatus, youtubeLogout, onYoutubeLoginDone, biliLiveRoom, biliLiveAreas, biliLiveStart, biliLiveUpdate, biliLiveStop, biliFavList, biliFavContent, biliFavSeason, biliArchives, downloadStart, onDownloadDone, onDownloadError, downloadGetDir, getBiliApiMode, setBiliApiMode } from '../api'
 import CustomSelect from '../components/CustomSelect.vue'
 import BiliCookieLogin from '../components/BiliCookieLogin.vue'
@@ -1220,7 +1222,7 @@ function grabFrameDataURL(url) {
         v.playsInline = true
         v.preload = 'auto'
         v.crossOrigin = 'anonymous'
-        v.src = url
+        v.src = normalizeLocalFileUrl(url)
         let settled = false
         const finish = (val) => { if (!settled) { settled = true; resolve(val) } }
         const cleanup = () => { try { v.removeAttribute('src'); v.load() } catch (e) {} }
@@ -1797,8 +1799,7 @@ const typeLabel = (s) => {
                 <span>共解析到 {{ parseResults.length }} 个媒体结果{{ parsePageTitle ? ` · ${parsePageTitle}` : '' }}</span>
                 <span class="parse-batch-actions">
                     <label class="parse-check-all" @click.prevent="toggleParseAll">
-                        <CheckSquare v-if="parseAllChecked" :size="16" class="check-icon active" />
-                        <Square v-else :size="16" class="check-icon" />
+                        <SelectionMark :checked="parseAllChecked" :size="16" class="check-icon" :mixed="parseSel.size > 0" />
                         全选
                     </label>
                     <button class="live-start-btn small" :disabled="!parseSel.size || batchDownloading" @click="downloadParseBatch">
@@ -1816,8 +1817,7 @@ const typeLabel = (s) => {
                     <div v-for="(s, i) in (parseGroupOpen[g.key] ? g.list : g.list.slice(0, 1))" :key="s.url" class="parse-result-card" :class="{ 'parse-group-sub': i > 0 }">
                         <label class="parse-check" @click.stop>
                             <input type="checkbox" class="visually-hidden" :checked="parseSel.has(s.url)" @change="toggleParseSel(s.url)" />
-                            <CheckSquare v-if="parseSel.has(s.url)" :size="16" class="check-icon active" />
-                            <Square v-else :size="16" class="check-icon" />
+                            <SelectionMark :checked="parseSel.has(s.url)" :size="16" class="check-icon" />
                         </label>
                         <div class="parse-result-index" @click="playParsedStream(s)">{{ i + 1 }}</div>
                         <div v-if="s.cover" class="parse-result-cover" @click="playParsedStream(s)">
@@ -2106,8 +2106,7 @@ const typeLabel = (s) => {
                     <div v-for="m in favMedias" :key="m.id" class="bili-item">
                         <label class="bili-check" @click.stop>
                             <input type="checkbox" class="visually-hidden" :disabled="!m.downloadable" :checked="favSelected.has(m.id)" @change="toggleFavSel(m.id)" />
-                            <CheckSquare v-if="favSelected.has(m.id)" :size="16" class="check-icon active" />
-                            <Square v-else :size="16" class="check-icon" />
+                            <SelectionMark :checked="favSelected.has(m.id)" :size="16" class="check-icon" />
                         </label>
                         <img class="bili-item-cover" :src="m.cover" alt="" referrerpolicy="no-referrer" @error="m.cover = ''" />
                         <div class="bili-item-info">

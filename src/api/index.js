@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { ensureLocalService } from '../utils/local-service'
+import { NETEASE_DIRECT_ROUTES } from './netease-direct'
 
 // ========== 平台配置 ==========
 // 平台切换：网易云（默认）/ QQ 音乐
@@ -18,6 +19,7 @@ export const PLATFORMS = {
         themeColor: '#31C27C',
         icon: 'qq'
     },
+    qishui: { key: 'qishui', label: '汽水音乐', themeColor: '#257D72', icon: 'qishui' },
     kugou: {
         key: 'kugou',
         label: '酷狗概念版',
@@ -75,39 +77,22 @@ export function switchApiLine(lineKey) {
     return true
 }
 
-// 用户自建后端（账号锁 + 云音乐）地址
-export const CLOUD_BASE_URL = import.meta.env.VITE_CLOUD_BASE_URL || ''
-
-const cloudRequest = axios.create({
-    baseURL: CLOUD_BASE_URL,
-    timeout: 60000
-})
-
-cloudRequest.interceptors.request.use(config => {
-    const token = localStorage.getItem('music_cloud_token')
-    if (token) {
-        config.headers = config.headers || {}
-        config.headers.Authorization = `Bearer ${token}`
-    }
-    return config
-})
-
-cloudRequest.interceptors.response.use(
-    response => response.data,
-    error => {
-        if (error.response?.data) {
-            const body = error.response.data
-            // 错误也以 body resolve，但附带 HTTP 状态码，便于调用方区分 401(令牌无效)/404(锁不存在) 等
-            if (body && typeof body === 'object') return { ...body, __status: error.response.status }
-            return { message: String(body), __status: error.response.status }
-        }
-        return Promise.reject(error)
-    }
-)
-
 // Request interceptor to add cookie
 request.interceptors.request.use(
     async config => {
+        const routeURL = new URL(config.url, 'https://music.163.com')
+        const bridge = window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer
+        // The main line now uses independently verified native contracts for
+        // listed operations. Failure is surfaced; credentials are not retried
+        // against an unrelated online API service.
+        if ((localStorage.getItem('api_line') || 'main') === 'main' && bridge?.invoke && NETEASE_DIRECT_ROUTES.has(routeURL.pathname)) {
+            const params = { ...Object.fromEntries(routeURL.searchParams), ...(config.params || {}) }
+            const cookie = params.cookie ?? localStorage.getItem('music_cookie') ?? ''
+            delete params.cookie
+            config.adapter = async cfg => ({ data: await bridge.invoke('netease:request', { route: routeURL.pathname, params, cookie }),
+                status: 200, statusText: 'OK', headers: {}, config: cfg })
+            return config
+        }
         if (!config._retried && (localStorage.getItem('api_line') || 'main') === 'main') {
             _neteaseLocalAvailable = await ensureLocalService('netease')
             config.baseURL = _neteaseLocalAvailable ? NETEASE_LOCAL_BASE : API_LINES[1].url
@@ -182,7 +167,7 @@ export const getLyric = (id) => request.get(`/lyric?id=${id}`)
 export const getNewLyric = (id) => request.get(`/lyric/new?id=${id}`)
 export const getPlaylistDetail = (id) => request.get(`/playlist/detail?id=${id}`)
 export const getMvAll = (area = '全部', limit = 10) => request.get(`/mv/all?area=${area}&limit=${limit}`)
-export const cloudSearch = (keywords, type = 1) => request.get(`/cloudsearch?keywords=${keywords}&type=${type}`)
+export const cloudSearch = (keywords, type = 1, limit = 30, offset = 0) => request.get('/cloudsearch', { params: { keywords, type, limit, offset } })
 export const getUserPlaylist = (uid) => request.get(`/user/playlist?uid=${uid}`)
 export const getTopPlaylist = (cat = '全部', limit = 10) => request.get(`/top/playlist?cat=${cat}&limit=${limit}`)
 export const getToplist = () => request.get('/toplist')
@@ -257,11 +242,6 @@ export const createQrCode = (key) => request.get(`/login/qr/create?key=${key}&qr
 export const checkQrStatus = (key) => request.get(`/login/qr/check?key=${key}&timestamp=${Date.now()}`)
 export const sentCaptcha = (phone) => request.get(`/captcha/sent?phone=${phone}`)
 export const verifyCaptcha = (phone, captcha) => request.get(`/captcha/verify?phone=${phone}&captcha=${captcha}`)
-
-// ---------- 自建后端：账号同步与锁（设置请去后端网站） ----------
-export const syncDesktopAccount = (userId, cookie) => cloudRequest.post('/api/auth/desktop-login', { userId, cookie })
-export const checkLockStatus = () => cloudRequest.get('/api/lock/status')
-export const verifyLockPassword = (password) => cloudRequest.post('/api/lock/verify', { password })
 
 // ---------- 动漫模块（通过 Electron IPC 调用主进程） ----------
 const animeBridge = () => (window.bridge || window.__ELECTRON_BRIDGE__)
@@ -372,7 +352,7 @@ export const onVideoDownloadError = (cb) => animeBridge().onVideoDownloadError(c
 // ---------- 统一下载管理器（新） ----------
 // category: 'music' | 'movie' | 'anime' | 'mv' | 'video'
 export const downloadStart = (params) => animeBridge().downloadStart(params)
-export const downloadProbeName = (url) => animeBridge().invoke('download:probe-name', url)
+export const downloadProbeName = (url, headers) => animeBridge().invoke('download:probe-name', { url, headers })
 export const downloadPause = (downloadId) => animeBridge().downloadPause(downloadId)
 export const downloadResume = (downloadId) => animeBridge().downloadResume(downloadId)
 export const onDownloadPaused = (cb) => animeBridge().onDownloadPaused(cb)

@@ -1,4 +1,5 @@
 <script setup>
+import SongVipBadge from '../../components/SongVipBadge.vue'
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore } from '../../store/player'
@@ -28,6 +29,8 @@ const page = ref(1)
 const total = ref(0)
 const loadingMore = ref(false)
 const needLogin = ref(false) // 搜索接口需要登录 token
+const searchError = ref('')
+let revision = 0, suggestionRevision = 0
 
 const tabs = [
     { key: 'song', label: '歌曲' },
@@ -56,6 +59,7 @@ const fetchHotKeys = async () => {
 const suggests = ref([])
 let suggestTimer = null
 const fetchSuggests = (val) => {
+    const requestId = ++suggestionRevision
     if (suggestTimer) clearTimeout(suggestTimer)
     if (!val || !val.trim()) {
         suggests.value = []
@@ -64,12 +68,13 @@ const fetchSuggests = (val) => {
     suggestTimer = setTimeout(async () => {
         try {
             const res = await kugouSearchSuggest(val.trim())
+            if (requestId !== suggestionRevision) return
             const dataArr = Array.isArray(res?.data) ? res.data : []
             // 扁平化 RecordDatas 数组，取 HintInfo 字段
             const hints = dataArr.flatMap(d => d?.RecordDatas || []).map(r => r.HintInfo || r.hintInfo || '').filter(Boolean)
             suggests.value = hints.slice(0, 8)
         } catch (e) {
-            suggests.value = []
+            if (requestId === suggestionRevision) suggests.value = []
         }
     }, 250)
 }
@@ -97,7 +102,7 @@ const currentCount = computed(() => {
 const hasMore = computed(() => total.value > 0 && currentCount.value < total.value)
 
 // 通用分页拉取（targetPage 为目标页码，append 为 true 时追加到现有列表）
-const fetchSearchResults = async (targetPage, append) => {
+const fetchSearchResults = async (targetPage, append, requestId) => {
     // 文档：/search 接口支持 type 参数按分类搜索，每页 pagesize=30
     // /search/complex 是综合搜索,每类只返回少量结果(约7条),不适合按 tab 浏览
     // 改用 /search?type=song|special|author|album|mv 获取对应分类的完整结果
@@ -110,6 +115,7 @@ const fetchSearchResults = async (targetPage, append) => {
     }
     const searchType = typeMap[activeTab.value] || 'song'
     const res = await kugouSearch(keywords.value.trim(), targetPage, 30, searchType)
+    if (requestId !== revision) return null
     // error_code 152 = 未携带认证信息或 token 失效
     const errCode = res?.error_code || res?.ErrorCode || 0
     if (errCode === 152) {
@@ -125,11 +131,11 @@ const fetchSearchResults = async (targetPage, append) => {
 
     if (activeTab.value === 'song') {
         const normalized = (Array.isArray(list) ? list : []).map(normalizeKugouSong).filter(Boolean)
-        if (append) songs.value.push(...normalized)
+        if (append) songs.value.push(...normalized.filter(s => !songs.value.some(old => old.hash === s.hash)))
         else songs.value = normalized
     } else if (activeTab.value === 'playlist') {
         const normalized = (Array.isArray(list) ? list : []).map(p => normalizeKugouPlaylist(p)).filter(p => p.id)
-        if (append) playlists.value.push(...normalized)
+        if (append) playlists.value.push(...normalized.filter(s => !playlists.value.some(old => old.id === s.id)))
         else playlists.value = normalized
     } else if (activeTab.value === 'singer') {
         // 歌手搜索可能返回分组结构 data.info[].singer[] 或扁平结构 data.info[]
@@ -137,33 +143,39 @@ const fetchSearchResults = async (targetPage, append) => {
         const flatSingers = flattenKugouSingerList(res?.data)
         const singerList = flatSingers.length > 0 ? flatSingers : (Array.isArray(list) ? list : [])
         const normalized = singerList.map(normalizeKugouSinger).filter(s => s.id)
-        if (append) singers.value.push(...normalized)
+        if (append) singers.value.push(...normalized.filter(s => !singers.value.some(old => old.id === s.id)))
         else singers.value = normalized
     } else if (activeTab.value === 'album') {
         const normalized = (Array.isArray(list) ? list : []).map(normalizeKugouAlbum).filter(a => a.id)
-        if (append) albums.value.push(...normalized)
+        if (append) albums.value.push(...normalized.filter(s => !albums.value.some(old => old.id === s.id)))
         else albums.value = normalized
     }
     return { count: Array.isArray(list) ? list.length : 0, total: newTotal }
 }
 
 const doSearch = async () => {
+    const requestId = ++revision
     const kw = keywords.value.trim()
     if (!kw) return
     router.replace({ path: '/kugou/search', query: { keywords: kw } })
     loading.value = true
+    loadingMore.value = false
+    searchError.value = ''
     needLogin.value = false
     page.value = 1
     total.value = 0
     songs.value = []; playlists.value = []; singers.value = []; albums.value = []
     try {
-        const result = await fetchSearchResults(1, false)
+        const result = await fetchSearchResults(1, false, requestId)
+        if (requestId !== revision || !result) return
         total.value = result.total
     } catch (e) {
+        if (requestId !== revision) return
+        searchError.value = e.message || '酷狗搜索失败'
         console.error('[Kugou Search] error:', e)
         messageStore.error('酷狗搜索失败')
     } finally {
-        loading.value = false
+        if (requestId === revision) loading.value = false
     }
 }
 
@@ -172,16 +184,23 @@ const loadMoreSearch = async () => {
     if (loading.value || loadingMore.value) return
     if (!hasMore.value) return
     loadingMore.value = true
+    const requestId = revision
+    const before = currentCount.value
+    searchError.value = ''
     try {
         const nextPage = page.value + 1
-        const result = await fetchSearchResults(nextPage, true)
+        const result = await fetchSearchResults(nextPage, true, requestId)
+        if (requestId !== revision || !result) return
+        if (!result.count || currentCount.value === before) { total.value = currentCount.value; return }
         page.value = nextPage
         total.value = result.total
     } catch (e) {
+        if (requestId !== revision) return
+        searchError.value = e.message || '加载更多失败'
         console.error('[Kugou Search] loadMore error:', e)
         messageStore.error('加载更多失败')
     } finally {
-        loadingMore.value = false
+        if (requestId === revision) loadingMore.value = false
     }
 }
 
@@ -225,6 +244,7 @@ const goToSinger = (id) => id && router.push(`/kugou/singer/${id}`)
 const goToAlbum = (id) => id && router.push(`/kugou/album/${id}`)
 
 watch(() => route.query.keywords, (val) => {
+    if ((val || '') === keywords.value) return
     keywords.value = val || ''
     localInput.value = val || ''
     page.value = 1
@@ -237,11 +257,12 @@ onMounted(() => {
     if (keywords.value) doSearch()
 })
 
-onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
+onUnmounted(() => { revision++; suggestionRevision++; if (suggestTimer) clearTimeout(suggestTimer) })
 </script>
 
 <template>
     <div class="kugou-search-page">
+        <div v-if="searchError" role="alert" class="kugou-search-error">{{ searchError }} <button @click="currentCount ? loadMoreSearch() : doSearch()">重试</button></div>
         <!-- 搜索框 -->
         <div class="kugou-search-box-wrap">
             <div class="kugou-search-box">
@@ -314,7 +335,7 @@ onUnmounted(() => { if (suggestTimer) clearTimeout(suggestTimer) })
                             <div class="kugou-song-info">
                                 <div class="kugou-song-name">
                                     <span class="name-text">{{ s.name }}</span>
-                                    <span v-if="s.fee === 1 || s.isVip" class="kugou-vip-tag">VIP</span>
+                                    <SongVipBadge :song="s" platform="kugou" />
                                 </div>
                                 <div class="kugou-song-artist">{{ s.artist }}</div>
                             </div>

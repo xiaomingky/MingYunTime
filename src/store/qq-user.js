@@ -1,196 +1,231 @@
 import { defineStore } from 'pinia'
 import {
-    qqWebLogin,
-    qqUserPlaylists,
-    qqUserDetail,
-    getQQCookie,
-    setQQCookie,
-    clearQQCookie,
-    getQQProfile,
-    setQQProfile,
-    clearQQProfile
+    qqWebLogin, qqValidateSession, qqRestoreSession, qqLogout, qqUserLikedSongs,
+    qqOperMyLike, qqOperSonglist, qqSongDetail, toQQTrack, qqPlaylistGroup,
+    getQQCookie, setQQCookie, clearQQCookie, getQQProfile, setQQProfile, clearQQProfile
 } from '../api/qq'
 
-// QQ 音乐用户登录态 Store
-// 与网易云 user.js 完全隔离:登录态存在 qq_cookie/qq_profile localStorage 键中
-//
-// 登录方式:
-//   1. 官网扫码登录:打开 y.qq.com 登录页,扫码后采集完整 cookie
-//   2. Cookie 登录:用户直接粘贴 cookie(需包含 qm_keyst)
-//
-// 用户信息策略(简化):
-//   - 昵称统一显示"已登录"(不调用官方 API)
-//   - 头像不显示(留空,前端显示默认占位符)
 export const useQQUserStore = defineStore('qq-user', {
-    state: () => ({
-        isLoggedIn: !!getQQCookie() && !!getQQProfile(),
-        profile: getQQProfile(),
-        cookie: getQQCookie(),
-        playlists: [],
-        // "我喜欢"歌单的 dissid(用于红心收藏操作,替代 501 的 oper-mylike)
-        likedPlaylistId: '',
-        uin: getQQProfile()?.userId || '',
-        // 登录中状态(用于 UI 显示加载态)
-        logining: false,
-        loginMessage: ''
+    state: () => ({ sessionCheckedAt: 0,
+        isLoggedIn: false, profile: getQQProfile(),
+        cookie: getQQCookie(), uin: getQQProfile()?.userId || '', playlists: [], playlistsLoading:false, playlistsError:'', playlistsRequest:0, collectedPlaylists:[],
+        likedPlaylistId: '', likedSongs: [], likedLoaded: false, likedIncomplete: false,
+        logining: false, loginMessage: '', accountError: '', revision: 0, likeBusy: false,
+        vipLoading: false, vipError: '', vipCheckedAt: 0, vipRequest: 0
     }),
+    getters: {
+        createdPlaylists: state => state.playlists.filter(p => String(p.id) !== String(state.likedPlaylistId))
+    },
     actions: {
-        // 触发官网扫码登录
-        // 调用后会打开 y.qq.com 登录窗口,用户扫码后自动采集 cookie
-        // 登录成功后立即拉取用户歌单
-        // 返回 { success, message?, profile? }
-        async webLogin() {
-            if (this.logining) return { success: false, message: '正在登录中,请勿重复操作' }
+        async restoreSession() {
+            if (this.logining || this.isLoggedIn) return
+            const revision = this.revision
             this.logining = true
-            this.loginMessage = '正在打开 QQ 音乐官网登录页...'
             try {
-                const res = await qqWebLogin()
-                if (!res?.success) {
-                    this.loginMessage = res?.message || '登录失败'
-                    return { success: false, message: this.loginMessage }
+                const legacy = getQQCookie()
+                if (legacy) {
+                    const result = await this.acceptSession(legacy)
+                    if (!result.success && revision === this.revision) this.accountError = result.message
+                    return result
                 }
-                const { cookie, uin, nickname, avatarUrl } = res
-                if (!cookie) {
-                    this.loginMessage = '登录失败:未能采集到 cookie'
-                    return { success: false, message: this.loginMessage }
-                }
-                this.cookie = cookie
-                this.uin = uin || ''
-                this.isLoggedIn = true
-                this.profile = { userId: uin || '', uin: uin || '', nickname: nickname || '已登录', avatarUrl: avatarUrl || '' }
-                setQQCookie(cookie)
-                setQQProfile(this.profile)
-                this.loginMessage = '登录成功'
-
-                // 异步拉取用户歌单
-                if (uin) {
-                    this.fetchUserPlaylists()
-                    // 兜底:如果官网登录未拿到真实昵称/头像,调上游 API 补全
-                    if (!avatarUrl || nickname === '已登录' || !nickname) {
-                        this.fetchRealProfile()
-                    }
-                }
-                return { success: true, profile: this.profile }
-            } catch (e) {
-                console.error('[QQ Login] webLogin error:', e)
-                this.loginMessage = e?.message || '登录异常'
-                return { success: false, message: this.loginMessage }
-            } finally {
-                this.logining = false
-            }
+                const result = await qqRestoreSession()
+                if (revision !== this.revision) return
+                if (result?.code !== 0) throw new Error(result?.message || 'QQ 登录恢复失败，请重试')
+                if (!result.data?.cookie || !result.data?.profile) return
+                this.revision++
+                this.cookie = result.data.cookie; this.profile = result.data.profile
+                this.uin = String(this.profile.userId); this.isLoggedIn = true
+                setQQCookie(this.cookie); setQQProfile(this.profile)
+                this.vipError = ''; this.vipCheckedAt = Date.now(); this.sessionCheckedAt = Date.now()
+                await Promise.allSettled([this.fetchUserPlaylists(), this.fetchLikedSongs()])
+                this.syncPlayerLikes()
+            } catch (error) { if (revision === this.revision) this.accountError = error.message }
+            finally { this.logining = false }
         },
-        // Cookie 登录:用户直接粘贴 cookie(需包含 qm_keyst)
-        // 从 cookie 中提取 uin,验证 cookie 有效性(可选)
-        // 返回 { success, message?, profile? }
-        async cookieLogin(rawCookie) {
-            if (!rawCookie || typeof rawCookie !== 'string') {
-                return { success: false, message: 'Cookie 不能为空' }
-            }
-            const cookie = rawCookie.trim()
-            // 必须包含 qm_keyst(QQ 音乐核心鉴权 token)
-            if (!/qm_keyst\s*=/.test(cookie)) {
-                return { success: false, message: 'Cookie 缺少 qm_keyst 字段,请确保复制完整 cookie' }
-            }
-            // 从 cookie 中提取 uin
-            let uin = ''
-            // 明文 uin
-            const uinMatch = cookie.match(/(?:^|;\s*)uin\s*=\s*[oO]?(\d+)/)
-            if (uinMatch) {
-                uin = uinMatch[1].replace(/^0+/, '')
-            }
-            // wxuin(微信登录)
-            if (!uin) {
-                const wxuinMatch = cookie.match(/(?:^|;\s*)wxuin\s*=\s*[oO]?(\d+)/)
-                if (wxuinMatch) {
-                    uin = wxuinMatch[1].replace(/^0+/, '')
-                }
-            }
+        async acceptSession(cookie, suppliedUin = '', isCurrent = () => true, nativeGeneration, qrGeneration) {
+            const revision = this.revision
+            if (!isCurrent()) return { success: false, message: '登录已取消' }
+            const res = await qqValidateSession(cookie, suppliedUin, true, nativeGeneration, qrGeneration)
+            if (revision !== this.revision || !isCurrent()) return { success: false, message: '登录已取消' }
+            if (res?.code !== 0 || !res?.data?.userId) return { success: false, message: res?.message || '登录凭据无效' }
+            this.revision++
             this.cookie = cookie
-            this.uin = uin
+            this.vipRequest++; this.vipLoading = false; this.vipError = ''
+            this.uin = String(res.data.userId)
+            this.profile = { ...res.data, nickname: res.data.nickname || 'QQ 音乐用户' }
             this.isLoggedIn = true
-            // 先用默认值,登录后立即异步拉取真实昵称/头像
-            this.profile = { userId: uin || '', uin: uin || '', nickname: '已登录', avatarUrl: '' }
-            setQQCookie(cookie)
-            setQQProfile(this.profile)
-            this.loginMessage = 'Cookie 登录成功'
-
-            // 异步拉取真实用户信息(昵称/头像)和歌单
-            if (uin) {
-                this.fetchRealProfile()
-                this.fetchUserPlaylists()
-            }
+            this.playlists = []; this.collectedPlaylists = []; this.playlistsError = ''; this.likedSongs = []; this.likedLoaded = false; this.likedPlaylistId = ''
+            this.accountError = ''; this.loginMessage = '登录成功'
+            localStorage.removeItem('qq_liked_songs')
+            setQQCookie(cookie); setQQProfile(this.profile)
+            this.vipError = ''; this.vipCheckedAt = Date.now(); this.sessionCheckedAt = Date.now()
+            const results = await Promise.allSettled([this.fetchUserPlaylists(), this.fetchLikedSongs()])
+            if (revision + 1 !== this.revision) return { success: false, message: '账号已切换' }
+            const failure = results.find(result => result.status === 'rejected')
+            if (failure) this.accountError = failure.reason?.message || '部分账号数据未同步，请刷新后重试'
+            this.syncPlayerLikes()
             return { success: true, profile: this.profile }
         },
-        // 调用上游 API 获取真实昵称和头像
-        // 适用于 Cookie 登录后补全用户信息
-        async fetchRealProfile() {
-            if (!this.uin || !this.cookie) return
+        async webLogin(mode = 'qq') {
+            if (this.logining) return { success: false, message: '正在登录中，请勿重复操作' }
+            this.logining = true; this.loginMessage = '请在 QQ 音乐官网窗口完成登录'
+            const revision = this.revision
             try {
-                const res = await qqUserDetail(this.uin, this.cookie)
-                // IPC 返回: { code:0, data: { nickname, avatarUrl, isVip, vipLevel, vipIcon, uin } }
-                const data = res?.data || {}
-                const nickname = data?.nickname || ''
-                const avatarUrl = data?.avatarUrl || ''
-                const isVip = !!data?.isVip
-                const vipLevel = data?.vipLevel || 0
-                const vipIcon = data?.vipIcon || ''
-                // 任一字段有值就更新(避免 fetchRealProfile 返回空对象覆盖已有数据)
-                if (nickname || avatarUrl || isVip) {
-                    this.profile = {
-                        ...this.profile,
-                        nickname: nickname || this.profile.nickname,
-                        avatarUrl: avatarUrl || this.profile.avatarUrl,
-                        isVip,
-                        vipLevel,
-                        vipIcon
-                    }
-                    setQQProfile(this.profile)
-                    console.log('[QQ] fetchRealProfile 成功:', nickname || '(昵称空)', avatarUrl ? '头像已获取' : '头像空', 'vip=', isVip, 'lv=', vipLevel)
-                } else {
-                    console.warn('[QQ] fetchRealProfile 返回空 data:', JSON.stringify(res).slice(0, 200))
-                }
-            } catch (e) {
-                console.error('[QQ] fetchRealProfile error:', e)
-            }
+                const res = await qqWebLogin(mode)
+                if (revision !== this.revision) return { success: false, message: '登录已取消' }
+                if (!res?.success || !res.cookie) return { success: false, message: res?.message || '未取得登录凭据' }
+                return await this.acceptSession(res.cookie, res.uin)
+            } catch (e) { return { success: false, message: e.message || '登录异常' } }
+            finally { this.logining = false }
         },
-        // 拉取用户歌单
-        // QQ API 的 getUserPlaylists 需要 uin + cookie 鉴权
-        // 库 normalize 后返回: { code:0, data: { playlists: [...] } }
+        async cookieLogin(rawCookie) {
+            if (!rawCookie?.trim() || this.logining) return { success: false, message: '请填写 Cookie，或等待当前登录完成' }
+            this.logining = true
+            try { return await this.acceptSession(rawCookie.trim()) }
+            catch (e) { return { success: false, message: e.message || '验证失败' } }
+            finally { this.logining = false }
+        },
+        async fetchRealProfile() {
+            return this.fetchVipInfo()
+        },
+        async fetchVipInfo() {
+            if (!this.isLoggedIn || !this.uin || !this.cookie) return false
+            const revision = this.revision
+            const request = ++this.vipRequest
+            const active = () => revision === this.revision && request === this.vipRequest && this.isLoggedIn
+            this.vipLoading = true; this.vipError = ''
+            try {
+                const res = await qqValidateSession(this.cookie, this.uin)
+                if (!active()) return false
+                if (res?.code !== 0 || String(res.data?.userId) !== String(this.uin) || typeof res.data?.isVip !== 'boolean') throw new Error(res?.message || '会员身份验证失败，请重试')
+                this.profile = { ...this.profile, ...res.data }; setQQProfile(this.profile)
+                this.accountError = ''
+                this.vipCheckedAt = Date.now(); this.sessionCheckedAt = Date.now()
+                return true
+            } catch(e) { if (active()) { this.vipError = e.message || '会员查询失败，请重试'; this.accountError = this.vipError }; return false }
+            finally { if (active()) this.vipLoading = false }
+        },
         async fetchUserPlaylists() {
             if (!this.uin || !this.cookie) return
+            const revision = this.revision, uin = this.uin
+            const request = this.playlistsRequest = (this.playlistsRequest || 0) + 1
+            const active = () => revision === this.revision && request === this.playlistsRequest
+            this.playlistsLoading = true; this.playlistsError = ''
             try {
-                const res = await qqUserPlaylists(this.uin, this.cookie, 0, 30)
-                const data = res?.data || res?.response?.data || res || {}
-                const creatorList = data?.playlists || data?.creatorDiss || data?.mydiss?.list || data?.mymusic || data?.playlist || data?.list || data?.disslist || []
-                console.log('[QQ] fetchUserPlaylists 原始数据 keys:', Object.keys(data), '歌单数组长度:', Array.isArray(creatorList) ? creatorList.length : 0)
-                this.playlists = (Array.isArray(creatorList) ? creatorList : []).map(p => ({
-                    id: p.tid || p.dissid || p.id || p.diss_id || '',
-                    name: p.diss_name || p.dissname || p.title || p.name || '',
-                    coverImgUrl: p.diss_cover || p.picurl || p.logo || p.pic || p.picurl2 || '',
-                    playCount: p.listennum || p.visitnum || 0,
-                    songCount: p.songnum || p.song_count || 0,
-                    creator: p.creator?.name || p.nickname || p.creator_name || '',
-                    type: p.type || 0
-                })).filter(p => p.id)
-                // 提取"我喜欢"歌单的 dissid(type===1 或名称含"喜欢")
-                // 用于红心收藏操作(替代 501 的 oper-mylike 接口)
-                const liked = this.playlists.find(p => p.type === 1 || (p.name && p.name.includes('喜欢')))
-                this.likedPlaylistId = liked?.id || ''
-                console.log('[QQ] fetchUserPlaylists 成功:', this.playlists.length, '个歌单, 我喜欢歌单ID:', this.likedPlaylistId || '(未找到)')
-            } catch (e) {
-                console.error('[QQ] fetchUserPlaylists error:', e)
-                this.playlists = []
+                const loadGroup = async kind => {
+                    const all = []; let offset = 0
+                    for (let page=0;page<100;page++) {
+                        if(!active())return []
+                        const res=await qqPlaylistGroup(uin,kind,offset,100)
+                        if(!active())return []
+                        if(res?.code!==0)throw Error(res?.message || 'QQ 歌单加载失败')
+                        const list=res.data?.playlists
+                        if(!Array.isArray(list))throw Error('QQ 歌单响应不完整')
+                        all.push(...list);offset+=list.length
+                        if(!res.data.hasMore)return all
+                        if(!list.length || page===99)throw Error('QQ 歌单分页未完成')
+                    }
+                }
+                const groups=await Promise.allSettled([loadGroup('created'),loadGroup('collected')])
+                if(!active())return
+                const normalize=p=>({id:String(p.dissid||p.tid||p.id||''),name:p.diss_name||p.title||p.name||'',coverImgUrl:p.picurl||p.logo||'',songCount:p.song_count??p.songnum??0,type:Number(p.type||0),creator:p.creator?.name||p.nickname||'',kind:p.kind})
+                if(groups[0].status==='fulfilled'){this.playlists=groups[0].value.map(normalize).filter(p=>p.id);this.likedPlaylistId=this.playlists.find(p=>p.type===1)?.id || this.likedPlaylistId}
+                if(groups[1].status==='fulfilled')this.collectedPlaylists=groups[1].value.map(normalize).filter(p=>p.id)
+                this.playlistsError=groups.map((r,i)=>r.status==='rejected'?`${i?'收藏':'自建'}歌单：${r.reason?.message||'加载失败'}`:'').filter(Boolean).join('；')
+            } catch (e) { if (active()) this.playlistsError = e.message }
+            finally { if(active())this.playlistsLoading=false }
+        },
+        async fetchLikedSongs() {
+            if (!this.isLoggedIn || !this.uin) return { songs: [] }
+            const revision = this.revision, all = []
+            let offset = 0, info = {}, incomplete = false
+            for (let page = 0; page < 100; page++) {
+                const res = await qqUserLikedSongs(this.uin, this.cookie, offset, 200)
+                if (revision !== this.revision) return { songs: [] }
+                if (res?.code !== 0) throw new Error(res?.message || '我喜欢的音乐加载失败')
+                const list = res.data?.songs || []
+                info = res.data?.info || info; incomplete ||= !!res.data?.incomplete
+                all.push(...list); offset += list.length
+                if (!res.data?.hasMore) break
+                if (!list.length || page === 99) throw new Error('收藏歌曲分页未完成，请重试')
             }
+            this.likedSongs = all.map(toQQTrack).filter(Boolean)
+            this.likedPlaylistId = String(info.id || this.likedPlaylistId || '')
+            this.likedLoaded = true; this.likedIncomplete = incomplete
+            return { songs: this.likedSongs, info, incomplete }
+        },
+        isSongLiked(song) {
+            const id = String(song?.songmid || song?.id || '')
+            return this.likedSongs.some(s => String(s.songmid || s.id) === id)
+        },
+        syncPlayerLikes() {
+            const revision = this.revision
+            import('./player').then(({ usePlayerStore }) => {
+                if (revision !== this.revision) return
+                const player = usePlayerStore()
+                if (player.currentSong?.platform === 'qq') player.isLiked = this.isLoggedIn && this.isSongLiked(player.currentSong)
+            }).catch(() => {})
+        },
+        async toggleLikeSong(song) {
+            if (!this.isLoggedIn) return { success: false, message: '请先登录 QQ 音乐' }
+            if (this.likeBusy) return { success: false, message: '正在同步收藏，请稍候' }
+            this.likeBusy = true
+            const revision = this.revision
+            try {
+                if (!this.likedLoaded) await this.fetchLikedSongs()
+                if (revision !== this.revision) return { success: false, message: '账号已切换' }
+                const mid = song.songmid || song.id
+                const songid = song.songid || (await qqSongDetail(mid)).data?.track_info?.id
+                if (revision !== this.revision) return { success: false, message: '账号已切换' }
+                if (!this.likedPlaylistId || !songid) throw new Error('无法取得收藏歌单或歌曲 ID，请刷新账号后重试')
+                const liked = !this.isSongLiked(song)
+                const res = await qqOperMyLike(liked ? 1 : 2, mid, this.cookie, this.likedPlaylistId, songid)
+                if (revision !== this.revision) return { success: false, message: '账号已切换' }
+                if (res?.code !== 0) throw new Error(res?.message || 'QQ 音乐未接受收藏操作，请重新登录或稍后重试')
+                if (liked) this.likedSongs.push(toQQTrack({ ...song, songid }))
+                else this.likedSongs = this.likedSongs.filter(s => String(s.songmid || s.id) !== String(mid))
+                return { success: true, liked }
+            } catch (e) { return { success: false, message: e.message } }
+            finally { this.likeBusy = false }
+        },
+        async createPlaylist(name) {
+            if (!this.isLoggedIn || !name?.trim()) return false
+            const revision = this.revision
+            const result = await qqOperSonglist('add', { name: name.trim() }, this.cookie)
+            if (revision !== this.revision || result?.code !== 0) throw new Error(result?.message || 'QQ 音乐未接受新建歌单操作')
+            await this.fetchUserPlaylists()
+            return revision === this.revision
+        },
+        async deletePlaylist(id) {
+            if (!this.isLoggedIn || !this.createdPlaylists.some(item => String(item.id) === String(id))) return false
+            const revision = this.revision
+            const result = await qqOperSonglist('del', { dissid: id }, this.cookie)
+            if (revision !== this.revision || result?.code !== 0) throw new Error(result?.message || 'QQ 音乐未接受删除歌单操作')
+            await this.fetchUserPlaylists()
+            return revision === this.revision
+        },
+        async addSongToPlaylist(id, song) {
+            if (!this.isLoggedIn) return { success: false, message: '请先登录 QQ 音乐' }
+            const revision = this.revision
+            try {
+                const res = await qqOperSonglist('addsong', { dissid: id, songmid: [song.songmid || song.id] }, this.cookie)
+                if (revision !== this.revision) return { success: false, message: '账号已切换' }
+                if (res?.code !== 0) return { success: false, message: res?.message || 'QQ 音乐歌单添加失败' }
+                await this.fetchUserPlaylists()
+                return { success: true }
+            } catch (e) { return { success: false, message: e.message } }
         },
         logout() {
-            this.isLoggedIn = false
-            this.profile = null
-            this.cookie = ''
-            this.uin = ''
-            this.playlists = []
-            this.loginMessage = ''
-            clearQQCookie()
-            clearQQProfile()
+            this.vipRequest++; this.vipLoading = false; this.vipError = ''; this.vipCheckedAt = 0
+            this.revision++; this.isLoggedIn = false; this.profile = null; this.cookie = ''; this.uin = ''
+            this.playlists = []; this.collectedPlaylists = []; this.playlistsError = ''; this.playlistsLoading=false; this.likedPlaylistId = ''; this.likedSongs = []; this.likedLoaded = false
+            this.likedIncomplete = false; this.loginMessage = ''; this.accountError = ''
+            this.syncPlayerLikes()
+            clearQQCookie(); clearQQProfile(); localStorage.removeItem('qq_liked_songs')
+            const revision = this.revision
+            Promise.resolve(qqLogout()).then(result => {
+                if (result?.code !== 0 && revision === this.revision) this.accountError = result?.message || 'QQ 登录清理失败，请重试退出'
+            }).catch(() => { if (revision === this.revision) this.accountError = 'QQ 登录清理失败，请重试退出' })
         }
     }
 })

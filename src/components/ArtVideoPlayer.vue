@@ -4,6 +4,7 @@
 // 功能：选集面板 / 上一集下一集 / 音量增强(Web Audio 增益最高1000%) / 画质切换 / 倍速 / 快捷键
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Artplayer from 'artplayer'
+import { normalizeLocalFileUrl } from '../utils/local-file-url'
 import ArtplayerDanmuku from 'artplayer-plugin-danmuku'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
@@ -599,6 +600,7 @@ async function destroyPlayer() {
 }
 
 async function createPlayer(src) {
+    src = normalizeLocalFileUrl(src)
     const version = ++playerVersion
     await destroyPlayer()
     if (disposed || version !== playerVersion || !src || !artContainerEl.value) return

@@ -1,5 +1,6 @@
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import SongVipBadge from '../components/SongVipBadge.vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getAlbum } from '../api'
 import { usePlayerStore } from '../store/player'
@@ -13,20 +14,25 @@ const playerStore = usePlayerStore()
 const album = ref(null)
 const tracks = ref([])
 const loading = ref(false)
+const loadError = ref('')
+let revision = 0
 
 const fetchAlbum = async () => {
     if (!route.params.id) return
+    const requestId = ++revision
     loading.value = true
+    loadError.value = ''; album.value = null; tracks.value = []
     try {
         const res = await getAlbum(route.params.id)
+        if (requestId !== revision) return
         if (res && res.album) {
             album.value = res.album
             tracks.value = res.songs || res.album.songs || []
-        }
+        } else throw new Error(res?.message || '专辑加载失败，请重试')
     } catch (err) {
-        console.error('Fetch album error:', err)
+        if (requestId === revision) loadError.value = err.message
     } finally {
-        loading.value = false
+        if (requestId === revision) loading.value = false
     }
 }
 
@@ -47,13 +53,12 @@ watch(() => route.params.id, (newId) => {
   if (newId) fetchAlbum()
 }, { immediate: true })
 
-onMounted(() => {
-    fetchAlbum()
-})
+onBeforeUnmount(() => revision++)
 </script>
 
 <template>
   <div class="album-detail-view">
+    <div v-if="loadError" role="alert">{{ loadError }} <button @click="fetchAlbum">重试</button></div>
     <div v-if="loading" class="loading-state">加载中...</div>
     <template v-else-if="album">
         <div class="album-header">
@@ -97,6 +102,7 @@ onMounted(() => {
                 <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
                 <div class="col-title">
                     <span class="title-text">{{ track.name }}</span>
+                    <SongVipBadge :song="track" platform="netease" />
                 </div>
                 <div class="col-artist">{{ track.ar?.map(a => a.name).join('/') || track.artists?.map(a => a.name).join('/') || '未知' }}</div>
                 <div class="col-duration">{{ formatTime(track.dt) }}</div>

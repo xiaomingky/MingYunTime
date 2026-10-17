@@ -63,4 +63,17 @@ context.clickMode = 'single'
 player.handleSongClick(songs[2], [], { detail: 1 })
 player.handleSongClick(songs[2], [], { detail: 2 })
 assert.equal(player.calls.length, before + 2, 'single-click mode does not duplicate the double-click request')
+const resumed=store()
+resumed.playlist=[{id:'kg',platform:'kugou',duration:236000,queueItemId:'saved-kg'}]
+resumed.currentIndex=0
+resumed.currentSong={id:'kg',platform:'kugou',duration:236.69,streamQuality:'flac',queueItemId:'saved-kg'}
+resumed.restorePlaybackState()
+assert.equal(resumed.currentSong.duration,236.69,'restoring preserves actual audio seconds instead of raw queue milliseconds')
+assert.equal(resumed.currentSong.streamQuality,'flac','confirmed stream quality survives restart')
+resumed.currentSong={id:'other',platform:'netease',duration:500}
+resumed.restorePlaybackState()
+assert.equal(resumed.currentSong.duration,236,'queue fallback converts Kugou duration to seconds without borrowing other song metadata')
+resumed.currentSong={id:'kg',platform:'kugou',duration:999,queueItemId:'another-copy'}
+resumed.restorePlaybackState()
+assert.equal(resumed.currentSong.duration,236,'different duplicate queue identities do not reuse saved active metadata')
 console.log('Player queue checks passed: duplicate identity, reorder/current track, remove/next/clear, shuffle/history, single/double click.')

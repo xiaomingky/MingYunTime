@@ -1,6 +1,7 @@
 <script setup>
+import SelectionMark from '../components/SelectionMark.vue'
 import { usePlayerStore } from '../store/player'
-import { FolderOpen, Play, Search, Download, Trash2, FolderPlus, Image, Edit3, X, Camera, GripVertical, Wand2, Music, FileText, ChevronDown, CheckSquare, Square } from 'lucide-vue-next'
+import { FolderOpen, Play, Search, Download, Trash2, FolderPlus, Image, Edit3, X, Camera, GripVertical, Wand2, Music, FileText, ChevronDown } from 'lucide-vue-next'
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { cloudSearch, getNewLyric } from '../api'
 import { useMessageStore } from '../store/message'
@@ -381,8 +382,7 @@ const saveMetadata = async () => {
       <div class="list-header">
         <div class="col-drag"></div>
         <div class="col-check" @click="toggleSelectAll">
-            <CheckSquare v-if="isAllSelected" :size="16" class="check-icon active" />
-            <Square v-else :size="16" class="check-icon" />
+            <SelectionMark :checked="isAllSelected" :size="16" class="check-icon" :mixed="selectedPaths.length > 0" />
         </div>
         <div class="col-index">#</div>
         <div class="col-title">标题</div>
@@ -405,8 +405,7 @@ const saveMetadata = async () => {
             <GripVertical :size="16" />
         </div>
         <div class="col-check" @click.stop="toggleSelect(song)">
-            <CheckSquare v-if="selectedPaths.includes(song.path)" :size="16" class="check-icon active" />
-            <Square v-else :size="16" class="check-icon" />
+            <SelectionMark :checked="selectedPaths.includes(song.path)" :size="16" class="check-icon" />
         </div>
         <div class="col-index">{{ index + 1 < 10 ? '0' + (index + 1) : index + 1 }}</div>
         <div class="col-title">
