@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { Play, Music, RefreshCw, GripVertical, Download, Trash2, Upload, Search, HardDrive, X, Image as ImageIcon, Link2, Unlink, Search as SearchIcon } from 'lucide-vue-next'
-import { getUserCloud, deleteUserCloud, getSongUrl, matchCloud, cloudSearch, API_LINES } from '../api'
+import { getUserCloud, deleteUserCloud, getSongUrl, matchCloud, cloudSearch } from '../api'
 import { usePlayerStore } from '../store/player'
 import { useMessageStore } from '../store/message'
 import { useUserStore } from '../store/user'
@@ -84,14 +84,6 @@ const guessFromFilename = (name) => {
 }
 
 // 获取当前 API baseURL（传给主进程上传 IPC）
-const getCurrentApiBaseUrl = () => {
-    const savedKey = localStorage.getItem('api_line')
-    if (savedKey) {
-        const found = API_LINES.find(l => l.key === savedKey)
-        if (found) return found.url
-    }
-    return API_LINES[0].url
-}
 
 // 监听主进程上传进度推送
 const offUploadProgress = ref(null)
@@ -398,7 +390,6 @@ const confirmUpload = async () => {
                 filePath: f.filePath,
                 filename: f.fileName,
                 cookie: userStore.cookie,
-                apiBaseUrl: getCurrentApiBaseUrl(),
                 song: f.title,
                 artist: f.artist,
                 album: f.album

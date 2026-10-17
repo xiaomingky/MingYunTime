@@ -1,50 +1,9 @@
 import assert from 'node:assert/strict'
-import { EventEmitter } from 'node:events'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { createServiceLifecycle } from '../electron/service-lifecycle.js'
 import { localFileResponse, createCoverHandler, parseByteRange } from '../electron/local-protocol.js'
 import { queueEntries, queueWindow } from '../src/utils/queue-window.js'
 import { lyricIndexAt, wordProgressAt } from '../src/utils/lyric-timing.js'
-
-let launches = 0, kills = 0, resolveWait, available = false, time = 0
-const child = new EventEmitter()
-child.kill = () => { kills++; child.emit('exit', 0) }
-const service = createServiceLifecycle({ now: () => time, probe: async () => available, launch: () => { launches++; return child }, wait: () => new Promise(r => { resolveWait = r }) })
-const starts = Array.from({ length: 30 }, () => service.ensure())
-await new Promise(r => setImmediate(r))
-assert.equal(launches, 1, 'concurrent first requests launch one backend')
-resolveWait(true)
-await Promise.all(starts)
-assert.equal(service.isHealthy(), true)
-child.emit('exit', 1)
-assert.equal(service.isHealthy(), false)
-const restart = service.ensure()
-await new Promise(r => setImmediate(r)); resolveWait(true); await restart
-assert.equal(launches, 2, 'a later request recovers after process exit')
-service.stop()
-await assert.rejects(service.ensure(), /stopped/)
-assert.equal(kills, 1)
-const reused = createServiceLifecycle({ probe: async () => true, launch: () => { throw Error('must not launch') }, wait: () => false })
-await reused.ensure(); reused.stop()
-assert.equal(kills, 1, 'quit must not kill a reused external service')
-let finishProbe
-const quitting = createServiceLifecycle({ probe: () => new Promise(r => { finishProbe = r }), launch: () => { throw Error('must not spawn after quit') }, wait: () => false })
-const quitPending = quitting.ensure(); quitting.stop(); finishProbe(false)
-await assert.rejects(quitPending, /stopped/)
-let idleLaunches = 0
-const idleService = createServiceLifecycle({
-    idleMs: 20, probe: async () => false,
-    launch: () => { idleLaunches++; const process = new EventEmitter(); process.kill = () => process.emit('exit', 0); return process },
-    wait: async () => true
-})
-await idleService.ensure()
-await new Promise(resolve => setTimeout(resolve, 35))
-assert.equal(idleService.isHealthy(), false)
-await idleService.ensure()
-assert.equal(idleLaunches, 2, 'idle backend restarts on the next request')
-idleService.stop()
-
 assert.deepEqual(parseByteRange('bytes=-3', 10), { start: 7, end: 9 })
 assert.deepEqual(parseByteRange('bytes=2-99', 10), { start: 2, end: 9 })
 for (const input of ['bytes=10-', 'bytes=4-2', 'bytes=-0', 'bytes=0-2,5-6', 'bytes=a-b']) assert.equal(parseByteRange(input, 10), false)
@@ -90,4 +49,4 @@ assert.equal(lyricIndexAt([], 4), -1)
 assert.equal(wordProgressAt(1000, 1000, 1800), .8)
 assert.equal(wordProgressAt(1000, 1000, 1200), .2, 'seeking backwards restores partial word highlighting')
 assert.equal(wordProgressAt(1000, 0, 1000), 1)
-console.log('Modernization checks passed: service startup/recovery/quit, streaming ranges/HEAD/404/416, cover dedup/cache, 10k queue, lyric timing and seek.')
+console.log('Modernization checks passed: streaming ranges/HEAD/404/416, cover dedup/cache, 10k queue, lyric timing and seek.')

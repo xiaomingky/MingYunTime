@@ -2,6 +2,7 @@ import axios from 'axios'
 import { KugouAccount, kugouWebSign } from './kugou-account.js'
 import { isKugouDirectRoute } from '../src/api/kugou-direct.js'
 import { KugouPrivateClient } from './kugou-private.js'
+import { KUGOU_OPERATION_ROUTES, kugouOperation } from './kugou-operations.js'
 import { kugouStreamInfo } from '../src/utils/playback-quality.js'
 
 const integer = (value, fallback, min = 1, max = 100) => {
@@ -22,7 +23,7 @@ export class KugouClient {
     constructor({ request = config => axios(config), now = () => Date.now(), qrImage } = {}) {
         Object.assign(this, { request, now })
         this.privateClient = new KugouPrivateClient({request,now})
-        this.account = new KugouAccount({ send: this.send.bind(this), now, qrImage, privateValidate:auth=>this.privateClient.vip(auth) })
+        this.account = new KugouAccount({ send: this.send.bind(this), now, qrImage, privateCall:this.privateClient.call.bind(this.privateClient), privateValidate:auth=>this.privateClient.vip(auth) })
     }
     supports(route, params) { return isKugouDirectRoute(route, params) }
     async send(url, params = {}, method = 'GET') {
@@ -91,7 +92,8 @@ export class KugouClient {
     }
     async call(route, params = {}) {
         if (!this.supports(route, params)) throw new Error('该酷狗操作尚未独立接入')
-        if (route.startsWith('/login/')) return this.account.call(route, params)
+        if (route === '/login' || route === '/captcha/sent' || route.startsWith('/login/')) return this.account.call(route, params)
+        if (KUGOU_OPERATION_ROUTES.includes(route)) return kugouOperation(this, route, params, () => integer(params.page, 1, 1, 10000), () => integer(params.pagesize, 30, 1, 300))
         const page = () => integer(params.page, 1, 1, 10000), size = () => integer(params.pagesize, 30, 1, 300)
         switch (route) {
         case '/user/vip/detail': return this.privateClient.vip(params)
@@ -122,18 +124,24 @@ export class KugouClient {
             return {status:1,data:{data}}
         }
         case '/top/album': {
+            if (params.type) return this.privateClient.call('/musicadservice/v1/mobile_newalbum_sp',params,{anonymous:!params.token,data:{apiver:6,token:params.token || '',page:page(),pagesize:size(),withpriv:1,type:Number(params.type)}})
             const result=await this.mobile('album/list',{page:page(),pagesize:size()})
             return {status:1,data:list(result.data?.info,'新碟').map(artwork)}
         }
-        case '/top/playlist': return this.publicPlaylists(page(),size())
+        case '/top/playlist':
+            if (Number(params.category_id || 0)) return this.privateClient.call('/v2/special_recommend',params,{anonymous:!params.token,router:'specialrec.service.kugou.com',data:{appid:3116,mid:this.privateClient.mid,clientver:11440,platform:'android',clienttime:Math.floor(this.now()/1000),userid:params.userid || 0,module_id:1,page:page(),pagesize:size(),special_recommend:{withtag:Number(params.withtag ?? 1),withsong:Number(params.withsong ?? 1),sort:1,ugc:1,is_selected:0,withrecommend:1,area_code:1,categoryid:Number(params.category_id)},req_multi:1,retrun_min:5,return_special_falg:1}})
+            return this.publicPlaylists(page(),size())
         case '/artist/lists': {
+            if ([params.sextypes,params.type,params.musician].some(value=>Number(value || 0)!==0)) return this.privateClient.call('/ocean/v6/singer/list',params,{anonymous:!params.token,params:{musician:Number(params.musician || 0),sextype:Number(params.sextypes || 0),showtype:2,type:Number(params.type || 0),hotsize:integer(params.hotsize,30,1,100)}})
             const result=await this.mobile('singer/list',{page:1,pagesize:integer(params.hotsize,30,1,100)})
             return {status:1,data:{...result.data,info:list(result.data?.info,'歌手目录').map(artwork)}}
         }
         case '/search': {
             const keyword = String(params.keywords || '').trim(), type = params.type || 'song'
             if (!keyword || keyword.length > 200) throw new Error('请输入 1–200 字的关键词')
-            if (!['song','author','album','special'].includes(type)) throw new Error('酷狗搜索分类暂未独立接入')
+            if (type === 'lyric') return this.call('/search/lyric',params)
+            if (type === 'mv') return this.privateClient.search(params,keyword,page(),size(),'mv')
+            if (!['song','author','album','special'].includes(type)) throw new Error('酷狗搜索分类无效')
             if (type === 'song' || params.token && params.userid) {
                 const result = await this.privateClient.search(params, keyword, page(), size(), type)
                 const items = list(result.data?.lists ?? result.data?.info, '搜索')
@@ -179,6 +187,10 @@ export class KugouClient {
         }
         case '/playlist/detail':
         case '/playlist/track/all': {
+            if (!String(params.ids || params.id).startsWith('special:')) {
+                if (route === '/playlist/detail') return this.privateClient.call('/v3/get_list_info',params,{anonymous:!params.token,router:'pubsongs.kugou.com',data:{data:String(params.ids || params.id).split(',').map(value=>({global_collection_id:id(value)})),userid:params.userid || 0,token:params.token || ''}})
+                return this.privateClient.call('/pubsongs/v2/get_other_list_file_nofilt',params,{anonymous:!params.token,params:{area_code:1,begin_idx:(page()-1)*size(),plat:1,type:1,mode:1,personal_switch:1,extend_fields:'abtags,hot_cmt,popularization',pagesize:size(),global_collection_id:id(params.id)}})
+            }
             const specialid = id(String(params.ids || params.id).slice(8))
             const info = await this.mobile('special/info', { specialid })
             if (!info.data?.specialname) throw new Error('酷狗未返回歌单信息')

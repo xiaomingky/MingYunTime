@@ -1,11 +1,10 @@
 import axios from 'axios'
-import { ensureLocalService } from '../utils/local-service'
 import { NETEASE_DIRECT_ROUTES } from './netease-direct'
 
 // ========== 平台配置 ==========
 // 平台切换：网易云（默认）/ QQ 音乐
 // 切换后写入 localStorage: 'current_platform'
-// 网易云走 axios 直连 NCM API；QQ 音乐走 Electron IPC（见 src/api/qq.js）
+// 三个平台均通过 Electron IPC 调用内置官方客户端；axios 仅保留为前端兼容的请求外壳。
 export const PLATFORMS = {
     netease: {
         key: 'netease',
@@ -34,21 +33,8 @@ export const isQQPlatform = () => getCurrentPlatform() === 'qq'
 export const isNeteasePlatform = () => getCurrentPlatform() === 'netease'
 export const isKugouPlatform = () => getCurrentPlatform() === 'kugou'
 
-// API 线路配置：用户可在关闭选项下拉框中切换
-// 主线路：本地自部署的 NeteaseCloudMusicApiEnhanced（http://localhost:3100，由 Electron 主进程启动）
-// 推荐线路：在线备用 https://api.xiaomingky.cn/
-// 备用线路：https://api2.xiaomingky.cn/
-// 切换后写入 localStorage: 'api_line'，优先级高于环境变量
-// 主线路为本地服务，启动时若不可用会自动回退到在线线路
-const NETEASE_LOCAL_BASE = 'http://localhost:3100'
-export const API_LINES = [
-    { key: 'main', label: '主线路', url: NETEASE_LOCAL_BASE },
-    { key: 'recommended', label: '推荐线路', url: 'https://api2.xiaomingky.cn/' },
-    { key: 'backup', label: '备用线路', url: 'https://api3.xiaomingky.cn/' }
-]
-
-// 本地服务可用性标记（启动时假设可用，首次连接失败后标记为不可用）
-let _neteaseLocalAvailable = true
+// 网易云请求统一走 Electron 内置官方客户端。保留线路键只是为了兼容旧设置界面。
+export const API_LINES = [{ key: 'main', label: '官方客户端', url: 'netease://official' }]
 
 
 function getCurrentApiBaseUrl() {
@@ -72,8 +58,6 @@ export function switchApiLine(lineKey) {
     if (!line) return false
     localStorage.setItem('api_line', lineKey)
     request.defaults.baseURL = line.url
-    // 切换到主线路时重置本地可用性标记，允许再次检测
-    if (lineKey === 'main') _neteaseLocalAvailable = true
     return true
 }
 
@@ -85,7 +69,7 @@ request.interceptors.request.use(
         // The main line now uses independently verified native contracts for
         // listed operations. Failure is surfaced; credentials are not retried
         // against an unrelated online API service.
-        if ((localStorage.getItem('api_line') || 'main') === 'main' && bridge?.invoke && NETEASE_DIRECT_ROUTES.has(routeURL.pathname)) {
+        if (bridge?.invoke && NETEASE_DIRECT_ROUTES.has(routeURL.pathname)) {
             const params = { ...Object.fromEntries(routeURL.searchParams), ...(config.params || {}) }
             const cookie = params.cookie ?? localStorage.getItem('music_cookie') ?? ''
             delete params.cookie
@@ -93,22 +77,7 @@ request.interceptors.request.use(
                 status: 200, statusText: 'OK', headers: {}, config: cfg })
             return config
         }
-        if (!config._retried && (localStorage.getItem('api_line') || 'main') === 'main') {
-            _neteaseLocalAvailable = await ensureLocalService('netease')
-            config.baseURL = _neteaseLocalAvailable ? NETEASE_LOCAL_BASE : API_LINES[1].url
-        }
-        const cookie = localStorage.getItem('music_cookie')
-        if (cookie) {
-            // If the URL already has a cookie param, don't add another one
-            const urlHasCookie = config.url && config.url.includes('cookie=')
-            const paramsHasCookie = config.params && config.params.cookie
-
-            if (!urlHasCookie && !paramsHasCookie) {
-                config.params = config.params || {}
-                config.params.cookie = cookie
-            }
-        }
-        return config
+        throw new Error(`网易云接口 ${routeURL.pathname} 尚未迁移到官方客户端`)
     },
     error => Promise.reject(error)
 )
@@ -124,23 +93,6 @@ request.interceptors.response.use(
         return data
     },
     error => {
-        // 本地服务连接失败时自动切换到在线线路并重试一次
-        const currentBase = error.config?.baseURL || ''
-        if (_neteaseLocalAvailable && currentBase.startsWith('http://localhost')) {
-            if (error.code === 'ECONNREFUSED' || error.code === 'ECONNABORTED' ||
-                (error.message && error.message.includes('Network Error'))) {
-                console.warn('[NetEase API] 本地服务连接失败,切换到在线线路')
-                _neteaseLocalAvailable = false
-                const onlineUrl = API_LINES.find(l => l.key === 'recommended')?.url || API_LINES[1].url
-                request.defaults.baseURL = onlineUrl
-                const config = error.config
-                if (config && !config._retried) {
-                    config._retried = true
-                    config.baseURL = onlineUrl
-                    return request(config)
-                }
-            }
-        }
         // 如果后端返回了错误但依然有 body (比如 400 提示验证码已发送)
         if (error.response && error.response.data) {
             return error.response.data
@@ -226,13 +178,9 @@ export const playlistSubscribe = (id, t = 1) => request.get(`/playlist/subscribe
 export const playlistTracks = (op, pid, tracks) => request.get('/playlist/tracks', { params: { op, pid, tracks, timestamp: Date.now() } }) // op=add/del
 export const playlistCreate = (name) => request.post('/playlist/create', null, { params: { name, timestamp: Date.now() } })
 export const playlistDelete = (id) => request.get(`/playlist/delete?id=${id}`)
-export const playlistCoverUpdate = (id, imgFile) => {
-    const formData = new FormData()
-    formData.append('imgFile', imgFile)
-    return request.post(`/playlist/cover/update?id=${id}&timestamp=${Date.now()}`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-    })
-}
+export const playlistCoverUpdate = async (id, imgFile) => request.get('/playlist/cover/update', {
+    params: { id, imgFile: { name: imgFile.name, type: imgFile.type, bytes: Array.from(new Uint8Array(await imgFile.arrayBuffer())) } }
+})
 
 // Login methods
 export const loginCellphone = (data) => request.get('/login/cellphone', { params: { ...data, timestamp: Date.now() } })

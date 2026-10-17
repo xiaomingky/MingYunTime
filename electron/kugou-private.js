@@ -4,17 +4,19 @@ const md5 = value => createHash('md5').update(value).digest('hex')
 const SALT = 'LnT6xpN3khm36zse0QzvmgTZ3waWdRSA'
 export class KugouPrivateClient {
     constructor({ request, now }) { Object.assign(this, { request, now }); this.mid = randomBytes(16).toString('hex') }
-    async call(path, { token, userid, dfid = '-' }, { host = 'gateway.kugou.com', params = {}, data, router, anonymous = false } = {}) {
+    async call(path, { token, userid, dfid = '-' }, { host = 'gateway.kugou.com', params = {}, data, router, anonymous = false, method, headers = {}, responseType, decode, allowErrors = [] } = {}) {
         if (!anonymous && (!/^[a-zA-Z0-9_-]{8,2048}$/.test(String(token || '')) || !/^[1-9]\d{0,17}$/.test(String(userid || '')))) throw new Error('酷狗登录凭据不完整')
         const query = { dfid, mid:this.mid, uuid:'-', appid:3116, clientver:11440, clienttime:Math.floor(this.now()/1000), ...(!anonymous ? {token, userid:String(userid)} : {}), ...params }
-        const body = data === undefined ? '' : JSON.stringify(data)
+        const body = data === undefined ? '' : typeof data === 'string' ? data : JSON.stringify(data)
         query.signature = md5(SALT + Object.keys(query).sort().map(key => `${key}=${query[key]}`).join('') + body + SALT)
         let response
-        try { response = await this.request({ url:`https://${host}${path}`, method:data === undefined ? 'GET' : 'POST', params:query, ...(data === undefined ? {} : {data:body}), timeout:15000, maxRedirects:0,
-            headers:{'Content-Type':'application/json','User-Agent':'Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi',dfid,mid:this.mid,clienttime:query.clienttime,'kg-rc':'1','kg-thash':'5d816a0','kg-rec':1,'kg-rf':'B9EDA08A64250DEFFBCADDEE00F8F25F',...(router ? {'x-router':router} : {})} }) }
+        if (!/(^|\.)kugou\.com$/.test(host)) throw new Error('非官方酷狗请求地址')
+        try { response = await this.request({ url:`https://${host}${path}`, method:method || (data === undefined ? 'GET' : 'POST'), params:query, ...(data === undefined ? {} : {data:body}), ...(responseType ? {responseType} : {}), timeout:15000, maxRedirects:0,
+            headers:{'Content-Type':'application/json','User-Agent':'Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi',dfid,mid:this.mid,clienttime:query.clienttime,'kg-rc':'1','kg-thash':'5d816a0','kg-rec':1,'kg-rf':'B9EDA08A64250DEFFBCADDEE00F8F25F',...(router ? {'x-router':router} : {}),...headers} }) }
         catch { throw new Error('酷狗账号服务连接失败，请重试') }
-        const result = response?.data
-        if (result?.status !== 1 || result.error_code) {
+        const result = decode ? decode(response?.data) : response?.data
+        if (allowErrors.includes(Number(result?.error_code))) return result
+        if (!result || result.status !== 1 || Number(result.error_code || 0)) {
             const code = Number(result?.error_code || result?.errcode || 0)
             const error = new Error([20028,30020].includes(code) ? '酷狗要求安全验证，请在官方客户端完成验证后重试' : `酷狗账号服务未接受请求（${code || result?.status || '响应异常'}）`)
             error.code = code; error.requiresVerification = [20028,30020].includes(code)
@@ -40,7 +42,7 @@ export class KugouPrivateClient {
         return this.call('/v4/get_list_all_file',auth,{data:{listid,userid:String(auth.userid),area_code:1,show_relate_goods:0,pagesize,allplatform:1,show_cover:1,type:0,token:auth.token,page},router:'cloudlist.service.kugou.com'})
     }
     async addPlaylistTracks(auth, listid, songs) {
-        return this.call('/cloudlist.service/v6/add_song',auth,{params:{last_time:Math.floor(this.now()/1000),last_area:'gztx'},
+        return this.call('/cloudlist.service/v4/add_song',auth,{params:{last_time:Math.floor(this.now()/1000),last_area:'gztx'},
             data:{userid:String(auth.userid),token:auth.token,listid,list_ver:0,type:0,slow_upload:1,scene:'false;null',data:songs}})
     }
     async deletePlaylistTracks(auth, listid, fileids) {

@@ -1,9 +1,7 @@
-// QQ 音乐 API 子进程管理 + IPC 桥接
-// 通过 spawn 启动 @sansenjian/qq-music-api 子进程(监听 3200 端口)
+// QQ 音乐官方 HTTPS/RPC IPC 桥接
+// 通过 Electron IPC 调用 QQ 音乐官方接口
 // 渲染进程通过 window.bridge.invoke('qq:xxx', params) 调用本文件的 IPC 通道
-// 本文件内部用 axios 调用 http://localhost:3200/*,规避 CORS
-import { spawn } from 'node:child_process'
-import { createServiceLifecycle } from './service-lifecycle.js'
+// 官方请求在主进程内完成，渲染进程只接收归一化结果
 import { QQClient } from './qq-client.js'
 import { QQSession } from './qq-session.js'
 import { QQNativeLogin } from './qq-native-login.js'
@@ -11,17 +9,14 @@ import { QQInlineQR } from './qq-inline-qr.js'
 import { QQBenefits, qqBenefitsErrorMessage } from './qq-benefits.js'
 import { getQQLyric } from './lyric-providers.js'
 import { qqAccountId, qqCookieValue, qqGtk, qqPage, qqMembershipFromIcons } from './qq-account.js'
-import { apiRuntimePath } from './local-service.js'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import axios from 'axios'
 import { ipcMain, BrowserWindow, session, app, safeStorage, shell } from 'electron'
 // Node16 兼容探测/就绪等待/日志/广播
-import { httpProbe, waitForPort, pipeChildLogs, broadcastServicesReady, serviceLog } from './local-service.js'
 
 let registered = false
-const QQ_API_BASE = 'http://localhost:3200'
 const qqClient = new QQClient({ wordLyrics: track => getQQLyric(track.id, track.name,
     (track.singer || []).map(singer => singer.name).join('、'), track.album?.name || '', track.interval) })
 
@@ -398,76 +393,6 @@ async function openQQWebLogin(parentWin, mode = 'qq') {
     })
 }
 
-// 获取 qq-music-api 包的入口路径(兼容开发态和打包态)
-// 优先使用 .cjs(CommonJS) 版本：Electron 主进程默认按 CommonJS 加载，
-// 直接 spawn .js(ESM) 会触发 ERR_REQUIRE_ESM
-function resolveQQMusicAppPath() {
-    const candidates = [
-        // 打包态(优先):extraResources 复制到 resources/qq-music-api/dist
-        // 必须排在开发态之前,否则打包后在开发机上会误匹配 process.cwd()/node_modules
-        path.join(process.resourcesPath || '', 'qq-music-api', 'dist', 'app.cjs'),
-        path.join(process.resourcesPath || '', 'qq-music-api', 'dist', 'app.js'),
-        // 打包态(兼容旧配置):app.asar 解包后的 node_modules
-        path.join(process.resourcesPath || '', 'app.asar.unpacked', 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.cjs'),
-        path.join(process.resourcesPath || '', 'app.asar.unpacked', 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.js'),
-        // 开发态:项目根 node_modules
-        path.join(process.cwd(), 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.cjs'),
-        path.join(process.cwd(), 'node_modules', '@sansenjian', 'qq-music-api', 'dist', 'app.js')
-    ]
-    for (const p of candidates) {
-        try {
-            if (fs.existsSync(p)) return p
-        } catch (e) { /* ignore */ }
-    }
-    return candidates[0]
-}
-
-const service = createServiceLifecycle({
-    probe: async () => {
-        const status = await httpProbe(`${QQ_API_BASE}/`, 1000)
-        return status !== null && status < 500
-    },
-    launch: () => {
-        const appPath = resolveQQMusicAppPath()
-        if (!fs.existsSync(appPath)) throw new Error('Missing QQ API entry')
-        const polyfillPath = (() => {
-            // 打包态(优先):extraResources 复制到 resources/qq-styletext-polyfill.cjs
-            const packedPath = path.join(process.resourcesPath || '', 'qq-styletext-polyfill.cjs')
-            if (fs.existsSync(packedPath)) return packedPath
-            // 开发态:与 qq-music.js 同目录(electron/)
-            const devPath = path.join(process.cwd(), 'electron', 'qq-styletext-polyfill.cjs')
-            if (fs.existsSync(devPath)) return devPath
-            // 兜底:__dirname(打包后 main.js 在 app.asar 内)
-            try {
-                const dirPath = path.dirname(fileURLToPath(import.meta.url))
-                const sameDir = path.join(dirPath, 'qq-styletext-polyfill.cjs')
-                if (fs.existsSync(sameDir)) return sameDir
-            } catch (e) { /* ignore */ }
-            return packedPath
-        })()
-        // Launch with our bundled Node runtime; argument arrays preserve spaced paths.
-        const env = { ...process.env, PORT: '3200', ELECTRON_RUN_AS_NODE: '1', MINGYUN_API_ROOT: path.dirname(path.dirname(appPath)), MINGYUN_API_LIBS: path.join(process.resourcesPath || '', 'qq-music-api', 'libs') }
-        // 打包态:设置 NODE_PATH 指向 libs 目录
-        const libsPath = path.join(process.resourcesPath || '', 'qq-music-api', 'libs')
-        try {
-            if (fs.existsSync(libsPath)) {
-                env.NODE_PATH = libsPath
-            }
-        } catch (e) { /* ignore */ }
-
-        const child = spawn(process.execPath, [`--require=${apiRuntimePath()}`, `--require=${polyfillPath}`, appPath], {
-            env, stdio: 'pipe', windowsHide: true
-        })
-        pipeChildLogs(child, 'qq')
-        return child
-    },
-    wait: signal => waitForPort(QQ_API_BASE, '/', { signal }),
-    ready: () => broadcastServicesReady({ qq: true }),
-    log: message => serviceLog('qq', message)
-})
-
-export const startQQMusicAPI = () => service.ensure()
-export const stopQQMusicAPI = () => service.stop()
 export function registerQQMusicIPC() {
     if (registered) return
     const file = path.join(app.getPath('userData'), 'qq-session.enc')
@@ -491,26 +416,13 @@ export function registerQQMusicIPC() {
 
 // 统一请求封装
 async function qqGet(endpoint, params = {}, cookie = '') {
-    if (qqClient.supports(endpoint, params)) return qqClient.call(endpoint, params, cookie)
-    await service.ensure()
-    const headers = {}
-    if (cookie) headers['X-Custom-Cookie'] = cookie
-    const res = await axios.get(`${QQ_API_BASE}${endpoint}`, { params, headers, timeout: 10000 })
-    // 统一解包 response 字段：QQ API 所有数据嵌套在 { response: { code, data, ... } } 下
-    // 解包后返回 { code, data, ...其他顶层字段(singerList/new_album/category 等) }
-    // 登录类 API(qr-create/qr-check)无 response 包裹，原样返回
-    const body = res.data
-    return body?.response ?? body
+    if (!qqClient.supports(endpoint, params)) throw new Error('QQ 独立请求层尚未实现此操作')
+    return qqClient.call(endpoint, params, cookie)
 }
 
 async function qqPost(endpoint, data = {}, cookie = '') {
-    if (qqClient.supports(endpoint, data)) return qqClient.call(endpoint, data, cookie)
-    await service.ensure()
-    const headers = { 'Content-Type': 'application/json' }
-    if (cookie) headers['X-Custom-Cookie'] = cookie
-    const res = await axios.post(`${QQ_API_BASE}${endpoint}`, data, { headers, timeout: 10000 })
-    const body = res.data
-    return body?.response ?? body
+    if (!qqClient.supports(endpoint, data)) throw new Error('QQ 独立请求层尚未实现此操作')
+    return qqClient.call(endpoint, data, cookie)
 }
 
 // Resolve the real favorites directory, then page the APK playlist RPC. The

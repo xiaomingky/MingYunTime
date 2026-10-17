@@ -1,5 +1,6 @@
 import { createHash, randomBytes, createCipheriv, createDecipheriv, publicEncrypt, constants } from 'node:crypto'
 import QRCode from 'qrcode'
+import { kugouRsa, kugouAes, kugouParamsKey } from './kugou-operations.js'
 
 // Public web protocol from the official kguser.v2 and infSign bundles. This is
 // the published web client signing salt, not a user credential or private key.
@@ -33,8 +34,23 @@ export function kugouWebSign(params, now = Date.now(), mid = String(now)) {
     return result
 }
 export class KugouAccount {
-    constructor({ send, privateValidate, now = () => Date.now(), qrImage = url => QRCode.toDataURL(url, { width: 300, margin: 2 }) }) {
-        Object.assign(this, { send, privateValidate, now, qrImage }); this.qr = new Map(); this.mid = randomBytes(16).toString('hex')
+    constructor({ send, privateValidate, privateCall, now = () => Date.now(), qrImage = url => QRCode.toDataURL(url, { width: 300, margin: 2 }) }) {
+        Object.assign(this, { send, privateValidate, privateCall, now, qrImage }); this.qr = new Map(); this.mid = randomBytes(16).toString('hex')
+    }
+    async login(route, p) {
+        const mobile = String(p.mobile || '')
+        if (route !== '/login' && !/^1\d{10}$/.test(mobile)) throw new Error('请输入有效手机号')
+        if (route === '/login/cellphone' && !/^\d{4,8}$/.test(String(p.code || ''))) throw new Error('请输入有效验证码')
+        if (route === '/login' && (!p.username || !p.password)) throw new Error('请输入用户名和密码')
+        const time = this.now(), key = randomBytes(8).toString('hex')
+        const secret = route === '/login' ? {pwd:String(p.password),code:p.code || '',clienttime_ms:time} : {mobile,...(route === '/login/cellphone' ? {code:String(p.code)} : {})}
+        const data = {plat:1,clienttime_ms:time,pk:kugouRsa({clienttime_ms:time,key}),params:kugouAes(secret,key)}
+        if (route === '/captcha/sent') Object.assign(data,{businessid:5,mobile:mobile.slice(0,2)+'*****'+mobile.slice(-1)})
+        else Object.assign(data,{support_multi:1,key:kugouParamsKey(time),...(route === '/login' ? {username:String(p.username)} : {mobile:mobile.slice(0,2)+'*****'+mobile.slice(-1),...(p.userid ? {userid:String(p.userid)} : {})})})
+        const endpoint = route === '/captcha/sent' ? '/v8/send_mobile_code' : route === '/login' ? '/v9/login_by_pwd' : '/v7/login_by_verifycode'
+        const result = await this.privateCall(endpoint,{}, {host:route === '/login/cellphone' ? 'loginserviceretry.kugou.com' : 'login.user.kugou.com',anonymous:true,data,allowErrors:[34175],headers:{'support-calm':'1'}})
+        if (route === '/captcha/sent' || Number(result.error_code) === 34175) return result
+        return {...result,data:kugouValidatedCredentials(result.data,key,'',result.data?.userid)}
     }
     async request(path, params, host = 'login-user.kugou.com', method = 'GET') {
         return this.send(`https://${host}/${path}`, kugouWebSign({ appid: 1014, plat: 4, ...params }, this.now(), this.mid), method)
@@ -59,6 +75,8 @@ export class KugouAccount {
         return { status: 1, error_code: 0, data: kugouValidatedCredentials(result.data, key, token, userid) }
     }
     async call(route, params = {}) {
+        if (['/login','/login/cellphone','/captcha/sent'].includes(route)) return this.login(route,params)
+        if (['/login/wx/create','/login/wx/check','/login/openplat'].includes(route)) throw new Error('微信登录需要酷狗官方开放平台授权配置，请使用酷狗扫码或手机验证码登录')
         if (route === '/login/token') return this.validate(params.token, params.userid)
         for (const [key, value] of this.qr) if (this.now() - value.time > 180000) this.qr.delete(key)
         if (route === '/login/qr/key') {

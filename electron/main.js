@@ -42,13 +42,14 @@ import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload
 import { generateABogusV2 } from './douyin-abogus-v2.js'
 // 多平台歌词搜索（QQ + 酷狗）—— 必须用静态 import，否则 vite 打包后 dist-electron 下找不到模块
 import { searchMultiPlatform, fetchLyricByCandidate, searchAndFetchQQ, getKugouLyric } from './lyric-providers.js'
-// QQ 音乐 API 子进程(@sansenjian/qq-music-api,监听 3200 端口)
-import { startQQMusicAPI, stopQQMusicAPI, registerQQMusicIPC } from './qq-music.js'
+// QQ 音乐官方客户端 IPC
+import { registerQQMusicIPC } from './qq-music.js'
 import { registerQishuiMusicIPC } from './qishui-music.js'
-// 酷狗音乐 API 子进程(KuGouMusicApi,监听 3300 端口,platform=lite 概念版)
-import { startKugouMusicAPI, stopKugouMusicAPI, registerKugouMusicIPC } from './kugou-music.js'
-import { startNeteaseAPI, stopNeteaseAPI } from './netease-api.js'
+// 酷狗概念版官方接口 IPC
+import { registerKugouMusicIPC } from './kugou-music.js'
 import { registerNeteaseMusicIPC } from './netease-music.js'
+import { NeteaseClient } from './netease-client.js'
+import { neteaseWebRequest } from './netease-operations.js'
 import { extractShareUrl, extractDouyinId as extractDouyinMediaId, extractDouyinPage, extractDouyinMedia, DOUYIN_MOBILE_UA } from './douyin-media.js'
 // 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）
 import './unlock.js'
@@ -4987,18 +4988,10 @@ ipcMain.handle('video:parse-url', async (_, { url }) => {
 // 获取网易云 MV 搜索结果（按歌名匹配）
 ipcMain.handle('ncm-mv-search', async (_, { keyword }) => {
     try {
-        const apiBase = process.env.NCM_API_BASE || 'https://api.xiaomingky.cn'
-        const res = await axios.get(`${apiBase}/cloudsearch`, {
-            params: { keywords: keyword, type: 1004, timestamp: Date.now() },
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://music.163.com/'
-            },
-            timeout: 15000,
-            validateStatus: () => true
-        })
-        if (res.status === 200 && res.data?.code === 200) {
-            const mvs = res.data?.result?.mvs || []
+        const client = new NeteaseClient()
+        const body = await client.call('/cloudsearch', { keywords: keyword, type: 1004, limit: 30, offset: 0 }, '')
+        if (body?.code === 200) {
+            const mvs = body?.result?.mvs || []
             return {
                 success: true,
                 mvs: mvs.map(m => ({
@@ -5011,7 +5004,7 @@ ipcMain.handle('ncm-mv-search', async (_, { keyword }) => {
                 }))
             }
         }
-        return { success: false, message: res.data?.msg || `HTTP ${res.status}` }
+        return { success: false, message: body?.msg || '网易云 MV 搜索失败' }
     } catch (err) {
         return { success: false, message: err.message }
     }
@@ -5065,11 +5058,6 @@ app.whenReady().then(() => {
     registerQishuiMusicIPC()
     registerNeteaseMusicIPC()
     registerKugouMusicIPC()
-    const services = { netease: startNeteaseAPI, qq: startQQMusicAPI, kugou: startKugouMusicAPI }
-    ipcMain.handle('local-service:ensure', async (_event, name) => {
-        if (!Object.hasOwn(services, name)) throw new Error('Unknown music service')
-        return services[name]()
-    })
 
     protocol.handle('local-file', localFileResponse)
     const covers = createCoverHandler({ metadata: getMM, fallback: path.join(process.env.VITE_PUBLIC, 'icon.png') })
@@ -6177,11 +6165,11 @@ function calculateFileMD5Stream(filePath) {
 }
 
 // 云盘完整上传（主进程内完成，避免大 Buffer 跨进程序列化）
-// 参数: { filePath, filename, cookie, apiBaseUrl, song, artist, album }
+// 参数: { filePath, filename, cookie, song, artist, album }
 // complete 始终传 song/artist/album（参考官方示例）
 // 服务器默认自动匹配网易云歌曲，取消匹配由渲染进程上传后调用 matchCloud API
 // 进度通过 event.sender.send('cloud-upload-progress', { progress, status, filename }) 推送
-ipcMain.handle('cloud-upload', async (event, { filePath, filename, cookie, apiBaseUrl, song, artist, album }) => {
+ipcMain.handle('cloud-upload', async (event, { filePath, filename, cookie, song, artist, album }) => {
     const sendProgress = (progress, status) => {
         try { event.sender.send('cloud-upload-progress', { progress, status, filename }) } catch (e) {}
     }
@@ -6192,16 +6180,22 @@ ipcMain.handle('cloud-upload', async (event, { filePath, filename, cookie, apiBa
         const md5 = await calculateFileMD5Stream(filePath)
         sendProgress(0, '获取上传凭证...')
         // 2. 获取上传凭证
-        const tokenRes = await axios.post(`${apiBaseUrl}/cloud/upload/token`, {
-            cookie, md5, fileSize: stat.size, filename
-        })
-        if (tokenRes.data.code !== 200) {
-            return { success: false, error: tokenRes.data.message || tokenRes.data.msg || '获取上传凭证失败' }
-        }
-        const tokenInfo = tokenRes.data.data || {}
-        const { needUpload, songId, resourceId, uploadUrl, uploadToken } = tokenInfo
+        const client = new NeteaseClient()
+        const official = (route, data) => neteaseWebRequest(client, route, data, cookie)
+        const checked = await official('/api/cloud/upload/check', { bitrate: '999000', ext: '', length: stat.size, md5, songId: '0', version: 1 })
+        if (checked.code !== 200) throw new Error(checked.message || checked.msg || '云盘文件检查失败')
+        const bucket = 'jd-musicrep-privatecloud-audio-public'
+        const allocated = await official('/api/nos/token/alloc', { bucket, ext: path.extname(filename).slice(1) || 'mp3', filename: filename.replace(/\.[^.]+$/, '').replace(/\s/g, '').replace(/\./g, '_'), local: false, nos_product: 3, type: 'audio', md5 })
+        if (allocated.code !== 200 || !allocated.result?.objectKey) throw new Error('获取上传凭证失败')
+        const { resourceId, token: uploadToken, objectKey } = allocated.result
+        const songId = checked.songId, needUpload = checked.needUpload
+        const lbs = await axios.get('https://wanproxy.127.net/lbs', { params: { version: '1.0', bucketname: bucket }, timeout: 10000, maxRedirects: 0 })
+        const uploadHost = new URL(lbs.data?.upload?.[0] || 'https://nosup-hz1.127.net')
+        if (!/(^|\.)127\.net$/.test(uploadHost.hostname)) throw new Error('云盘上传服务器无效')
+        uploadHost.protocol = 'https:'
+        const uploadUrl = `${uploadHost.origin}/${bucket}/${encodeURIComponent(objectKey)}?offset=0&complete=true&version=1.0`
         if (!songId || !resourceId) {
-            console.error('[cloud-upload] token missing songId/resourceId:', tokenInfo)
+            console.error('[cloud-upload] token missing songId/resourceId')
             return { success: false, error: '上传凭证缺少必要字段（songId/resourceId）' }
         }
         // 3. 秒传或 POST 文件流到云存储
@@ -6261,7 +6255,8 @@ ipcMain.handle('cloud-upload', async (event, { filePath, filename, cookie, apiBa
         }
         for (let attempt = 0; attempt < 3; attempt++) {
             try {
-                completeRes = await axios.post(`${apiBaseUrl}/cloud/upload/complete`, completeParams)
+                const info = await official('/api/upload/cloud/info/v2', { md5, songid: songId, filename, song: completeParams.song, artist: completeParams.artist, album: completeParams.album, bitrate: '999000', resourceId })
+                completeRes = { data: info.code === 200 ? await official('/api/cloud/pub/v2', { songid: info.songId }) : info }
                 if (completeRes.data.code === 200) break
                 console.warn(`[cloud-upload] complete attempt ${attempt + 1} failed:`, completeRes.data.code, completeRes.data.msg)
             } catch (e) {
@@ -6395,12 +6390,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
-    // 退出前停止 QQ 音乐 API 子进程
-    stopQQMusicAPI()
-    // 退出前停止酷狗音乐 API 子进程
-    stopKugouMusicAPI()
-    // 退出前停止网易云 API 子进程
-    stopNeteaseAPI()
 })
 
 app.on('activate', () => {

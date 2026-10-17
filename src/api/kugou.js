@@ -1,5 +1,4 @@
 import axios from 'axios'
-import { ensureLocalService } from '../utils/local-service'
 import { isKugouDirectRoute } from './kugou-direct'
 import { kugouVipPlayRequired } from '../utils/song-vip'
 
@@ -7,8 +6,9 @@ export function kugouNativeBridge() {
     return window.__ELECTRON_BRIDGE__ || window.bridge || window.ipcHandler || window.ipcRenderer
 }
 export async function kugouDirect(route, params = {}) {
-    if (['/search','/song/url','/user/vip/detail','/user/playlist','/playlist/track/all/new','/playlist/tracks/add','/playlist/tracks/del'].includes(route)) params = { ...params, token:getKugouCookie(), userid:getKugouUserid(), dfid:getKugouDfid() || '-' }
+    if (!route.startsWith('/login') && route !== '/captcha/sent') params = { ...params, token:getKugouCookie(), userid:getKugouUserid(), dfid:getKugouDfid() || '-' }
     const result = await kugouNativeBridge().invoke('kugou:request', { route, params })
+    if (Number(result?.error_code) === 34175) return result
     if (result?.status === 0 || result?.error_code) {
         const error=new Error(result?.error_msg || '酷狗请求失败，请重试')
         error.code=result.error_code;error.requiresVerification=!!result.requiresVerification
@@ -18,19 +18,7 @@ export async function kugouDirect(route, params = {}) {
 }
 
 // ========== 酷狗概念版 API ==========
-// 已独立实现的路由通过 Electron 直接请求官方；尚未替换的功能保留旧服务。
-// 注意：baseURL 末尾不带 /，避免与接口路径开头的 / 拼成双斜杠导致反代 502
-
-// 本地 API 基地址(Electron 主进程启动的 KuGouMusicApi 子进程)
-const KUGOU_LOCAL_BASE = 'http://localhost:3300'
-// 在线备用线路(本地服务不可用时回退)
-const KUGOU_ONLINE_BASE = 'https://kgapi.xiaomingky.cn'
-
-// 当前使用的 baseURL:优先本地,不可用时切在线
-let KUGOU_BASE_URL = KUGOU_LOCAL_BASE
-// 本地服务健康状态(启动时假设可用,首次请求失败后标记为不可用)
-let _localAvailable = true
-// localStorage key
+// 所有酷狗请求均通过 Electron 官方客户端契约；未迁移操作显式报错。
 const KUGOU_COOKIE_KEY = 'kugou_cookie'
 const KUGOU_PROFILE_KEY = 'kugou_profile'
 const KUGOU_DFID_KEY = 'kugou_dfid'
@@ -64,129 +52,16 @@ function getKugouDfid() {
     return localStorage.getItem(KUGOU_DFID_KEY) || ''
 }
 
-// dfid 获取锁：避免并发请求时重复获取（不是递归锁，递归由下方独立实例规避）
-let _dfidPromise = null
+const kugouRequest = axios.create({ baseURL: 'https://www.kugou.com', timeout: 30000, withCredentials: true })
 
-// ========== axios 实例 ==========
-// baseURL 初始为本地线路,detectLocalAvailability() 完成后会动态更新
-const kugouRequest = axios.create({
-    baseURL: KUGOU_LOCAL_BASE,
-    timeout: 30000,
-    withCredentials: true
-})
-
-// dfid 专用实例：不带请求拦截器，避免 ensureDfid → 拦截器 → ensureDfid 无限递归导致 OOM
-const _dfidRequest = axios.create({
-    baseURL: KUGOU_LOCAL_BASE,
-    timeout: 10000,
-    withCredentials: true
-})
-
-// 动态更新 baseURL(本地服务不可用时切换到在线线路)
-// 在请求拦截器里读取最新的 KUGOU_BASE_URL,确保切换生效
-function updateBaseURLs() {
-    kugouRequest.defaults.baseURL = KUGOU_BASE_URL
-    _dfidRequest.defaults.baseURL = KUGOU_BASE_URL
-}
-
-async function ensureDfid() {
-    let dfid = getKugouDfid()
-    if (dfid) return dfid
-    // 并发去重：多个请求同时进入拦截器时只发一次 /register/dev
-    if (_dfidPromise) return _dfidPromise
-    _dfidPromise = (async () => {
-        try {
-            // ⚠️ 实测：传 platform=lite 时 /register/dev 返回 data:[]（空数组，无 dfid）
-            // 必须不传 platform 才能拿到 dfid，所以这里用裸 URL + 时间戳
-            const ts = Date.now()
-            const res = await _dfidRequest.get(`/register/dev?timestamp=${ts}`)
-            // _dfidRequest 无响应拦截器，res 是 axios 原始响应
-            // 实测响应：{ data: { dfid: "xxxx" }, status: 1, error_code: 0 }（res.data 是 body）
-            // 但 _dfidRequest 的 res.data 可能是 { data: { dfid } } 或 { dfid }
-            const body = res?.data || {}
-            dfid = body?.data?.dfid || body?.dfid || ''
-            if (dfid) {
-                localStorage.setItem(KUGOU_DFID_KEY, dfid)
-                console.log('[Kugou] ensureDfid 成功:', dfid)
-            } else {
-                console.warn('[Kugou] ensureDfid 响应无 dfid 字段:', body)
-            }
-        } catch (e) {
-            console.warn('[Kugou] ensureDfid failed:', e.message)
-        } finally {
-            _dfidPromise = null
-        }
-        return dfid
-    })()
-    return _dfidPromise
-}
-
-// 请求拦截器：自动附加 token / userid / dfid / platform / cookie
-// 文档明确要求：调用例子 /search?keywords=周杰伦&cookie=token=xxxx;userid=xxxx;dfid=xxxx
-// 实测多个接口（/search、/user/playlist、/playlist/track/all 等）在未带认证信息时返回 502 或 error_code:152
-// 统一策略：只要存在 token/dfid，就把 cookie 参数附加到所有请求上
 kugouRequest.interceptors.request.use(async config => {
     const route = new URL(config.url, 'https://www.kugou.com')
     const params = { ...Object.fromEntries(route.searchParams), ...(config.params || {}) }
-    if (kugouNativeBridge()?.invoke && isKugouDirectRoute(route.pathname, params)) {
-        config.adapter = async cfg => ({ data: await kugouDirect(route.pathname, params), status:200, statusText:'OK', headers:{}, config:cfg })
-        return config
-    }
-    // 每次请求前更新 baseURL(确保本地→在线切换生效)
-    if (!config._retried) {
-        _localAvailable = await ensureLocalService('kugou')
-        KUGOU_BASE_URL = _localAvailable ? KUGOU_LOCAL_BASE : KUGOU_ONLINE_BASE
-    }
-    updateBaseURLs()
-    config.baseURL = KUGOU_BASE_URL
-    const token = getKugouCookie()
-    const userid = getKugouUserid()
-    let dfid = getKugouDfid()
-    if (!dfid) {
-        // 同步等待 dfid 获取完成（避免 cookie 缺 dfid 导致 502）
-        dfid = await ensureDfid()
-    }
-    config.params = config.params || {}
-    // 概念版固定标记
-    config.params.platform = 'lite'
-    // 时间戳防缓存
-    if (!config.params.timestamp) config.params.timestamp = Date.now()
-    // 统一附加 cookie 参数（token=xxx;userid=xxx;dfid=xxx）
-    if (token || dfid) {
-        const parts = []
-        if (token) parts.push(`token=${token}`)
-        if (userid) parts.push(`userid=${userid}`)
-        if (dfid) parts.push(`dfid=${dfid}`)
-        config.params.cookie = parts.join(';')
-    }
+    if (!kugouNativeBridge()?.invoke || !isKugouDirectRoute(route.pathname, params)) throw new Error(`酷狗接口 ${route.pathname} 尚未迁移到官方客户端`)
+    config.adapter = async cfg => ({ data: await kugouDirect(route.pathname, params), status: 200, statusText: 'OK', headers: {}, config: cfg })
     return config
 })
-
-// 响应拦截器：酷狗字段是 errcode/status/error_code（不是 code）
-// 不能套用网易云 "data.code === undefined" 判断，否则会过度拆解 data.data
-// 改为：原样返回 response.data，由调用方按需取 .data / .list / .rank_list 等字段
-kugouRequest.interceptors.response.use(
-    response => response.data,
-    error => {
-        // 本地服务连接失败(ECONNREFUSED/timeout)时,自动切换到在线线路并重试一次
-        if (_localAvailable && error.config?.baseURL === KUGOU_LOCAL_BASE && (error.code === 'ECONNREFUSED' || error.code === 'ECONNABORTED' || error.code === 'ERR_NETWORK')) {
-            console.warn('[Kugou API] 本地服务连接失败,切换到在线线路')
-            _localAvailable = false
-            KUGOU_BASE_URL = KUGOU_ONLINE_BASE
-            updateBaseURLs()
-            // 重试原请求
-            const config = error.config
-            if (config && !config._retried) {
-                config._retried = true
-                config.baseURL = KUGOU_BASE_URL
-                return kugouRequest(config)
-            }
-        }
-        if (error.response && error.response.data) return error.response.data
-        console.error('[Kugou API] error:', error)
-        return Promise.reject(error)
-    }
-)
+kugouRequest.interceptors.response.use(response => response.data, error => Promise.reject(error))
 
 // ========== 登录类 ==========
 // 1. 手机登录：mobile + code（验证码由 /captcha/sent 获取）
@@ -195,7 +70,7 @@ export const kugouLoginCellphone = (mobile, code, userid = '') =>
     kugouRequest.get('/login/cellphone', { params: { mobile, code, userid } })
 // 2. 用户名登录（文档标注不推荐：可能需要验证）
 export const kugouLoginUsername = (username, password) =>
-    kugouRequest.get('/login', { params: { username, password: encodeURIComponent(password) } })
+    kugouRequest.get('/login', { params: { username, password } })
 // 3. 开放接口登录（微信扫码 wx_code 换 token）
 export const kugouLoginOpenplat = (code) =>
     kugouRequest.get('/login/openplat', { params: { code } })
@@ -224,55 +99,28 @@ export const kugouUserDetail = () => kugouRequest.get('/user/detail')
 export const kugouUserVip = () => kugouRequest.get('/user/vip/detail')
 export const kugouUserPlaylist = (page = 1, pagesize = 30) =>
     kugouRequest.get('/user/playlist', { params: { page, pagesize } })
-// 文档：登录后直接调用，无分页参数
-export const kugouUserFollow = () => kugouRequest.get('/user/follow')
-export const kugouUserFollowMessage = (id, pagesize = 30) =>
-    kugouRequest.get('/user/follow/message', { params: { id, pagesize } })
-export const kugouUserCloud = (page = 1, pagesize = 30) =>
-    kugouRequest.get('/user/cloud', { params: { page, pagesize } })
-export const kugouUserCloudUrl = (hash, album_id = '', name = '', album_audio_id = '') =>
-    kugouRequest.get('/user/cloud/url', { params: { hash, album_id, name, album_audio_id } })
-export const kugouUserCloudUpload = (formData) =>
-    kugouRequest.post('/user/cloud/upload', formData, {
-        headers: { 'Content-Type': 'application/octet-stream' }
-    })
-export const kugouUserVideoCollect = (page = 1, pagesize = 30) =>
-    kugouRequest.get('/user/video/collect', { params: { page, pagesize } })
-export const kugouUserVideoLove = (pagesize = 30) =>
-    kugouRequest.get('/user/video/love', { params: { pagesize } })
-export const kugouUserListen = (type = 0) =>
-    kugouRequest.get('/user/listen', { params: { type } })
-export const kugouUserHistory = (bp = '') =>
-    kugouRequest.get('/user/history', { params: { bp } })
-export const kugouLastestSongsListen = (pagesize = 30) =>
-    kugouRequest.get('/lastest/songs/listen', { params: { pagesize } })
-export const kugouUserPurchasedSongs = (page = 1, pagesize = 50) =>
-    kugouRequest.get('/user/purchased/songs', { params: { page, pagesize } })
-export const kugouUserPurchasedAlbums = (page = 1, pagesize = 15) =>
-    kugouRequest.get('/user/purchased/albums', { params: { page, pagesize } })
+
 
 // ========== 搜索类 ==========
 // type: special(歌单) / lyric(歌词) / song(单曲) / album(专辑) / author(歌手) / mv
 export const kugouSearch = (keywords, page = 1, pagesize = 30, type = '') =>
     kugouRequest.get('/search', { params: { keywords, page, pagesize, type } })
-export const kugouComplexSearch = (keywords, page = 1, pagesize = 30) =>
-    kugouRequest.get('/search/complex', { params: { keywords, page, pagesize } })
+
 export const kugouSearchSuggest = (keywords, musicTipCount = 8, mvTipCount = 3, albumTipCount = 3) =>
     kugouRequest.get('/search/suggest', { params: { keywords, musicTipCount, mvTipCount, albumTipCount } })
 export const kugouSearchHot = () => kugouRequest.get('/search/hot')
-export const kugouSearchDefault = () => kugouRequest.get('/search/default')
+
 export const kugouSearchLyric = (keywords, hash = '', album_audio_id = '', duration = 0, man = 'no') =>
     kugouRequest.get('/search/lyric', {
         params: { keywords, hash, album_audio_id, duration, man }
     })
 
 // ========== 歌曲类 ==========
-// 旧版：单音质请求（quality 参数）
+// 官方单音质授权请求（quality 参数）
 // quality: piano/acappella/subwoofer/ancient/surnay/dj/128/320/flac/high/viper_atmos/viper_clear/viper_tape/super
 export const kugouSongUrl = (hash, quality = '128', album_id = '', album_audio_id = '', free_part = '') =>
     kugouRequest.get('/song/url', { params: { hash, quality, album_id, album_audio_id, free_part } })
-// 新版：一次拿全音质 URL（默认走这个，失败回退旧版）
-// 注意：新版存在音频加密（目前无法解码），如失败请回退 /song/url
+// 官方新版授权请求；播放层会根据平台返回结果选择可用音质
 export const kugouSongUrlNew = (hash, album_audio_id = '', free_part = '') =>
     kugouRequest.get('/song/url/new', { params: { hash, album_audio_id, free_part } })
 // 音乐详情：/privilege/lite 返回的是权限信息(无 mixsongid)
@@ -282,49 +130,13 @@ export const kugouSongDetail = (hash) =>
 // 音乐相关信息：/audio
 export const kugouSongInfo = (hash) =>
     kugouRequest.get('/audio', { params: { hash } })
-// 歌曲高潮部分
-export const kugouSongClimax = (hash) =>
-    kugouRequest.get('/song/climax', { params: { hash } })
-// 歌曲推荐：card_id 1-6 普通版（文档：仅有 card_id）
-export const kugouSongRecommend = (card_id = 1) =>
-    kugouRequest.get('/top/card', { params: { card_id } })
-// 概念版歌曲推荐：card_id 3001-3104，支持 pagesize
-export const kugouSongRecommendYouth = (card_id = 3001, pagesize = 30) =>
-    kugouRequest.get('/top/card/youth', { params: { card_id, pagesize } })
-// 更多音乐版本
-export const kugouAudioRelated = (album_audio_id, page = 1, pagesize = 30, show_detail = 1, sort = 'all') =>
-    kugouRequest.get('/audio/related', { params: { album_audio_id, page, pagesize, show_detail, sort } })
-// 音乐专辑/歌手信息
-export const kugouKrmAudio = (album_audio_id, fields = '') =>
-    kugouRequest.get('/krm/audio', { params: { album_audio_id, fields } })
-// 歌曲成绩单
-export const kugouSongRanking = (album_audio_id) =>
-    kugouRequest.get('/song/ranking', { params: { album_audio_id } })
-export const kugouSongRankingFilter = (album_audio_id, page = 1, pagesize = 30) =>
-    kugouRequest.get('/song/ranking/filter', { params: { album_audio_id, page, pagesize } })
+
 // 歌词
 export const kugouLyric = (id, accesskey, fmt = 'lrc', decode = '') =>
     kugouRequest.get('/lyric', { params: { id, accesskey, fmt, decode } })
-// 收藏数 / 评论数
-export const kugouFavoriteCount = (mixsongids) =>
-    kugouRequest.get('/favorite/count', { params: { mixsongids } })
-export const kugouCommentCount = (hash = '', special_id = '') =>
-    kugouRequest.get('/comment/count', { params: { hash, special_id } })
-// 获取歌手和专辑图片 / 歌手图片
-export const kugouImages = (hash, album_id = '', album_audio_id = '', count = 5) =>
-    kugouRequest.get('/images', { params: { hash, album_id, album_audio_id, count } })
-export const kugouImagesAudio = (hash, audio_id = '', album_audio_id = '', filename = '', count = 5) =>
-    kugouRequest.get('/images/audio', { params: { hash, audio_id, album_audio_id, filename, count } })
-// 听歌识曲（POST + PCM 二进制）
-export const kugouAudioMatch = (pcmArrayBuffer) =>
-    kugouRequest.post('/audio/match', pcmArrayBuffer, {
-        headers: { 'Content-Type': 'application/octet-stream' }
-    })
 
-// ========== 专辑类 ==========
-// /album 是专辑信息，/album/detail 是专辑详情，/album/songs 是专辑音乐列表
-export const kugouAlbumInfo = (album_id, fields = '') =>
-    kugouRequest.get('/album', { params: { album_id, fields } })
+
+
 export const kugouAlbumDetail = (id) =>
     kugouRequest.get('/album/detail', { params: { id } })
 export const kugouAlbumSongs = (id, page = 1, pagesize = 30) =>
@@ -339,11 +151,7 @@ export const kugouPlaylistCategory = () => kugouRequest.get('/playlist/tags')
 // 歌单列表：category_id=0 推荐
 export const kugouPlaylist = (category_id = 0, withsong = 0, withtag = 0, page = 1, pagesize = 30) =>
     kugouRequest.get('/top/playlist', { params: { category_id, withsong, withtag, page, pagesize } })
-// 主题歌单
-export const kugouPlaylistTheme = () => kugouRequest.get('/theme/playlist')
-// 音效歌单
-export const kugouPlaylistEffect = (page = 1, pagesize = 30) =>
-    kugouRequest.get('/playlist/effect', { params: { page, pagesize } })
+
 // 歌单详情：ids 是 global_collection_id（可多个，逗号分隔）
 // 文档：仅有 ids 参数
 export const kugouPlaylistDetail = (ids) =>
@@ -354,12 +162,7 @@ export const kugouPlaylistSongs = (id, page = 1, pagesize = 30) =>
 // 歌单所有歌曲（新版，仅支持用户创建/收藏的歌单，参数是 listid）
 export const kugouPlaylistSongsNew = (listid, page = 1, pagesize = 30) =>
     kugouRequest.get('/playlist/track/all/new', { params: { listid, page, pagesize } })
-// 相似歌单
-export const kugouPlaylistSimilar = (ids) =>
-    kugouRequest.get('/playlist/similar', { params: { ids } })
-// 主题歌单所有歌曲
-export const kugouThemePlaylistTrack = (theme_id) =>
-    kugouRequest.get('/theme/playlist/track', { params: { theme_id } })
+
 
 // 歌单管理：收藏/新建/删除/添加歌曲/删除歌曲
 // 收藏歌单(type=1) / 新建歌单(type=0)，需登录
@@ -396,9 +199,7 @@ export const kugouVideoUrl = (hash) =>
 // fields 支持多个：mkv,tags,h264,h265,authors
 export const kugouSongMv = (album_audio_id, fields = '') =>
     kugouRequest.get('/kmr/audio/mv', { params: { album_audio_id, fields } })
-// 获取视频相关信息（hash，可多个）
-export const kugouVideoInfo = (hash) =>
-    kugouRequest.get('/video/privilege', { params: { hash } })
+
 // 获取视频详情：传入视频 id
 export const kugouVideoDetail = (id) =>
     kugouRequest.get('/video/detail', { params: { id } })
@@ -413,23 +214,12 @@ export const kugouSingerAlbum = (id, page = 1, pagesize = 30, sort = 'hot') =>
     kugouRequest.get('/artist/albums', { params: { id, page, pagesize, sort } })
 export const kugouSingerSong = (id, page = 1, pagesize = 30, sort = 'hot') =>
     kugouRequest.get('/artist/audios', { params: { id, page, pagesize, sort } })
-export const kugouSingerMv = (id, page = 1, pagesize = 30, tag = 'all') =>
-    kugouRequest.get('/artist/videos', { params: { id, page, pagesize, tag } })
-export const kugouSingerFollow = (id) =>
-    kugouRequest.get('/artist/follow', { params: { id } })
-export const kugouSingerUnfollow = (id) =>
-    kugouRequest.get('/artist/unfollow', { params: { id } })
-export const kugouSingerFollowNewsongs = (pagesize = 30, opt_sort = 1, last_album_id = '') =>
-    kugouRequest.get('/artist/follow/newsongs', { params: { pagesize, opt_sort, last_album_id } })
+
 
 // ========== 排行榜 ==========
 export const kugouRankList = (withsong = 0) =>
     kugouRequest.get('/rank/list', { params: { withsong } })
-export const kugouRankRecommend = () => kugouRequest.get('/rank/top')
-export const kugouRankHistory = (rankid, rank_cid = '') =>
-    kugouRequest.get('/rank/vol', { params: { rankid, rank_cid } })
-export const kugouRankInfo = (rankid, rank_cid = '', album_img = 1, zone = '') =>
-    kugouRequest.get('/rank/info', { params: { rankid, rank_cid, album_img, zone } })
+
 export const kugouRankSongs = (rankid, page = 1, pagesize = 30, rank_cid = '') =>
     kugouRequest.get('/rank/audio', { params: { rankid, page, pagesize, rank_cid } })
 
@@ -437,74 +227,29 @@ export const kugouRankSongs = (rankid, page = 1, pagesize = 30, rank_cid = '') =
 // 歌曲评论：mixsongid（不是 hash）
 export const kugouCommentSong = (mixsongid, page = 1, pagesize = 30, show_classify = 0, show_hotword_list = 0) =>
     kugouRequest.get('/comment/music', { params: { mixsongid, page, pagesize, show_classify, show_hotword_list } })
-export const kugouCommentSongClassify = (mixsongid, type_id, page = 1, pagesize = 30, sort = 2) =>
-    kugouRequest.get('/comment/music/classify', { params: { mixsongid, type_id, page, pagesize, sort } })
-export const kugouCommentSongHotword = (mixsongid, hot_word, page = 1, pagesize = 30) =>
-    kugouRequest.get('/comment/music/hotword', { params: { mixsongid, hot_word, page, pagesize } })
+
 export const kugouCommentPlaylist = (id, page = 1, pagesize = 30, show_classify = 0, show_hotword_list = 0) =>
     kugouRequest.get('/comment/playlist', { params: { id, page, pagesize, show_classify, show_hotword_list } })
 export const kugouCommentAlbum = (id, page = 1, pagesize = 30, show_classify = 0, show_hotword_list = 0) =>
     kugouRequest.get('/comment/album', { params: { id, page, pagesize, show_classify, show_hotword_list } })
-export const kugouCommentFloor = (special_id, mixsongid, tid, page = 1, pagesize = 30) =>
-    kugouRequest.get('/comment/floor', { params: { special_id, mixsongid, tid, page, pagesize } })
 
-// ========== 主题音乐 ==========
-export const kugouThemeMusic = () => kugouRequest.get('/theme/music')
-export const kugouThemeMusicDetail = (id) =>
-    kugouRequest.get('/theme/music/detail', { params: { id } })
+
+
 
 // ========== 其他首页 / 推荐 ==========
 // banner（文档接口是 /pc/diantai）
 export const kugouBanner = () => kugouRequest.get('/pc/diantai')
-// 乐库相关
-export const kugouLibrary = () => kugouRequest.get('/yueku')
-export const kugouLibraryBanner = () => kugouRequest.get('/yueku/banner')
-export const kugouLibraryRadio = () => kugouRequest.get('/yueku/fm')
-// 电台
-export const kugouFmClass = () => kugouRequest.get('/fm/class')
-export const kugouFmRecommend = () => kugouRequest.get('/fm/recommend')
-export const kugouFmImage = (fmid) =>
-    kugouRequest.get('/fm/image', { params: { fmid } })
-export const kugouFmSongs = (fmid, fmtype = '', fmoffset = '', fmsize = '') =>
-    kugouRequest.get('/fm/songs', { params: { fmid, fmtype, fmoffset, fmsize } })
-// 编辑精选
-export const kugouTopIp = () => kugouRequest.get('/top/ip')
-export const kugouIp = (id, type = '', page = 1, pagesize = 30) =>
-    kugouRequest.get('/ip', { params: { id, type, page, pagesize } })
-export const kugouIpPlaylist = (id, page = 1, pagesize = 30) =>
-    kugouRequest.get('/ip/playlist', { params: { id, page, pagesize } })
-export const kugouIpZone = () => kugouRequest.get('/ip/zone')
-export const kugouIpZoneHome = (id) =>
-    kugouRequest.get('/ip/zone/home', { params: { id } })
+
 
 // 新歌速递（文档接口是 /top/song）
 export const kugouNewSong = () => kugouRequest.get('/top/song')
-// 每日推荐 / 历史推荐 / 风格推荐
-export const kugouDailyRecommend = (platform = 'ios') =>
-    kugouRequest.get('/everyday/recommend', { params: { platform } })
-export const kugouDailyHistory = (mode = 'list', history_name = '', date = '', platform = 'ios') =>
-    kugouRequest.get('/everyday/history', { params: { mode, history_name, date, platform } })
-export const kugouDailyStyleRecommend = (tagids = '', platform = 'ios') =>
-    kugouRequest.get('/everyday/style/recommend', { params: { tagids, platform } })
-// 私人 FM
-export const kugouPersonalFm = (params = {}) =>
-    kugouRequest.get('/personal/fm', { params })
 
-// 场景音乐
-export const kugouSceneLists = () => kugouRequest.get('/scene/lists')
-export const kugouSceneModule = (id) =>
-    kugouRequest.get('/scene/module', { params: { id } })
 
-// 刷刷 / AI 推荐
-export const kugouBrush = () => kugouRequest.get('/brush')
-export const kugouAiRecommend = (album_audio_id) =>
-    kugouRequest.get('/ai/recommend', { params: { album_audio_id } })
 
-// 提交听歌历史
-export const kugouPlayhistoryUpload = (mxid, ot = '', pc = 0) =>
-    kugouRequest.get('/playhistory/upload', { params: { mxid, ot, pc } })
-// 服务器时间
-export const kugouServerNow = () => kugouRequest.get('/server/now')
+
+
+
+
 
 // ========== 概念版 VIP 领取（仅概念版可用） ==========
 export const kugouYouthVip = () => kugouRequest.get('/youth/vip')
@@ -514,52 +259,13 @@ export const kugouYouthDayVipUpgrade = () => kugouRequest.get('/youth/day/vip/up
 export const kugouYouthMonthVipRecord = () => kugouRequest.get('/youth/month/vip/record')
 export const kugouYouthUnionVip = () => kugouRequest.get('/youth/union/vip')
 
-// ========== 概念版频道 ==========
-export const kugouChannelAll = (page = 1, pagesize = 30) =>
-    kugouRequest.get('/youth/channel/all', { params: { page, pagesize } })
-export const kugouChannelDetail = (global_collection_id) =>
-    kugouRequest.get('/youth/channel/detail', { params: { global_collection_id } })
-export const kugouChannelAmway = (global_collection_id) =>
-    kugouRequest.get('/youth/channel/amway', { params: { global_collection_id } })
-export const kugouChannelSimilar = (channel_id) =>
-    kugouRequest.get('/youth/channel/similar', { params: { channel_id } })
-export const kugouChannelSub = (global_collection_id, t = 1) =>
-    kugouRequest.get('/youth/channel/sub', { params: { global_collection_id, t } })
-export const kugouChannelSong = (global_collection_id, page = 1, pagesize = 30) =>
-    kugouRequest.get('/youth/channel/song', { params: { global_collection_id, page, pagesize } })
-export const kugouChannelSongDetail = (global_collection_id, fileid) =>
-    kugouRequest.get('/youth/channel/song/detail', { params: { global_collection_id, fileid } })
-export const kugouDynamicRecent = () => kugouRequest.get('/youth/dynamic/recent')
-export const kugouYouthUserSong = (userid, page = 1, pagesize = 30) =>
-    kugouRequest.get('/youth/user/song', { params: { userid, page, pagesize } })
 
-// ========== 听书 ==========
-export const kugouLongaudioDailyRecommend = (page = 1, pagesize = 30) =>
-    kugouRequest.get('/longaudio/daily/recommend', { params: { page, pagesize } })
-export const kugouLongaudioRankRecommend = () => kugouRequest.get('/longaudio/rank/recommend')
-export const kugouLongaudioVipRecommend = () => kugouRequest.get('/longaudio/vip/recommend')
-export const kugouLongaudioWeekRecommend = () => kugouRequest.get('/longaudio/week/recommend')
-export const kugouLongaudioAlbumDetail = (album_id) =>
-    kugouRequest.get('/longaudio/album/detail', { params: { album_id } })
-export const kugouLongaudioAlbumAudios = (album_id) =>
-    kugouRequest.get('/longaudio/album/audios', { params: { album_id } })
 
-// ========== 验证码（错误码 20028 时使用） ==========
-export const kugouGetVerifyInfo = (eventid) =>
-    kugouRequest.get('/get/verify/info', { params: { eventid } })
-export const kugouVerifyUserInfo = (eventid, v_type, verifycode, sid, edt) =>
-    kugouRequest.get('/verify/user/info', { params: { eventid, v_type, verifycode, sid, edt } })
 
-// ========== 曲谱 ==========
-export const kugouSheetSong = (album_audio_id, instruments = 1, level = 0) =>
-    kugouRequest.get('/sheet/song', { params: { album_audio_id, instruments, level } })
-export const kugouSheetDetail = (opern_id) =>
-    kugouRequest.get('/sheet/detail', { params: { id: opern_id } })
-export const kugouSheetRank = (instruments = 1, level = 0, page = 1, pagesize = 30) =>
-    kugouRequest.get('/sheet/rank', { params: { instruments, level, page, pagesize } })
-export const kugouSheetExplore = (instruments = 1, level = 0, page = 1, pagesize = 30, tagid = '') =>
-    kugouRequest.get('/sheet/explore', { params: { instruments, level, page, pagesize, tagid } })
-export const kugouSheetTags = () => kugouRequest.get('/sheet/tags')
+
+
+
+
 
 // ========== 标准化函数 ==========
 // 幂等保护：已标准化对象直接返回

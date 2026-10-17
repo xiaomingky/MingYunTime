@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -9,14 +9,14 @@
   "scripts": {
     "dev": "set NODE_OPTIONS=--max-old-space-size=1024 && vite",
     "dev:light": "set NODE_OPTIONS=--max-old-space-size=512 && vite",
-    "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/clean-dist.cjs && node scripts/ensure-qq-music-dist.cjs && node scripts/ensure-kugou-music-api.cjs && node scripts/ensure-netease-api.cjs && node scripts/prepare-api-dependencies.cjs && node scripts/ensure-qishui-runtime.cjs && vite build && electron-builder",
+    "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/clean-dist.cjs && node scripts/ensure-qishui-runtime.cjs && vite build && electron-builder",
     "preview": "vite preview",
     "check:electron": "electron scripts/check-electron-functional.cjs",
     "check:music": "node scripts/check-music-platforms.mjs",
     "check:music:live": "node scripts/check-music-platforms.mjs --live",
     "check:qishui:electron": "electron scripts/check-qishui-electron.cjs",
     "postinstall": "node node_modules/electron/install.js",
-    "check": "node scripts/check-modernization.mjs && node scripts/check-player-queue.mjs && node scripts/check-playback-start.mjs && node scripts/check-playlist-comments.mjs && node scripts/check-qishui-cenc.mjs && node scripts/check-download-stream.mjs && node scripts/check-download-resolver.mjs && node scripts/check-download-center.mjs && node scripts/check-qishui-playlists.mjs && node scripts/check-song-vip.mjs && node scripts/check-qq-search.mjs && node scripts/check-douyu-live.mjs && node scripts/check-apple-lyrics.mjs && node scripts/check-douyin-media.mjs && node scripts/check-douyin-browser.mjs && node scripts/check-interface-motion.mjs && node scripts/check-music-platforms.mjs && node scripts/check-qq-client.mjs && node scripts/check-qq-native-login.mjs && node scripts/check-qq-inline-qr.mjs && node scripts/check-qq-benefits.mjs && node scripts/check-esports-scoreboard.mjs && node scripts/check-qishui-search-login.mjs && node scripts/check-qishui-business.mjs && node scripts/check-qishui-account.mjs && node scripts/check-netease-client.mjs && node scripts/check-kugou-client.mjs && node scripts/check-account-state.mjs && node scripts/check-membership-state.mjs && node scripts/check-update-version.mjs && node scripts/check-platform-fixes.mjs && node scripts/check-stream-quality.mjs && node scripts/check-netease-playback.mjs && node scripts/check-session-download.mjs && node scripts/check-provider-download.mjs",
+    "check": "node scripts/check-modernization.mjs && node scripts/check-player-queue.mjs && node scripts/check-playback-start.mjs && node scripts/check-playlist-comments.mjs && node scripts/check-qishui-cenc.mjs && node scripts/check-download-stream.mjs && node scripts/check-download-resolver.mjs && node scripts/check-download-center.mjs && node scripts/check-qishui-playlists.mjs && node scripts/check-song-vip.mjs && node scripts/check-qq-search.mjs && node scripts/check-douyu-live.mjs && node scripts/check-apple-lyrics.mjs && node scripts/check-douyin-media.mjs && node scripts/check-douyin-browser.mjs && node scripts/check-interface-motion.mjs && node scripts/check-music-platforms.mjs && node scripts/check-qq-client.mjs && node scripts/check-qq-native-login.mjs && node scripts/check-qq-inline-qr.mjs && node scripts/check-qq-benefits.mjs && node scripts/check-esports-scoreboard.mjs && node scripts/check-qishui-search-login.mjs && node scripts/check-qishui-business.mjs && node scripts/check-qishui-account.mjs && node scripts/check-netease-client.mjs && node scripts/check-kugou-client.mjs && node scripts/check-account-state.mjs && node scripts/check-membership-state.mjs && node scripts/check-update-version.mjs && node scripts/check-platform-fixes.mjs && node scripts/check-stream-quality.mjs && node scripts/check-netease-playback.mjs && node scripts/check-session-download.mjs && node scripts/check-provider-download.mjs && node scripts/check-api-migration.mjs",
     "check:esports:scoreboard": "node scripts/check-esports-scoreboard.mjs",
     "check:qishui:search-login": "node scripts/check-qishui-search-login.mjs",
     "prepare:qishui": "node scripts/ensure-qishui-runtime.cjs",
@@ -35,7 +35,8 @@
     "check:platform:fixes": "node scripts/check-platform-fixes.mjs",
     "check:qishui:cenc": "node scripts/check-qishui-cenc.mjs",
     "check:stream:quality": "node scripts/check-stream-quality.mjs",
-    "check:qq:native-login": "node scripts/check-qq-native-login.mjs"
+    "check:qq:native-login": "node scripts/check-qq-native-login.mjs",
+    "check:api:migration": "node scripts/check-api-migration.mjs"
   },
   "dependencies": {
     "@applemusic-like-lyrics/core": "^0.5.0",
@@ -48,7 +49,6 @@
     "@pixi/filter-bulge-pinch": "^5.1.1",
     "@pixi/filter-color-matrix": "^7.4.3",
     "@pixi/sprite": "^7.4.3",
-    "@sansenjian/qq-music-api": "^2.4.0",
     "artplayer": "^5.4.0",
     "artplayer-plugin-danmuku": "^5.3.0",
     "axios": "^1.13.6",
@@ -104,34 +104,6 @@
       {
         "from": "resources/yt-dlp.exe",
         "to": "yt-dlp.exe"
-      },
-      {
-        "from": "resources/qq-music-api/dist",
-        "to": "qq-music-api/dist"
-      },
-      {
-        "from": "resources/qq-music-api/libs",
-        "to": "qq-music-api/libs"
-      },
-      {
-        "from": "resources/qq-music-api/package.json",
-        "to": "qq-music-api/package.json"
-      },
-      {
-        "from": "electron/qq-styletext-polyfill.cjs",
-        "to": "qq-styletext-polyfill.cjs"
-      },
-      {
-        "from": "resources/kugou-music-api",
-        "to": "kugou-music-api"
-      },
-      {
-        "from": "resources/netease-api",
-        "to": "netease-api"
-      },
-      {
-        "from": "electron/api-runtime.cjs",
-        "to": "api-runtime.cjs"
       },
       {
         "from": "electron/qishui-runtime-worker.cjs",

@@ -2,25 +2,26 @@
 
 **四平台音乐、双风格歌词、视频与赛事，一款 Windows 桌面播放器。**
 
-[English](README_EN.md) · [下载 v4.0.0](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.0) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
+[English](README_EN.md) · [下载 v4.0.1](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.1) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
 [程序官网](https://music.xiaomingky.dpdns.org) · [作者网站](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-4.0.0-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-4.0.1-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
 基于 Vue 3 + Electron 44 构建，集成网易云音乐、QQ 音乐、酷狗概念版和汽水音乐。除了发现、搜索、歌单和专辑，还提供可排序播放队列、本地音乐、经典 / Apple Music 风格歌词、桌面歌词、均衡器和统一下载中心。视频专区包含 B站、动漫、影视、网页解析与直播；娱乐专区提供 CS / VAL 赛事；智慧教材支持阅读、批注与配套音频。
 
-> 本项目由 AI 辅助开发。英文 README 是文档翻译，不代表客户端具有英文界面。4.0.0 设置界面见下方；其余历史图片与 GIF 保留 v3.6.1 标注；在线推荐、榜单与赛事会随服务更新。歌词 GIF 演示界面动画，不含音频。本地音乐展示使用示例文件条目。
+> 本项目由 AI 辅助开发。英文 README 是文档翻译，不代表客户端具有英文界面。汽水音乐展示图更新至 v4.0.1，设置界面保留 v4.0.0 标注；其余历史图片与 GIF 保留 v3.6.1 标注；在线推荐、榜单与赛事会随服务更新。歌词 GIF 演示界面动画，不含音频。本地音乐展示使用示例文件条目。
 
-## 4.0.0 正式版
+## 4.0.1 正式版
 
-4.0.0 正式版升级至 Electron **44.7.0**、electron-builder **26.15.3**，面向 Windows 10 / 11 x64。安装包与免安装压缩包见 v4.0.0 Release；v3.6.3 保留为历史兼容版本。
+4.0.1 正式版使用 Electron **44.7.0**、electron-builder **26.15.3**，面向 Windows 10 / 11 x64。安装包与免安装压缩包见 v4.0.1 Release；v3.6.3 保留为历史兼容版本。
 
-- **四平台与歌单**：新增汽水音乐入口和歌单管理；整合各平台账号、歌曲权限标识与下载解析。在线操作仍受平台授权与资源状态限制。
+- **内置平台客户端**：完成网易云、QQ 音乐和酷狗旧接口迁移，移除独立音乐 API 服务及其模块。
+- **四平台与歌单**：支持汽水音乐入口和歌单管理，补充首页、歌单与登录展示；整合各平台账号、歌曲权限标识与下载解析。在线操作仍受平台授权与资源状态限制。
 - **统一控件**：复选框、全选 / 半选、单选按钮、胶囊开关、分段选择器与下拉菜单统一玻璃质感，保留现有页面布局。
 - **队列排列**：长队列只绘制可见行，支持 1 万首歌曲；拖动手柄、上下移动按钮和 **Alt + ↑ / ↓** 都能排列。点击「当前歌曲」快速定位，拖到列表边缘会自动滚动，便于跨屏拖动。
 - **显示与流畅度**：「设置 → 显示与流畅度」选择「轻盈流畅」或「完整视觉」，两者均保留过渡和逐字歌词；还可分别调整界面动画、轻量视觉。Apple 歌词支持 30 / 45 / 60 FPS。
-- **启动与后台**：页面、歌词详情和视频引擎按需加载。音乐 API 首次请求时启动，同一平台的并发请求共用启动过程；自有进程空闲三分钟后释放。首次请求等待就绪，用户选择的在线线路不会被自动覆盖。
+- **启动与后台**：页面、歌词详情和视频引擎按需加载。网易云、QQ 音乐和酷狗请求通过 Electron 内置官方客户端按需发起，不启动独立音乐 API 服务。
 - **播放稳定性**：本地文件异步流式读取，支持完整、部分、尾部范围请求及 HEAD / 416；封面请求合并解析并使用容量限制缓存。经典逐字歌词向后拖动进度后恢复正确高亮。
 - **资源清理**：离开视频时销毁播放器、流缓冲和音频同步；队列原地排序也会保存；窗口隐藏和恢复保留后台听歌。
 
@@ -33,7 +34,7 @@
 - [下载安装](#下载安装)
 - [v3.6.3 修复与设置](#v363-修复与设置)
 - [v3.6.1 播放体验](#v361-播放体验)
-- [三平台首页与登录](#三平台首页与登录)
+- [四平台首页与登录](#四平台首页与登录)
 - [搜索、歌单与专辑](#搜索歌单与专辑)
 - [底部播放器与播放队列](#底部播放器与播放队列)
 - [经典与 Apple Music 歌词](#经典与-apple-music-歌词)
@@ -52,12 +53,12 @@
 
 ## 下载安装
 
-1. 打开 [v4.0.0 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.0)，在 **Assets** 中选择 Windows 安装包 `.exe`；需要免安装方式时选择 `.7z`，完整解压后运行程序。
+1. 打开 [v4.0.1 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.1)，在 **Assets** 中选择 Windows 安装包 `.exe`；需要免安装方式时选择 `.7z`，完整解压后运行程序。
 2. 安装包使用原生 **NSIS 向导**，可选择安装目录，并创建桌面 / 开始菜单快捷方式。
-3. 启动后在左上角选择平台，再按需登录。普通使用无需安装 Node.js，音乐 API 服务与下载工具随客户端提供。
-4. 首次启动本地 API 服务需要时间，数据暂未出现时稍等后刷新页面。
+3. 启动后在左上角选择平台，再按需登录。普通使用无需安装 Node.js，官方音乐客户端与下载工具随应用提供。
+4. 音乐数据直接连接平台官方服务；页面加载失败时，检查网络与登录状态后重试。
 
-**4.0.0 正式版：Windows 10 / 11，64 位；不再支持 Windows 7 / 8 / 8.1。** 上方已发布的 v3.6.3 属于旧版兼容分支。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
+**4.0.1 正式版：Windows 10 / 11，64 位；不再支持 Windows 7 / 8 / 8.1。** v3.6.3 属于旧版兼容分支。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
 
 在线播放、下载、高音质和账号操作依赖对应平台的授权、会员、地区与资源可用性。
 
@@ -81,7 +82,7 @@
 
 ![新版播放队列](showimage/v3.6.1/play-queue.png)
 
-## 三平台首页与登录
+## 四平台首页与登录
 
 ### 网易云音乐
 
@@ -113,6 +114,21 @@
 - 「设置 → 账号信息」显示业务 VIP 到期时间和领取记录，并提供一天 VIP、3 小时 VIP、升级畅听入口。是否成功以平台对当前账号的返回结果为准。
 
 **切换平台会刷新界面。** 登录态、搜索历史与音质选项分别保存。切换后按目标平台重新选择歌曲即可；各平台播放权限独立。
+
+### 汽水音乐
+
+![汽水音乐首页](showimage/v4.0.1/qishui-home.png)
+
+![汽水音乐歌单](showimage/v4.0.1/qishui-playlist.png)
+
+- 左上角选择「汽水音乐」，浏览发现页、搜索结果、歌手、专辑和歌单；歌单详情支持歌单内搜索、评论和歌曲操作。
+- 右上角登录支持汽水音乐官方二维码、手机号验证码和 Cookie。登录弹窗会显示当前登录方式、验证码状态与账号信息。
+- 登录后可查看喜欢的音乐和自建歌单，创建、编辑、删除歌单，并从歌单中添加或移除歌曲；操作结果以平台返回状态为准。
+- 歌曲行展示歌曲本身的试听、VIP 和下载权限，不把账号会员状态当作歌曲 VIP 标识。汽水音乐的试听、下载和完整播放权限仍由平台资源状态决定。
+
+![汽水音乐登录](showimage/v4.0.1/qishui-login.png)
+
+
 
 ## 搜索、歌单与专辑
 
@@ -409,7 +425,7 @@
 
 | 情况 | 处理 |
 | --- | --- |
-| 首页无内容 | 等服务启动刷新；网易云换线路；其他来源检查网络 |
+| 首页无内容 | 检查网络与平台登录状态后重试 |
 | 不能播放 / 音质回退 | 登录，确认会员 / 地区 / 版权，尝试较低音质 |
 | 歌词错版 / 无翻译 / 无逐词 | 换歌词源；没有的数据无法由风格生成 |
 | 核显 / 旧机动画慢 | 性能模式、30 FPS、附近歌词，关频谱与封面运动 |
@@ -436,7 +452,7 @@ npm run dev
 npm run build
 ```
 
-脚本准备三平台 API、运行 Vite 与 electron-builder，输出 `release/` 的 x64 NSIS / 7z。`npm run preview` 仅预览已构建前端；依赖 Electron IPC 的 QQ、赛事、下载等不是普通浏览器可完整运行的功能。
+脚本准备汽水运行时、运行 Vite 与 electron-builder，输出 `release/` 的 x64 NSIS / 7z。`npm run preview` 仅预览已构建前端；依赖 Electron IPC 的 QQ、赛事、下载等不是普通浏览器可完整运行的功能。
 
 | 部分 | 技术 / 位置 |
 | --- | --- |
@@ -446,11 +462,11 @@ npm run build
 | 桌面 / IPC | Electron 44；electron/ |
 | 视频 | Artplayer、hls.js、mpegts.js / flv.js |
 | 元数据 | music-metadata、node-id3 |
-| 下载 / API | aria2c、ffmpeg、yt-dlp、三平台服务；resources/ |
+| 下载 / API | aria2c、ffmpeg、yt-dlp；electron/ 内置官方平台客户端 |
 | 构建 | Vite 5、vite-plugin-electron、electron-builder；build/、scripts/ |
 | 展示 | showimage/v3.6.1/ |
 
-Electron 通常启动网易云 3100、QQ 3200、酷狗 3300 服务。网易云 / 酷狗有在线回退，QQ 用 IPC。自建线路对照 `src/api/index.js`、`src/api/qq.js`、`src/api/kugou.js` 与主进程启动模块修改。
+网易云、QQ、酷狗均通过 Electron IPC 调用内置官方客户端直连，不再启动 3100 / 3200 / 3300 音乐 API 服务，也不打包旧第三方音乐 API 模块或回退到在线第三方 API。实现见 `electron/netease-client.js`、`electron/qq-client.js`、`electron/kugou-client.js`。
 
 自建云音乐 / 账号锁使用 `VITE_CLOUD_BASE_URL`，后端与官网独立部署。AI Key 在界面配置、存本地，解析歌词发送到所选 AI 服务。
 
@@ -458,9 +474,9 @@ Electron 通常启动网易云 3100、QQ 3200、酷狗 3300 服务。网易云 /
 
 | 项目 | 用途 |
 | --- | --- |
-| [NeteaseCloudMusicApiEnhanced](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 网易云 |
-| [KuGouMusicApi](https://github.com/MakcRe/KuGouMusicApi) | 酷狗 |
-| [qq-music-api](https://github.com/sansenjian/qq-music-api) | QQ |
+
+
+
 | [Apple Music-like Lyrics](https://github.com/Steve-xmh/applemusic-like-lyrics) | 歌词 |
 | [Vue](https://vuejs.org/) / [Electron](https://www.electronjs.org/) / [Artplayer](https://github.com/zhw2590582/ArtPlayer) | 基础框架 |
 | [Bangumi](https://bangumi.tv/) 及赛事来源 | 作品 / 赛事资料 |

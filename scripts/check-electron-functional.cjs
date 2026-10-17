@@ -661,7 +661,7 @@ async function run() {
     await js("localStorage.setItem('download_threads','8');router.push('/downloads')");await delay(250)
     const customInput=value=>js("(()=>{const e=document.querySelector('.custom-url-input');e.value="+JSON.stringify(value)+";e.dispatchEvent(new Event('input',{bubbles:true}))})()")
     await click('.custom-download-bar .action-btn');await click('.dl-setting-row .cs-trigger');await delay(50)
-    assert.deepEqual(await js("[...document.querySelectorAll('.cs-dropdown .cs-option')].map(e=>e.textContent.trim())"),['32 线程','64 线程','128 线程（不限速）'])
+    assert.deepEqual(await js("[...document.querySelectorAll('.cs-dropdown .cs-option')].map(e=>e.textContent.trim())"),['32 线程（不限速，推荐）','64 线程（不限速）','128 线程（不限速）'])
     assert.ok(await js("document.querySelector('.dl-setting-row .cs-trigger').textContent.includes('32')"),'legacy low concurrency migrates to minimum32')
     await js("[...document.querySelectorAll('.cs-option')].find(e=>e.textContent.includes('128')).click()")
     await customInput('https://fixture.invalid/old');await delay(650)

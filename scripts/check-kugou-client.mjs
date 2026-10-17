@@ -17,7 +17,7 @@ const signed = requests.at(-1).params, { signature, ...unsigned } = signed, salt
 ok(signature === createHash('md5').update(salt+Object.keys(unsigned).sort().map(k=>k+'='+unsigned[k]).join('')+salt).digest('hex').toUpperCase(), 'artist uses official web signature with exact canonical parameters')
 await reject(client.call('/search',{keywords:'',type:'song'}),/关键词/)
 await reject(client.call('/search',{keywords:'x',page:0}),/分页/)
-ok(!isKugouDirectRoute('/search',{type:'mv'}), 'unreplaced categories preserve their existing route')
+ok(isKugouDirectRoute('/search',{type:'mv'}), 'MV search is routed through the native client')
 respond = () => ({status:1,error_code:152,data:{lists:[],total:0}})
 await reject(client.call('/search',{keywords:'x'}),/152/)
 respond = () => ({status:1,error_code:0,data:{lists:[],total:0}})
@@ -31,7 +31,7 @@ await reject(client.call('/album/detail',{id:9007199254740992}),/ID/)
 respond = config => config.url.endsWith('special/info') ? {status:1,data:{specialid:123,specialname:'Playlist',imgurl:'http://imge.kugou.com/a.jpg'}} : {status:1,data:{info:[{hash}],total:1}}
 result = await client.call('/playlist/track/all',{id:'special:123'})
 ok(result.data.list_info._officialPublic && result.data.list_info.imgurl.startsWith('https:'),'public playlist has explicit identifier namespace and loadable metadata')
-ok(!client.supports('/playlist/track/all',{id:'123'}),'numeric account list IDs never mistaken for public special IDs')
+ok(client.supports('/playlist/track/all',{id:'123'}),'public global collection IDs have an official native route')
 respond = () => ({status:1,hash:other,extra:{'320hash':hash,'128timelength':240000},url:'https://sharefs.kugou.com/a.mp3',timeLength:240,bitRate:128})
 result = await client.call('/song/url',{hash,quality:'flac'})
 ok(result.data.quality==='128' && result.data.fullDuration===240 && result.data.requestedHash===hash,'official lower quality reported honestly; hash variant must belong to the same song')
@@ -87,7 +87,7 @@ const p1=await client.call('/top/playlist',{page:1,pagesize:10}),p2=await client
 ok(p1.data.special_list[9].specialid===10 && p2.data.special_list[0].specialid===11,'fixed upstream thirty-item pages translated without skipping entries for ten-item UI pages')
 result=await client.call('/top/playlist',{page:2,pagesize:40})
 ok(result.data.special_list.length===25 && result.data.special_list[0].specialid===41 && result.data.has_next===0,'large public pages continue across official batches and stop at exact total')
-ok(!client.supports('/top/playlist',{category_id:123}) && !client.supports('/top/album',{type:2}) && !client.supports('/artist/lists',{sextypes:2}),'unverified category, language and gender filters preserve previous routes')
+ok(client.supports('/top/playlist',{category_id:123}) && client.supports('/top/album',{type:2}) && client.supports('/artist/lists',{sextypes:2}),'category, language and gender filters are served by the official native client')
 let homes=0
 respond=async()=>{homes++;await Promise.resolve();return {data:[{hash}],banner:[{imgurl:'http://imge.kugou.com/banner.jpg',extra:{specialid:123},title:'Music'},{imgurl:'https://imge.kugou.com/ad.jpg',extra:{specialid:124},isAd:1}]}}
 const [newSongs,banners]=await Promise.all([client.call('/top/song'),client.call('/pc/diantai')])

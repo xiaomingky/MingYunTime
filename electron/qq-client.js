@@ -162,13 +162,36 @@ export class QQClient {
         return ['/getSmartbox', '/getHotkey', '/getAlbumInfo', '/getAlbumTracks', '/getSongLists', '/getSongListCategories',
             '/getSongListDetail', '/getRanks', '/getTopLists', '/getNewDisks', '/getSingerList', '/getSingerHotsong', '/getSingerAlbum', '/getSingerDesc',
             '/getSearchByKey', '/getSongInfo', '/getMusicPlay', '/getLyric', '/batchGetSongInfo', '/getSingerMv', '/getSimilarSinger', '/getSingerStarNum',
-            '/getDigitalAlbumLists', '/getTicketInfo', '/getMvPlay', '/batchGetSongLists', '/downloadQQMusic', '/user/getUserPlaylists'].includes(endpoint)
+            '/getDigitalAlbumLists', '/getTicketInfo', '/getMv', '/getMvByTag', '/getImageUrl', '/getRadioLists', '/getRecommend', '/user/getUserAvatar', '/getMvPlay', '/batchGetSongLists', '/downloadQQMusic', '/user/getUserPlaylists'].includes(endpoint)
     }
 
     async call(endpoint, params = {}, cookie = '') {
         const page = () => integer(params.page, 1, 1, 10000)
         const limit = () => integer(params.limit, 20, 1, 100)
         switch (endpoint) {
+        case '/getMv': {
+            const payload = await this.get('/mv/fcgi-bin/fcg_get_mv_by_tag.fcg', { area_id: integer(params.area_id, 15, 0, 1000), version_id: integer(params.version_id, 7, 0, 1000), sin: integer(params.page, 0, 0, 100000) * limit(), ein: integer(params.page, 0, 0, 100000) * limit() + limit() - 1 }, cookie)
+            return payload
+        }
+        case '/getMvByTag': {
+            const payload = await this.get('/mv/fcgi-bin/fcg_get_mv_by_tag.fcg', { tag: params.tag || '', sin: (page() - 1) * limit(), ein: page() * limit() - 1 }, cookie)
+            return payload
+        }
+        case '/getImageUrl': {
+            const id = identifier(params.id)
+            return success({ url: `https://y.gtimg.cn/music/photo_new/T002R${String(params.size || '300x300').replace(/[^0-9x]/g, '')}M000${id}.jpg` })
+        }
+        case '/user/getUserAvatar': {
+            const uin = identifier(params.uin)
+            return success({ url: `https://q1.qlogo.cn/g?b=qq&nk=${uin}&s=${integer(params.size, 140, 40, 640)}` })
+        }
+        case '/getRadioLists': {
+            return this.get('/v8/fcg-bin/fcg_v8_radiolist.fcg', { format: 'json' }, cookie)
+        }
+        case '/getRecommend': {
+            const data = await this.rpc('music.individuation.Recommend', 'GetRecommend', { from: 100, content_type: 0, page: 0, num: limit() }, cookie)
+            return success(data)
+        }
         case '/getSearchByKey': {
             const key = String(params.key || '').trim()
             if (!key || key.length > 200) throw new Error('请输入 1–200 字的搜索关键词')

@@ -1,6 +1,7 @@
-// Only these legacy UI routes have an independently implemented main-process
-// contract. Unlisted routes retain their current implementation during rollout.
-export const NETEASE_DIRECT_ROUTES = new Set([
+import { NETEASE_OPERATION_ROUTES } from './netease-operation-routes.js'
+// Routes implemented by the built-in official main-process client.
+// Unlisted routes are rejected without a third-party service fallback.
+export const NETEASE_DIRECT_ROUTES = new Set([...NETEASE_OPERATION_ROUTES,
     '/cloudsearch', '/search', '/song/detail', '/song/url/v1', '/lyric', '/lyric/new',
     '/album', '/playlist/detail', '/playlist/track/all', '/toplist', '/banner',
     '/personalized', '/personalized/newsong', '/top/playlist', '/top/artists', '/top/song',

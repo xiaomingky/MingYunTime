@@ -1,3 +1,4 @@
+import { NETEASE_OPERATION_ROUTES, neteaseOperation } from './netease-operations.js'
 import axios from 'axios'
 import QRCode from 'qrcode'
 import { NeteasePlayback } from './netease-playback.js'
@@ -86,6 +87,7 @@ export class NeteaseClient {
     }
     async call(route, params = {}, cookie = '') {
         if (!this.supports(route)) throw new Error('该网易云操作尚未独立接入')
+        if (NETEASE_OPERATION_ROUTES.includes(route)) return neteaseOperation(this, route, params, cookie)
         const limit = (fallback = 30, max = 100) => number(params.limit, fallback, 1, max)
         const offset = () => number(params.offset, 0, 0, 100000)
         switch (route) {

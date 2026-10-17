@@ -245,7 +245,7 @@ QQ 音乐已经有一套较大的 IPC 接口集合，前端只使用了其中一
 | 喜欢与歌单分页没有形成完整链路 | `fetchLikedSongsDirect`和`fetchUserPlaylistsDirect`收了`offset/limit`但没有使用；喜欢列表固定`hasMore:false`，前端一次读取 | 上游若截断歌曲 / 歌单，客户端不能继续取余下内容；本次没有真实大歌单验证，因此不能指定实际截断数量 |
 | 曲目转换丢弃 QQ 信息 | `normalizeQQSong`带`songid/albummid/isVip`，但`toQQTrack`没有保留这些字段；播放器再生成当前曲目时也没有`songid` | 评论和账号操作需要补查数字 ID，VIP 与专辑信息可能在转换后丢失 |
 
-现用 API 包是 `@sansenjian/qq-music-api` 2.4.0。其[上游仓库](https://github.com/sansenjian/qq-music-api)本次 GitHub API 显示最后 push 为 2026-09-29、未归档。因此不能简单归因于“QQ 依赖已停维护”；本项目自己的协议对接、入口和数据转换也需要修补。
+历史版本曾使用 `@sansenjian/qq-music-api` 2.4.0。本文保留当时的研究记录；2026-10-17 已迁移至 `electron/qq-client.js` 内置官方协议客户端，并移除旧 API 模块、独立服务及打包配置。下列建议属于迁移前的研究结论，当前实现与验收结果以源码和检查脚本为准。
 
 因此 QQ 的首要工作不是继续增加 IPC 数量，而是做一次**能力收敛**：
 
