@@ -2,20 +2,21 @@
 
 **四平台音乐、双风格歌词、视频与赛事，一款 Windows 桌面播放器。**
 
-[English](README_EN.md) · [下载 v4.0.1](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.1) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
+[English](README_EN.md) · [下载 v4.0.2](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.2) · [反馈问题](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
 [程序官网](https://music.xiaomingky.dpdns.org) · [作者网站](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-4.0.1-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-4.0.2-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
 基于 Vue 3 + Electron 44 构建，集成网易云音乐、QQ 音乐、酷狗概念版和汽水音乐。除了发现、搜索、歌单和专辑，还提供可排序播放队列、本地音乐、经典 / Apple Music 风格歌词、桌面歌词、均衡器和统一下载中心。视频专区包含 B站、动漫、影视、网页解析与直播；娱乐专区提供 CS / VAL 赛事；智慧教材支持阅读、批注与配套音频。
 
 > 本项目由 AI 辅助开发。英文 README 是文档翻译，不代表客户端具有英文界面。汽水音乐展示图更新至 v4.0.1，设置界面保留 v4.0.0 标注；其余历史图片与 GIF 保留 v3.6.1 标注；在线推荐、榜单与赛事会随服务更新。歌词 GIF 演示界面动画，不含音频。本地音乐展示使用示例文件条目。
 
-## 4.0.1 正式版
+## 4.0.2 正式版
 
-4.0.1 正式版使用 Electron **44.7.0**、electron-builder **26.15.3**，面向 Windows 10 / 11 x64。安装包与免安装压缩包见 v4.0.1 Release；v3.6.3 保留为历史兼容版本。
+4.0.2 正式版使用 Electron **44.7.0**、electron-builder **26.15.3**，面向 Windows 10 / 11 x64。安装包与免安装压缩包见 v4.0.2 Release；v3.6.3 保留为历史兼容版本。
 
+- **4.0.2 修复**：改进汽水扫码与手机号登录的安全验证续登及取消重试；修复本地视频音量增强、切源与恢复；修复网易云云盘上传及酷狗权益结果提示。平台安全验证仍需本人完成，权益以平台返回为准。
 - **内置平台客户端**：完成网易云、QQ 音乐和酷狗旧接口迁移，移除独立音乐 API 服务及其模块。
 - **四平台与歌单**：支持汽水音乐入口和歌单管理，补充首页、歌单与登录展示；整合各平台账号、歌曲权限标识与下载解析。在线操作仍受平台授权与资源状态限制。
 - **统一控件**：复选框、全选 / 半选、单选按钮、胶囊开关、分段选择器与下拉菜单统一玻璃质感，保留现有页面布局。
@@ -53,12 +54,12 @@
 
 ## 下载安装
 
-1. 打开 [v4.0.1 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.1)，在 **Assets** 中选择 Windows 安装包 `.exe`；需要免安装方式时选择 `.7z`，完整解压后运行程序。
+1. 打开 [v4.0.2 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.2)，在 **Assets** 中选择 Windows 安装包 `.exe`；需要免安装方式时选择 `.7z`，完整解压后运行程序。
 2. 安装包使用原生 **NSIS 向导**，可选择安装目录，并创建桌面 / 开始菜单快捷方式。
 3. 启动后在左上角选择平台，再按需登录。普通使用无需安装 Node.js，官方音乐客户端与下载工具随应用提供。
 4. 音乐数据直接连接平台官方服务；页面加载失败时，检查网络与登录状态后重试。
 
-**4.0.1 正式版：Windows 10 / 11，64 位；不再支持 Windows 7 / 8 / 8.1。** v3.6.3 属于旧版兼容分支。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
+**4.0.2 正式版：Windows 10 / 11，64 位；不再支持 Windows 7 / 8 / 8.1。** v3.6.3 属于旧版兼容分支。旧电脑建议在 Apple Music 歌词中启用性能模式、30 FPS，关闭不需要的频谱和封面运动。系统媒体浮层、HEVC 解码等功能仍取决于 Windows 版本、驱动与编解码器。
 
 在线播放、下载、高音质和账号操作依赖对应平台的授权、会员、地区与资源可用性。
 

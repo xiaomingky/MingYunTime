@@ -1,4 +1,5 @@
 <script setup>
+import { youthVipResult } from './utils/kugou-youth-vip'
 import SongVipBadge from './components/SongVipBadge.vue'
 import { ref, onMounted, computed, onUnmounted, watch, h, nextTick, defineAsyncComponent } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
@@ -202,74 +203,29 @@ const refreshYouthVipInfo = async () => {
         youthVipLoading.value = false
     }
 }
-// 领取一天 VIP(默认今天)
-const claimYouthDayVip = async () => {
-    if (youthVipClaiming.value) return
-    youthVipClaiming.value = true
+const runYouthVipAction = async (fn, type) => {
+    if (youthVipClaiming.value || youthVipUpgrading.value) return
+    if (type === 'upgrade') youthVipUpgrading.value = true
+    else youthVipClaiming.value = true
     youthVipActionMsg.value = ''
     try {
-        const today = new Date()
-        const receiveDay = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
-        const res = await kugouYouthDayVip(receiveDay)
-        const code = res?.status || res?.code || res?.error_code
-        const msg = res?.errmsg || res?.error_msg || res?.message || res?.tip || ''
-        if (code === 1 || res?.data || (msg && !String(code).startsWith('4'))) {
-            youthVipActionMsg.value = msg || '领取成功'
-        } else {
-            youthVipActionMsg.value = `领取失败${msg ? '：' + msg : ''}`
-        }
+        const result = youthVipResult(await fn(), type)
+        youthVipActionMsg.value = result.msg
         await refreshYouthVipInfo()
     } catch (e) {
-        console.error('[Kugou Youth Vip] 领取失败:', e)
-        youthVipActionMsg.value = '领取失败,请稍后重试'
+        youthVipActionMsg.value = e?.message || '操作失败，请稍后重试'
     } finally {
         youthVipClaiming.value = false
-    }
-}
-// 领取 3 小时 VIP 时长(每天最多 8 次)
-const claimYouthVipHours = async () => {
-    if (youthVipClaiming.value) return
-    youthVipClaiming.value = true
-    youthVipActionMsg.value = ''
-    try {
-        const res = await kugouYouthVip()
-        const code = res?.status || res?.code || res?.error_code
-        const msg = res?.errmsg || res?.error_msg || res?.message || res?.tip || ''
-        if (code === 1 || res?.data || (msg && !String(code).startsWith('4'))) {
-            youthVipActionMsg.value = msg || '领取成功'
-        } else {
-            youthVipActionMsg.value = `领取失败${msg ? '：' + msg : ''}`
-        }
-        await refreshYouthVipInfo()
-    } catch (e) {
-        console.error('[Kugou Youth Vip] 领取时长失败:', e)
-        youthVipActionMsg.value = '领取失败,请稍后重试'
-    } finally {
-        youthVipClaiming.value = false
-    }
-}
-// 升级畅听 VIP(需先领取一天 VIP)
-const upgradeYouthVip = async () => {
-    if (youthVipUpgrading.value) return
-    youthVipUpgrading.value = true
-    youthVipActionMsg.value = ''
-    try {
-        const res = await kugouYouthDayVipUpgrade()
-        const code = res?.status || res?.code || res?.error_code
-        const msg = res?.errmsg || res?.error_msg || res?.message || res?.tip || ''
-        if (code === 1 || res?.data || (msg && !String(code).startsWith('4'))) {
-            youthVipActionMsg.value = msg || '升级成功'
-        } else {
-            youthVipActionMsg.value = `升级失败${msg ? '：' + msg : ''}`
-        }
-        await refreshYouthVipInfo()
-    } catch (e) {
-        console.error('[Kugou Youth Vip] 升级失败:', e)
-        youthVipActionMsg.value = '升级失败,请稍后重试'
-    } finally {
         youthVipUpgrading.value = false
     }
 }
+const claimYouthDayVip = () => {
+    const today = new Date()
+    const receiveDay = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+    return runYouthVipAction(() => kugouYouthDayVip(receiveDay), 'day')
+}
+const claimYouthVipHours = () => runYouthVipAction(kugouYouthVip, 'hours')
+const upgradeYouthVip = () => runYouthVipAction(kugouYouthDayVipUpgrade, 'upgrade')
 // 酷狗登录信息展示：token=xxx;userid=xxx 格式（用户可复制后用于 Cookie 登录）
 const kugouCookieDisplay = computed(() => {
     const token = kugouUserStore.cookie || ''
@@ -1141,19 +1097,19 @@ const openGithub = () => {
                     <div class="youth-vip-status-value">{{ youthMonthRecord.length }} 天</div>
                 </div>
                 <div class="youth-vip-actions">
-                    <button class="youth-vip-btn primary" :disabled="youthVipClaiming" @click="claimYouthDayVip">
+                    <button class="youth-vip-btn primary" :disabled="youthVipClaiming || youthVipUpgrading" @click="claimYouthDayVip">
                         {{ youthVipClaiming ? '领取中...' : '领取今天一天 VIP' }}
                     </button>
-                    <button class="youth-vip-btn" :disabled="youthVipClaiming" @click="claimYouthVipHours">
+                    <button class="youth-vip-btn" :disabled="youthVipClaiming || youthVipUpgrading" @click="claimYouthVipHours">
                         {{ youthVipClaiming ? '领取中...' : '领取 3 小时' }}
                     </button>
-                    <button class="youth-vip-btn" :disabled="youthVipUpgrading" @click="upgradeYouthVip">
+                    <button class="youth-vip-btn" :disabled="youthVipClaiming || youthVipUpgrading" @click="upgradeYouthVip">
                         {{ youthVipUpgrading ? '升级中...' : '升级畅听 VIP' }}
                     </button>
                 </div>
                 <div v-if="youthVipActionMsg" class="youth-vip-msg">{{ youthVipActionMsg }}</div>
                 <div class="youth-vip-tips">
-                    提示：这些接口来自酷狗概念版测试接口,部分用户可能不可用；领取 3 小时每天最多 8 次;升级畅听 VIP 需先领取一天 VIP。
+                    提示：通过内置接口申请领取，权益资格及次数以酷狗返回为准；升级畅听 VIP 需先领取一天 VIP。
                 </div>
             </div>
             <div class="modal-footer">

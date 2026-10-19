@@ -98,17 +98,18 @@ const boostSteps = [1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
 
 // ===== 音量增强面板（与选集/画质面板同款弹出样式） =====
 const showGainPanel = ref(false)
-function selectGain(s) {
+async function selectGain(s) {
+    // 接线或恢复失败时保留原档位，避免只更新标签、实际音量没有改变。
+    if (!await ensureAudioGraph(s)) return
     gainBoost.value = s
     localStorage.setItem('art_gain_boost', String(s))
-    // 无条件同步：切回 100% 也要把增益写回音频图（旧实现只在 >100% 时同步，导致回不到正常音量）
-    ensureAudioGraph()
     showGainPanel.value = false
 }
 
 // 面板锚定：用 art.controls[name]（即控件 DOM）实测按钮位置，把面板对准按钮正上方。
 // 全屏/缩放导致尺寸变化时自动重锚
-const gainBoost = ref(parseFloat(localStorage.getItem('art_gain_boost') || localStorage.getItem('bili_gain_boost')) || 1.0)
+const savedGain = Number(localStorage.getItem('art_gain_boost') || localStorage.getItem('bili_gain_boost'))
+const gainBoost = ref(boostSteps.includes(savedGain) ? savedGain : 1.0)
 const gainLabel = computed(() => {
     const pct = Math.round(gainBoost.value * 100)
     return pct >= 1000 ? '1000%' : pct + '%'
@@ -179,18 +180,21 @@ function showError(msg) {
 // ===== 音量增强 =====
 // 建立音频图：video(+dash audio) → GainNode → destination
 // 实际音量 = ArtPlayer音量(0-1) × gainBoost
-function ensureAudioGraph() {
+async function ensureAudioGraph(boost = gainBoost.value) {
     const video = art?.video
-    if (!video) return
+    if (!video) return false
     try {
+        // 100% 未启用过增强时保持原生输出；一旦接入则必须同步写回 1。
+        if (!audioCtx && boost === 1) return true
         if (!audioCtx) {
             const AudioCtx = window.AudioContext || window.webkitAudioContext
+            if (!AudioCtx) throw new Error('当前环境不支持音量增强')
             audioCtx = new AudioCtx()
             gainNode = audioCtx.createGain()
             gainNode.connect(audioCtx.destination)
         }
         // 增益值每次调用都同步（旧实现只在创建时设置一次，切低档不生效）
-        gainNode.gain.value = gainBoost.value
+        gainNode.gain.value = boost
         // video 元素随播放器实例重建，需重新接线
         if (graphVideoEl !== video) {
             if (videoSourceNode) { try { videoSourceNode.disconnect() } catch (e) {} }
@@ -205,9 +209,12 @@ function ensureAudioGraph() {
             dashSourceNode.connect(gainNode)
             graphDashEl = dashAudioEl
         }
-        if (audioCtx.state === 'suspended') audioCtx.resume()
+        if (audioCtx.state === 'suspended') await audioCtx.resume()
+        return true
     } catch (e) {
         console.error('initAudioGraph error:', e)
+        if (art) art.notice.show = '音量增强启用失败，请重试'
+        return false
     }
 }
 
@@ -471,7 +478,11 @@ function destroyDashAudio() {
         }
         if (h && h.syncAudioStall) dashAudioEl.removeEventListener('waiting', h.syncAudioStall)
         try { dashAudioEl.pause(); dashAudioEl.src = ''; dashAudioEl.load() } catch (e) {}
-        if (graphDashEl === dashAudioEl) graphDashEl = null
+        if (graphDashEl === dashAudioEl) {
+            try { dashSourceNode?.disconnect() } catch (e) {}
+            dashSourceNode = null
+            graphDashEl = null
+        }
         dashAudioEl = null
     }
 }
@@ -485,6 +496,8 @@ function initDashAudio() {
     const v = art?.video
     if (!v) return
     dashAudioEl = new Audio()
+    // 在设置 src 前允许 Web Audio 读取音轨，避免无 CORS 的媒体被增益图静音。
+    dashAudioEl.crossOrigin = 'anonymous'
     dashAudioEl.preload = 'auto'
     dashAudioEl.volume = v.volume
     dashAudioEl.muted = v.muted
@@ -568,7 +581,7 @@ function initDashAudio() {
     dashAudioEl.addEventListener('waiting', syncAudioStall)
     dashAudioEl._syncHandlers = { syncPlay, syncPause, syncSeek, syncVolume, syncRate, syncDrift, syncAudioStall }
     // 音量增强已激活时，DASH 音频也接入增益图
-    if (audioCtx) ensureAudioGraph()
+    if (audioCtx || gainBoost.value > 1) ensureAudioGraph()
 }
 
 // ===== 播放器实例生命周期 =====
@@ -592,6 +605,9 @@ async function destroyPlayer() {
     isResyncing = false
     syncBuffering.value = false
     destroyDashAudio()
+    try { videoSourceNode?.disconnect() } catch (e) {}
+    videoSourceNode = null
+    graphVideoEl = null
     art = null
     playerEl.value = null
     if (flvTimer) { clearTimeout(flvTimer); flvTimer = null }
@@ -618,6 +634,8 @@ async function createPlayer(src) {
         // direct（本地视频/MV直链）时必须传空字符串：
         // ArtPlayer 5.x 对 undefined 的 option.type 会抛 TypeError 导致播放器创建失败
         type: artType || '',
+        // 必须在 ArtPlayer 设置 src 前设置；事后接入 Web Audio 无法消除媒体污染。
+        moreVideoAttr: { crossOrigin: 'anonymous' },
         customType: {
             m3u8: playM3u8,
             flv: playFlv
@@ -678,7 +696,7 @@ async function createPlayer(src) {
     art.on('ready', () => {
         emit('ready')
         // 增益已激活时为新 video 元素重新接线
-        if (audioCtx) ensureAudioGraph()
+        if (audioCtx || gainBoost.value > 1) ensureAudioGraph()
         // 续播：有记忆位置且未接近结尾时自动跳转
         if (props.resumeKey) {
             try {
@@ -736,7 +754,10 @@ async function createPlayer(src) {
     art.on('video:error', () => {
         if (!playerError.value) showError('视频加载失败，请重试或更换线路')
     })
-    art.on('video:playing', () => emit('playing'))
+    art.on('video:playing', () => {
+        if (audioCtx || gainBoost.value > 1) ensureAudioGraph()
+        emit('playing')
+    })
 
     // DASH 音视频分离同步
     initDashAudio()

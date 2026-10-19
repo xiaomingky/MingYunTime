@@ -49,6 +49,7 @@ import { registerQishuiMusicIPC } from './qishui-music.js'
 import { registerKugouMusicIPC } from './kugou-music.js'
 import { registerNeteaseMusicIPC } from './netease-music.js'
 import { NeteaseClient } from './netease-client.js'
+import { uploadNeteaseCloud } from './netease-cloud-upload.js'
 import { neteaseWebRequest } from './netease-operations.js'
 import { extractShareUrl, extractDouyinId as extractDouyinMediaId, extractDouyinPage, extractDouyinMedia, DOUYIN_MOBILE_UA } from './douyin-media.js'
 // 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）
@@ -6153,125 +6154,15 @@ ipcMain.handle('open-lyrics-dialog', async () => {
     } catch (e) { return null }
 })
 
-// 流式计算文件 MD5（不一次性读入内存，避免大文件 OOM）
-function calculateFileMD5Stream(filePath) {
-    return new Promise((resolve, reject) => {
-        const hash = crypto.createHash('md5')
-        const stream = fs.createReadStream(filePath)
-        stream.on('data', (chunk) => hash.update(chunk))
-        stream.on('end', () => resolve(hash.digest('hex')))
-        stream.on('error', reject)
-    })
-}
-
-// 云盘完整上传（主进程内完成，避免大 Buffer 跨进程序列化）
-// 参数: { filePath, filename, cookie, song, artist, album }
-// complete 始终传 song/artist/album（参考官方示例）
-// 服务器默认自动匹配网易云歌曲，取消匹配由渲染进程上传后调用 matchCloud API
-// 进度通过 event.sender.send('cloud-upload-progress', { progress, status, filename }) 推送
-ipcMain.handle('cloud-upload', async (event, { filePath, filename, cookie, song, artist, album }) => {
-    const sendProgress = (progress, status) => {
-        try { event.sender.send('cloud-upload-progress', { progress, status, filename }) } catch (e) {}
-    }
+// Upload stays in the main process so file streams never cross IPC.
+ipcMain.handle('cloud-upload', async (event, input) => {
     try {
-        const stat = fs.statSync(filePath)
-        sendProgress(0, '计算文件指纹...')
-        // 1. 流式 MD5
-        const md5 = await calculateFileMD5Stream(filePath)
-        sendProgress(0, '获取上传凭证...')
-        // 2. 获取上传凭证
-        const client = new NeteaseClient()
-        const official = (route, data) => neteaseWebRequest(client, route, data, cookie)
-        const checked = await official('/api/cloud/upload/check', { bitrate: '999000', ext: '', length: stat.size, md5, songId: '0', version: 1 })
-        if (checked.code !== 200) throw new Error(checked.message || checked.msg || '云盘文件检查失败')
-        const bucket = 'jd-musicrep-privatecloud-audio-public'
-        const allocated = await official('/api/nos/token/alloc', { bucket, ext: path.extname(filename).slice(1) || 'mp3', filename: filename.replace(/\.[^.]+$/, '').replace(/\s/g, '').replace(/\./g, '_'), local: false, nos_product: 3, type: 'audio', md5 })
-        if (allocated.code !== 200 || !allocated.result?.objectKey) throw new Error('获取上传凭证失败')
-        const { resourceId, token: uploadToken, objectKey } = allocated.result
-        const songId = checked.songId, needUpload = checked.needUpload
-        const lbs = await axios.get('https://wanproxy.127.net/lbs', { params: { version: '1.0', bucketname: bucket }, timeout: 10000, maxRedirects: 0 })
-        const uploadHost = new URL(lbs.data?.upload?.[0] || 'https://nosup-hz1.127.net')
-        if (!/(^|\.)127\.net$/.test(uploadHost.hostname)) throw new Error('云盘上传服务器无效')
-        uploadHost.protocol = 'https:'
-        const uploadUrl = `${uploadHost.origin}/${bucket}/${encodeURIComponent(objectKey)}?offset=0&complete=true&version=1.0`
-        if (!songId || !resourceId) {
-            console.error('[cloud-upload] token missing songId/resourceId')
-            return { success: false, error: '上传凭证缺少必要字段（songId/resourceId）' }
-        }
-        // 3. 秒传或 POST 文件流到云存储
-        if (needUpload && uploadUrl) {
-            sendProgress(0, '上传中...')
-            // 根据扩展名设置正确的 Content-Type，避免服务器按错误格式处理
-            const ext = path.extname(filePath).toLowerCase()
-            const contentTypeMap = {
-                '.mp3': 'audio/mpeg',
-                '.flac': 'audio/flac',
-                '.ogg': 'audio/ogg',
-                '.opus': 'audio/ogg',
-                '.oga': 'audio/ogg',
-                '.m4a': 'audio/mp4',
-                '.aac': 'audio/aac',
-                '.wav': 'audio/wav'
-            }
-            const contentType = contentTypeMap[ext] || 'audio/mpeg'
-            const nosRes = await new Promise((resolve, reject) => {
-                const stream = fs.createReadStream(filePath)
-                let uploaded = 0
-                stream.on('data', (chunk) => {
-                    uploaded += chunk.length
-                    const p = Math.round((uploaded / stat.size) * 100)
-                    sendProgress(p, '上传中...')
-                })
-                axios.post(uploadUrl, stream, {
-                    headers: {
-                        'x-nos-token': uploadToken,
-                        'Content-MD5': md5,
-                        'Content-Type': contentType,
-                        'Content-Length': String(stat.size)
-                    },
-                    maxContentLength: Infinity,
-                    maxBodyLength: Infinity,
-                    timeout: 0,
-                    validateStatus: () => true
-                }).then(resolve).catch(reject)
-            })
-            if (nosRes.status !== 200) {
-                console.error('[cloud-upload] NOS upload failed:', nosRes.status, nosRes.statusText, typeof nosRes.data === 'string' ? nosRes.data.substring(0, 500) : nosRes.data)
-                return { success: false, error: `云存储上传失败（HTTP ${nosRes.status}）` }
-            }
-        } else {
-            sendProgress(100, '秒传命中，完成导入...')
-        }
-        // 4. 完成导入（带重试，服务器处理上传数据需要时间）
-        // complete 始终传 song/artist/album（参考官方示例实现）
-        sendProgress(100, '完成导入...')
-        await new Promise(r => setTimeout(r, 2000))
-        let completeRes = null
-        const completeParams = {
-            cookie, songId, resourceId, md5, filename,
-            song: song || filename.replace(/\.[^.]+$/, ''),
-            artist: artist || '未知艺术家',
-            album: album || '未知专辑'
-        }
-        for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-                const info = await official('/api/upload/cloud/info/v2', { md5, songid: songId, filename, song: completeParams.song, artist: completeParams.artist, album: completeParams.album, bitrate: '999000', resourceId })
-                completeRes = { data: info.code === 200 ? await official('/api/cloud/pub/v2', { songid: info.songId }) : info }
-                if (completeRes.data.code === 200) break
-                console.warn(`[cloud-upload] complete attempt ${attempt + 1} failed:`, completeRes.data.code, completeRes.data.msg)
-            } catch (e) {
-                console.warn(`[cloud-upload] complete attempt ${attempt + 1} error:`, e.message)
-            }
-            if (attempt < 2) await new Promise(r => setTimeout(r, 3000))
-        }
-        if (!completeRes || completeRes.data.code !== 200) {
-            console.error('[cloud-upload] complete final failed:', completeRes?.data)
-            return { success: false, error: completeRes?.data?.message || completeRes?.data?.msg || '导入失败' }
-        }
-        return { success: true, songId, resourceId, needUpload: !!needUpload }
-    } catch (err) {
-        console.error('Cloud upload error:', err)
-        return { success: false, error: err.message || '上传失败' }
+        return await uploadNeteaseCloud(new NeteaseClient(), input, (progress, status) => {
+            if (!event.sender.isDestroyed()) event.sender.send('cloud-upload-progress', {progress,status,filename:input.filename})
+        })
+    } catch (error) {
+        const status = error.response?.status
+        return {success:false,error:status ? `网易云上传服务请求失败（HTTP ${status}）` : error.message || '上传失败'}
     }
 })
 

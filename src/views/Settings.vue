@@ -1,4 +1,5 @@
 <script setup>
+import { youthVipResult } from '../utils/kugou-youth-vip'
 import SelectionMark from '../components/SelectionMark.vue'
 import { ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
 import { usePlayerStore } from '../store/player'
@@ -432,7 +433,6 @@ const unionMaxRemain = computed(() => {
 const refreshYouthVipInfo = async () => {
     if (!platformStore.isKugou || !kugouUserStore.isLoggedIn) return
     youthVipLoading.value = true
-    youthVipActionMsg.value = ''
     try {
         const [unionRes, recordRes] = await Promise.allSettled([
             kugouYouthUnionVip(),
@@ -465,20 +465,15 @@ const runYouthVipAction = async (fn, type) => {
     youthVipActionMsg.value = ''
     try {
         const res = await fn()
-        console.log('[KUGOU-YOUTH][action]', type, JSON.stringify(res))
-        const code = res?.status || res?.code || res?.error_code
-        const msg = res?.errmsg || res?.error_msg || res?.message || res?.tip || res?.msg || ''
-        const ok = code === 1 || res?.data || (msg && !String(code).startsWith('4'))
-        const resultMsg = ok
-            ? (msg || (type === 'upgrade' ? '升级成功' : '领取成功'))
-            : (type === 'upgrade' ? '升级失败' : '领取失败') + (msg ? '：' + msg : '')
+        const { ok, msg: resultMsg } = youthVipResult(res, type)
         youthVipActionMsg.value = resultMsg
         openYouthResult({ ok, msg: resultMsg, type })
         await refreshYouthVipInfo()
     } catch (e) {
         console.error('[Kugou Youth Vip] 操作失败:', e)
-        youthVipActionMsg.value = '操作失败,请稍后重试'
-        openYouthResult({ ok: false, msg: '操作失败，请稍后重试', type })
+        const message = e?.message || '操作失败，请稍后重试'
+        youthVipActionMsg.value = message
+        openYouthResult({ ok: false, msg: message, type })
     } finally {
         if (type === 'upgrade') youthVipUpgrading.value = false
         else youthVipClaiming.value = false
@@ -778,13 +773,13 @@ onUnmounted(() => {
           </div>
 
           <div class="youth-vip-actions">
-            <button class="youth-btn primary clickable" :disabled="youthVipClaiming" @click="claimYouthDayVip">
+            <button class="youth-btn primary clickable" :disabled="youthVipClaiming || youthVipUpgrading" @click="claimYouthDayVip">
               {{ youthVipClaiming ? '领取中…' : '领取今天一天 VIP' }}
             </button>
-            <button class="youth-btn clickable" :disabled="youthVipClaiming" @click="claimYouthVipHours">
+            <button class="youth-btn clickable" :disabled="youthVipClaiming || youthVipUpgrading" @click="claimYouthVipHours">
               {{ youthVipClaiming ? '领取中…' : '领取 3 小时 VIP' }}
             </button>
-            <button class="youth-btn clickable" :disabled="youthVipUpgrading" @click="upgradeYouthVip">
+            <button class="youth-btn clickable" :disabled="youthVipClaiming || youthVipUpgrading" @click="upgradeYouthVip">
               {{ youthVipUpgrading ? '升级中…' : '升级畅听 VIP' }}
             </button>
           </div>
@@ -792,7 +787,7 @@ onUnmounted(() => {
           <div v-if="youthVipActionMsg" class="youth-vip-msg">{{ youthVipActionMsg }}</div>
 
           <p class="youth-vip-tips">
-            提示：这些接口来自酷狗概念版测试接口,部分用户可能不可用；领取 3 小时每天最多 8 次;升级畅听 VIP 需先领取一天 VIP。
+            提示：通过内置接口申请领取，权益资格及次数以酷狗返回为准；升级畅听 VIP 需先领取一天 VIP。
           </p>
         </div>
 

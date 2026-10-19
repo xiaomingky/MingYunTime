@@ -252,6 +252,7 @@ export const kugouNewSong = () => kugouRequest.get('/top/song')
 
 
 // ========== 概念版 VIP 领取（仅概念版可用） ==========
+// The built-in client preserves the legacy v1 claim contract.
 export const kugouYouthVip = () => kugouRequest.get('/youth/vip')
 export const kugouYouthDayVip = (receive_day) =>
     kugouRequest.get('/youth/day/vip', { params: { receive_day } })

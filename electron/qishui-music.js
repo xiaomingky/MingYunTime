@@ -28,9 +28,9 @@ export function registerQishuiMusicIPC() {
     }
     const root = process.env.APP_ROOT || app.getAppPath(), request = config => axios(config)
     const runtime = createQishuiRuntime({ root, userData: app.getPath('userData'), request })
-    const passport = new QishuiPassport({ request })
+    const passport = new QishuiPassport({ request, identity:runtime.identity })
     const audio = createQishuiAudio({ request, runtime, ffmpeg: app.isPackaged ? path.join(process.resourcesPath, 'ffmpeg.exe') : path.join(root, 'resources', 'ffmpeg.exe') })
-    client = new QishuiClient({ request, pcRequest: spec => runtime.pcRequest(spec),
+    client = new QishuiClient({ request, identity:runtime.identity, pcRequest: spec => runtime.pcRequest(spec),
         passportRequest: (id, spec) => passport.request(id, spec), passportClose: id => passport.close(id), load, save })
     registerMusicDownloadProvider('qishui', async (source, controls) => {
         const taskAudio=createQishuiAudio({ request, runtime, maxEntries:1, transfer:transferQishuiMedia })

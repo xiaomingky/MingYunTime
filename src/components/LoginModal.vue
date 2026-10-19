@@ -97,10 +97,21 @@ async function startSodaLogin() {
                     messageStore.success('汽水音乐登录成功'); stopSodaLogin(); emit('close'); return
                 }
                 if (['expired', 'cancelled'].includes(status.status)) { sodaMessage.value = '二维码已过期或取消，请刷新'; stopSodaLogin(); return }
-                if (status.status === 'verification_required') { sodaMessage.value = status.message; stopSodaLogin(); return }
+                if (status.status === 'verification_required') {
+                    sodaMessage.value = status.message || '请在弹出的窗口完成汽水安全验证，完成后会继续登录'
+                    // Keep this QR and its isolated login session alive while the
+                    // security window finishes. Schedule only after this request.
+                    sodaTimer = setTimeout(poll, 2500)
+                    return
+                }
                 sodaMessage.value = status.message || (['scanned', 'scaned'].includes(status.status) ? '已扫码，请在汽水音乐 App 中确认登录' : '请使用汽水音乐 App 扫码')
                 sodaTimer = setTimeout(poll, 2500)
-            } catch (e) { if (generation === sodaGeneration) { sodaMessage.value = e.message; stopSodaLogin() } }
+            } catch (e) {
+                if (generation !== sodaGeneration) return
+                sodaMessage.value = e.message || '汽水扫码状态获取失败，请刷新二维码'
+                if (e.code === 'verification_required') sodaTimer = setTimeout(poll, 2500)
+                else stopSodaLogin()
+            }
         }
         await poll()
     } catch (e) { if (generation === sodaGeneration) { sodaMessage.value = e.message; sodaBusy.value = false } }

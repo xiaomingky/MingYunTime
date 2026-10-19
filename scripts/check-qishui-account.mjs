@@ -160,10 +160,27 @@ try {
     pendingLogin.resolve({ status: 'confirmed', profile: { userId: '12345' } }); await work
     ok(p.confirmed.length === 0 && !p.ui.busy.value && !p.ui.code.value, 'late confirmed response after modal close is ignored')
 
+    const security = uiHarness(), securityWait = pending()
+    security.handlers['phone-send-code'] = () => securityWait.promise
+    work = security.ui.send(); await new Promise(resolve => setImmediate(resolve))
+    ok(security.ui.busy.value && security.ui.message.value.includes('安全验证窗口'), 'phone UI explains the real security window while the original send request waits')
+    const pendingCount = security.calls.length
+    await security.ui.send('voice')
+    ok(security.calls.length === pendingCount, 'an open security window cannot cause duplicate SMS or voice submissions')
+    securityWait.resolve({ sent: true, retryAt: time + 60000, message: '验证码已发送' }); await work
+    ok(!security.ui.busy.value && security.ui.message.value === '验证码已发送' && security.ui.seconds.value === 60, 'completed security verification continues the original send request and starts the confirmed cooldown')
+
     const v = uiHarness(); v.ui.code.value = '123456'
     v.handlers['phone-login'] = async () => { const error = new Error('extra verification'); error.code = 'verification_required'; throw error }
     await v.ui.login()
-    ok(v.ui.needsVerification.value && v.confirmed.length === 0, 'security challenge remains explicit and never marks login success')
+    ok(v.ui.needsVerification.value && v.ui.message.value.includes('完成弹出的验证窗口') && v.confirmed.length === 0, 'unfinished security challenge gives an actionable continuation message without claiming login success')
+    for (const securityCode of ['verification_cancelled', 'verification_timeout']) {
+        const before = v.calls.filter(call => call.name === 'phone-create').length
+        v.handlers['phone-login'] = async () => { throw Object.assign(new Error('private server detail'), { code: securityCode }) }
+        await v.ui.login()
+        ok(v.ui.needsVerification.value && !v.ui.busy.value && v.ui.code.value === '123456' && !v.ui.message.value.includes('private') && !v.confirmed.length, securityCode + ': UI preserves inputs and shows a safe retry message')
+        ok(v.calls.filter(call => call.name === 'phone-create').length === before && !v.calls.some(call => call.name === 'login-cancel'), securityCode + ': retry keeps the existing phone login session')
+    }
     v.handlers['phone-login'] = async () => ({ status: 'select_account', accounts: [{ choice: 0, nickname: '账号甲' }] })
     await v.ui.login()
     ok(v.ui.accounts.value.length === 1 && !v.confirmed.length, 'UI shows multi-account selection before success')

@@ -46,8 +46,13 @@ export function useQishuiPhoneLogin({ invoke: request = qishuiInvoke, onConfirme
             await callback(id, current)
         } catch (error) {
             if (active(current)) {
-                message.value = error.message || '登录失败，请稍后重试'
-                needsVerification.value = error.code === 'verification_required'
+                const verificationMessages = {
+                    verification_required: '汽水安全验证尚未完成，请重新操作并完成弹出的验证窗口',
+                    verification_cancelled: '已关闭汽水安全验证窗口，请重新操作并完成验证',
+                    verification_timeout: '汽水安全验证已超时，请重新操作并完成弹出的验证窗口'
+                }
+                message.value = verificationMessages[error.code] || error.message || '登录失败，请稍后重试'
+                needsVerification.value = Object.hasOwn(verificationMessages, error.code)
                 countdown(error.retryAt)
                 if (['cancelled', 'login_expired'].includes(error.code)) { close(loginId); loginId = ''; accounts.value = []; code.value = '' }
             }
@@ -56,6 +61,7 @@ export function useQishuiPhoneLogin({ invoke: request = qishuiInvoke, onConfirme
     async function send(channel = 'sms') {
         if (seconds.value) return
         return run(async (id, current) => {
+            message.value = '正在请求验证码，如弹出汽水安全验证窗口，请在窗口中完成验证…'
             const result = await request('phone-send-code', { loginId: id, phone: phone.value, countryCode: countryCode.value, channel })
             if (!active(current)) return
             if (result.sent !== true) throw new Error('汽水尚未确认验证码发送，请重试')
@@ -66,6 +72,7 @@ export function useQishuiPhoneLogin({ invoke: request = qishuiInvoke, onConfirme
     async function login(accountChoice) {
         if (accountChoice === undefined && !/^\d{6}$/.test(code.value.trim())) { message.value = '请输入 6 位数字验证码'; return }
         return run(async (id, current) => {
+            message.value = '正在验证登录，如弹出汽水安全验证窗口，请在窗口中完成验证…'
             const result = await request('phone-login', { loginId: id, ...(accountChoice === undefined ? { phone: phone.value, countryCode: countryCode.value, code: code.value } : { accountChoice }) })
             if (!active(current)) return
             if (result.status === 'select_account' && Array.isArray(result.accounts) && result.accounts.length) { accounts.value = result.accounts; message.value = '请选择要登录的账号'; return }

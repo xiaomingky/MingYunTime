@@ -151,11 +151,13 @@ function mergeCookies(jar, setCookie = []) {
 const cookieString = jar => [...jar].map(([k, v]) => `${k}=${v}`).join('; ')
 
 export class QishuiClient {
-    constructor({ request, pcRequest, passportRequest, passportClose = () => {}, load = () => '', save = () => {}, now = Date.now }) {
+    constructor({ request, pcRequest, passportRequest, passportClose = () => {}, identity, load = () => '', save = () => {}, now = Date.now }) {
         this.request = request; this.save = save; this.now = now; this.revision = 0
         this.pcRequest = pcRequest
         this.passportRequest = passportRequest; this.passportClose = passportClose
         this.cookie = load() || ''; this.logins = new Map()
+        const digits = length => Array.from({ length }, (_, index) => String(randomInt(index ? 0 : 1, 10))).join('')
+        this.identity = identity || { deviceId:digits(16), installId:digits(15) }
     }
     async pcCall(path, options = {}) {
         if (this.pcRequest) return this.pcRequest({path,cookie:this.cookie,...options})
@@ -262,10 +264,10 @@ export class QishuiClient {
     async passportCall(login, path, { method = 'GET', params = {}, data } = {}) {
         const traceId = randomBytes(8).toString('hex')
         const query = { ...passport, language: 'zh', account_sdk_source: 'web', p_js_v: '2.4.13', p_js_t: 'pro',
-            p_zt: '3.3.5', p_ver: '1.0.29', request_host: 'app%3A%2F%2Fresources', p_bd: '1.0.0.41',
+            p_zt: '0', p_ver: '1.0.29', request_host: encodeURIComponent(PC), p_bd: '1.0.0.41',
             biz_trace_id: traceId, is_new_login: '1', is_from_iesaccountsaas: '1',
             device_id: login.deviceId, install_id: login.installId, did: login.deviceId, iid: login.installId,
-            device_platform: 'PC', version_code: '3.7.0', account_sdk_source_info: '00', msToken: login.msToken, ...params }
+            device_platform: 'PC', version_code: '3.7.0', account_sdk_source_info: '00', ...params }
         const headers = { Accept: 'application/json, text/javascript',
             'x-tt-passport-verify-portrait': login.portrait, 'x-tt-passport-trace-id': traceId }
         if (data !== undefined) {
@@ -280,9 +282,8 @@ export class QishuiClient {
         for (const [id, login] of this.logins) if (login.expiresAt < this.now()) this.qrCancel(id)
         if (this.logins.size >= 5) throw new QishuiError('login_busy', '请关闭旧的登录窗口后再试')
         const revision = this.revision, id = randomUUID()
-        const digits = length => Array.from({ length }, (_, index) => String(randomInt(index ? 0 : 1, 10))).join('')
         const login = { id, kind, jar: new Map(), revision, busy: false, expiresAt: this.now() + lifetime,
-            deviceId: digits(16), installId: digits(15), msToken: randomBytes(66).toString('base64url') + '==',
+            deviceId: this.identity.deviceId, installId: this.identity.installId,
             portrait: randomUUID() + '.login', lastCheckAt: -Infinity, cooldownUntil: 0 }
         this.logins.set(id, login)
         return login
@@ -335,7 +336,7 @@ export class QishuiClient {
             const p = res.data?.data, code = Number(p?.error_code || 0)
             if (code === 7) { login.cooldownUntil = this.now() + 5000; return { status: login.lastStatus || 'waiting', message: '正在等待汽水 App 确认，请稍候' } }
             if (code === 2 || String(p?.status) === 'expired') { this.qrCancel(id); return { status: 'expired' } }
-            if (code === 2046) return { status: 'verification_required', message: '汽水要求额外账号安全验证，请在官方客户端完成验证后使用 Cookie 登录' }
+            if (p?.verify_center_decision_conf || p?.verify_center_secondary_decision_conf || [1105,2032,2046].includes(code)) return { status: 'verification_required', message: '汽水安全验证尚未完成，请刷新后完成弹出的验证窗口' }
             if (res.data?.message !== 'success' || !p || code !== 0) throw new QishuiError('qr_rejected', p?.description || '登录二维码已失效，请刷新')
             mergeCookies(login.jar, res.headers?.['set-cookie'])
             const state = String(p.status || 'waiting').toLowerCase()

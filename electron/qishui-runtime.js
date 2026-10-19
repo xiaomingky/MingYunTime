@@ -51,6 +51,7 @@ export function createQishuiRuntime({root, userData, request}) {
     const common={aid:'386088',app_name:'luna_pc',region:'cn',geo_region:'cn',os_region:'cn',sim_region:'',device_id:fingerprint.deviceId,cdid:'',iid:fingerprint.installId,version_name:'3.7.0',version_code:'30070000',channel:'official',build_mode:'master',network_carrier:'',ac:'wifi',tz_name:'Asia/Shanghai',resolution:'',device_platform:'windows',device_type:'Windows',os_version:'Windows 11',fp:fingerprint.deviceId}
     return {
         available:!!directory,
+        identity: Object.freeze({ deviceId:fingerprint.deviceId, installId:fingerprint.installId }),
         async pcRequest({path: endpoint, method='POST', data={}, params={}, cookie=''}) {
             if (!/^\/luna\//.test(endpoint)) throw new Error('汽水接口路径无效')
             // The official caller repeats array query keys; a JSON array here

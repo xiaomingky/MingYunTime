@@ -56,7 +56,7 @@ export class QishuiAccount {
     }
     error(response) {
         const p = response.data.data, code = Number(p.error_code ?? response.data.error_code ?? 0)
-        if (p.verify_center_decision_conf || p.verify_center_secondary_decision_conf || [1105, 2032, 2046].includes(code)) throw new QishuiError('verification_required', '汽水要求额外安全验证，请改用扫码登录，或在官方客户端验证后导入 Cookie')
+        if (p.verify_center_decision_conf || p.verify_center_secondary_decision_conf || [1105, 2032, 2046].includes(code)) throw new QishuiError('verification_required', '汽水安全验证尚未完成，请重新操作并完成弹出的验证窗口')
         if (response.data.message === 'success' && code === 0) return
         if (code === 16) throw new QishuiError('login_method_unavailable', '汽水暂未向当前客户端开放此登录方式，请使用扫码或 Cookie 登录')
         throw new QishuiError(String(code || 'login_rejected'), String(p.description || p.message || '汽水未接受登录请求，请重试').slice(0, 300))

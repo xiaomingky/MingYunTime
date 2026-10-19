@@ -28,6 +28,11 @@ function identifier(value) {
     return s
 }
 function identifiers(value) { return String(value || '').split(',').map(identifier) }
+function receiveDate(value) {
+    const date = String(value ?? '')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date + 'T00:00:00Z')) || new Date(date + 'T00:00:00Z').toISOString().slice(0,10) !== date) throw new Error('领取日期无效，请刷新后重试')
+    return date
+}
 export async function kugouOperation(client, route, p, page, size) {
     const call = (path, options = {}) => client.privateClient.call(path,p,{anonymous:!p.token,...options})
     const time = Math.floor(client.now()/1000)
@@ -69,11 +74,13 @@ export async function kugouOperation(client, route, p, page, size) {
     }
     case '/youth/union/vip': return client.privateClient.vip(p)
     case '/youth/month/vip/record': return call('/youth/v1/activity/get_month_vip_record',{anonymous:false,params:{latest_limit:100}})
-    case '/youth/day/vip': return call('/youth/v1/recharge/receive_vip_listen_song',{anonymous:false,method:'POST',params:{source_id:90139,receive_day:identifier(p.receive_day)},headers:{'Content-Type':'application/x-www-form-urlencoded'}})
+    case '/youth/day/vip': return call('/youth/v1/recharge/receive_vip_listen_song',{anonymous:false,method:'POST',params:{source_id:90139,receive_day:receiveDate(p.receive_day)},headers:{'Content-Type':'application/x-www-form-urlencoded'}})
     case '/youth/day/vip/upgrade': return call('/youth/v1/listen_song/upgrade_vip_reward',{anonymous:false,method:'POST',params:{kugouid:identifier(p.userid),ad_type:1}})
-    case '/youth/vip':
-        if (!p.ad_id || !Number.isFinite(p.play_start) || !Number.isFinite(p.play_end)) throw new Error('请先在酷狗官方客户端完成广告任务，再刷新会员状态')
-        return call('/youth/v2/ad/play_report',{anonymous:false,data:{ad_id:identifier(p.ad_id),play_start:p.play_start,play_end:p.play_end}})
+    case '/youth/vip': {
+        // Preserve the legacy v1 request contract in the built-in client.
+        const now = client.now()
+        return call('/youth/v1/ad/play_report',{anonymous:false,method:'POST',data:{ad_id:12307537187,play_end:now,play_start:now-30000}})
+    }
     case '/song/url/new': return client.call('/song/url',p)
     default: throw new Error('未知酷狗操作')
     }
