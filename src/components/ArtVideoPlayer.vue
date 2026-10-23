@@ -2,13 +2,17 @@
 // ArtPlayer 封装的视频播放器（引擎：ArtPlayer 5.x）
 // 支持 m3u8 (hls.js) / FLV 直播 (mpegts.js) / 直链 mp4 / DASH 音视频分离
 // 功能：选集面板 / 上一集下一集 / 音量增强(Web Audio 增益最高1000%) / 画质切换 / 倍速 / 快捷键
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, shallowRef, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import Artplayer from 'artplayer'
+import VideoEpisodeDrawer from './VideoEpisodeDrawer.vue'
 import { normalizeLocalFileUrl } from '../utils/local-file-url'
 import ArtplayerDanmuku from 'artplayer-plugin-danmuku'
 import Hls from 'hls.js'
 import mpegts from 'mpegts.js'
-import { Film, RefreshCw, X } from 'lucide-vue-next'
+import { ChevronsLeftRight, Film, RefreshCw, X } from 'lucide-vue-next'
+import { createVideoEnhancement, enhancementModes } from '../utils/video-enhancement'
+import { installSeekPreview } from '../utils/video-seek-preview'
+import { installMediaLoadWatchdog } from '../utils/media-load-watchdog'
 
 const props = defineProps({
     src: { type: String, default: '' },
@@ -27,8 +31,12 @@ const props = defineProps({
     hasNext: { type: Boolean, default: false },
     episodes: { type: Array, default: () => [] },
     currentEpisode: { type: Object, default: null },
+    localMode: { type: Boolean, default: false },
+    episodeTitle: { type: String, default: '' },
+    episodeCover: { type: String, default: '' },
     // 续播记忆 key（如 bili:BVxx:cid）：5 秒节流记录播放位置，重新打开时自动跳转
-    resumeKey: { type: String, default: '' }
+    resumeKey: { type: String, default: '' },
+    loadTimeoutMs: { type: Number, default: 0 }
 })
 const emit = defineEmits(['ended', 'retry', 'ready', 'error', 'prev', 'next', 'selectEpisode', 'playing', 'qualityChange'])
 
@@ -40,6 +48,7 @@ let art = null
 let playerVersion = 0
 let disposed = false
 let destroying = Promise.resolve()
+let stopLoadWatchdog = () => {}
 const playerError = ref('')
 
 const showEpPanel = ref(false)
@@ -72,6 +81,7 @@ async function switchQuality(q) {
                 try { art.currentTime = time } catch (e) {}
             }
             if (wasPlaying) art.play().catch(() => {})
+            else art.pause()
             art.notice.show = `画质已切换至 ${q.label}`
             updateQualityControl()
         }
@@ -96,8 +106,98 @@ const danmakuOn = ref(true)
 // ===== 音量增强（Web Audio API 增益节点，可超过系统 100%）=====
 const boostSteps = [1.0, 1.5, 2.0, 3.0, 5.0, 10.0]
 
+// 流媒体增强只改变播放器的缓冲和恢复策略，不会伪造带宽。
+// 默认开启；用户关闭后仍保留普通播放行为，偏好跨切集和重启保存。
+const signalBoostEnabled = ref(localStorage.getItem('art_signal_boost') !== 'off')
+const signalBoostLabel = computed(() => signalBoostEnabled.value ? '增强' : '标准')
+function setSignalBoost(enabled) {
+    signalBoostEnabled.value = Boolean(enabled)
+    try { localStorage.setItem('art_signal_boost', signalBoostEnabled.value ? 'on' : 'off') } catch (e) {}
+    if (art) art.notice.show = signalBoostEnabled.value
+        ? '流媒体增强已开启：将提高缓冲并自动恢复卡顿'
+        : '流媒体增强已关闭'
+}
+
+// 网络抖动时仅在确实停滞且有冷却间隔的情况下恢复，避免反复 reload 造成更大的卡顿。
+function installSignalRecovery(video, artInstance, recover) {
+    let timer = null
+    let lastRecovery = 0
+    let attempts = 0
+    let windowStarted = 0
+    const reset = () => { attempts = 0; windowStarted = performance.now() }
+    const schedule = () => {
+        if (!signalBoostEnabled.value || video.paused || video.ended || timer) return
+        timer = setTimeout(() => {
+            timer = null
+            if (!signalBoostEnabled.value || video.paused || video.ended) return
+            const now = performance.now()
+            if (now - windowStarted > 30000) reset()
+            if (attempts >= 4 || now - lastRecovery < 1800) return
+            const ahead = (() => {
+                try {
+                    for (let i = 0; i < video.buffered.length; i++) {
+                        if (video.currentTime >= video.buffered.start(i) - .15 && video.currentTime <= video.buffered.end(i)) {
+                            return Math.max(0, video.buffered.end(i) - video.currentTime)
+                        }
+                    }
+                } catch (e) {}
+                return 0
+            })()
+            // 有缓冲但浏览器暂停派发播放事件时，先尝试继续播放；没有缓冲才重启底层加载器。
+            if (ahead > .35) {
+                video.play().catch(() => {})
+                return
+            }
+            attempts += 1
+            lastRecovery = now
+            try { recover?.(attempts) } catch (e) {}
+            video.play().catch(() => {})
+        }, 650)
+    }
+    const onPlaying = () => reset()
+    video.addEventListener('waiting', schedule)
+    video.addEventListener('stalled', schedule)
+    video.addEventListener('error', schedule)
+    video.addEventListener('playing', onPlaying)
+    const cleanup = () => {
+        if (timer) clearTimeout(timer)
+        timer = null
+        video.removeEventListener('waiting', schedule)
+        video.removeEventListener('stalled', schedule)
+        video.removeEventListener('error', schedule)
+        video.removeEventListener('playing', onPlaying)
+    }
+    artInstance.on('destroy', cleanup)
+    return cleanup
+}
+
 // ===== 音量增强面板（与选集/画质面板同款弹出样式） =====
 const showGainPanel = ref(false)
+const showEnhancementPanel = ref(false)
+const enhancementMode = ref('off')
+const frameInterpolation = ref(false)
+const enhancementBusy = ref(false)
+const enhancementStatus = ref(null)
+const compareOriginal = ref(false)
+const comparePosition = ref(50)
+let savedEnhancement = {}
+try { savedEnhancement = JSON.parse(localStorage.getItem('art_enhancement') || '{}') || {} } catch {}
+const preferredMode = ref(enhancementModes.some(m => m.value === savedEnhancement.mode) ? savedEnhancement.mode : 'off')
+const preferredInterpolation = ref(savedEnhancement.interpolate === true)
+const showEnhancementInfo = ref(savedEnhancement.showInfo === true)
+function saveEnhancement() {
+    try { localStorage.setItem('art_enhancement', JSON.stringify({ mode: preferredMode.value, interpolate: preferredInterpolation.value, showInfo: showEnhancementInfo.value })) } catch {}
+}
+watch(showEnhancementInfo, saveEnhancement)
+const enhancementHandle = shallowRef(null)
+function updateEnhancementComparison(value) {
+    comparePosition.value = Number(value)
+    enhancementHandle.value?.setComparison(compareOriginal.value ? comparePosition.value : null)
+}
+function toggleEnhancementComparison() {
+    compareOriginal.value = !compareOriginal.value
+    enhancementHandle.value?.setComparison(compareOriginal.value ? comparePosition.value : null)
+}
 async function selectGain(s) {
     // 接线或恢复失败时保留原档位，避免只更新标签、实际音量没有改变。
     if (!await ensureAudioGraph(s)) return
@@ -173,6 +273,7 @@ function requestResync() {
 }
 
 function showError(msg) {
+    stopLoadWatchdog()
     playerError.value = msg
     emit('error', msg)
 }
@@ -230,29 +331,88 @@ function buildControls() {
         index: 7,
         html: '<span class="avp-text-btn">选集</span>',
         tooltip: '选集',
-        click: () => { showEpPanel.value = !showEpPanel.value; showGainPanel.value = false; showQualityPanel.value = false }
-    })
-    // 音量增强
-    list.push({
-        name: 'gainBoost',
-        position: 'right',
-        index: 8,
-        html: `<span class="avp-text-btn${gainBoost.value > 1.0 ? ' boost-active' : ''}">${gainLabel.value}</span>`,
-        tooltip: '音量增强（点击切换）',
-        click: () => { showGainPanel.value = !showGainPanel.value; showEpPanel.value = false; showQualityPanel.value = false }
+        click: () => { showEpPanel.value = !showEpPanel.value; showGainPanel.value = false; showQualityPanel.value = false; showEnhancementPanel.value = false }
     })
     // 画质切换（B站TV 多档位 DASH，多于 1 档时显示）
     if (props.qualities.length > 1) {
         list.push({
             name: 'biliQuality',
             position: 'right',
-            index: 9,
+            index: 8,
             html: `<span class="avp-text-btn quality-active">${activeQualityLabel.value}</span>`,
             tooltip: '画质切换',
-            click: () => { showQualityPanel.value = !showQualityPanel.value; showGainPanel.value = false; showEpPanel.value = false }
+            click: () => { showQualityPanel.value = !showQualityPanel.value; showGainPanel.value = false; showEpPanel.value = false; showEnhancementPanel.value = false }
         })
     }
     return list
+}
+
+function buildSettings() {
+    const gainSelector = boostSteps.map(step => ({
+        value: step,
+        name: `gain-${step}`,
+        default: Math.abs(gainBoost.value - step) < 0.01,
+        html: `${Math.round(step * 100)}%`
+    }))
+    const enhancementSelector = [
+        ...enhancementModes.map(mode => ({
+            value: mode.value,
+            name: `enhancement-${mode.value}`,
+            default: preferredMode.value === mode.value && !preferredInterpolation.value,
+            html: mode.label
+        })),
+        {
+            value: 'advanced',
+            name: 'enhancement-advanced',
+            html: '高级设置…'
+        }
+    ]
+    return [
+        {
+            name: 'gainBoostSettings',
+            html: '音量增强',
+            width: 200,
+            tooltip: gainLabel.value,
+            selector: gainSelector,
+            onSelect(item) {
+                void selectGain(Number(item.value))
+                return item.html
+            }
+        },
+        {
+            name: 'videoEnhancementSettings',
+            html: '画面增强',
+            width: 200,
+            tooltip: preferredMode.value === 'off' ? '关闭' : enhancementModes.find(mode => mode.value === preferredMode.value)?.label || '关闭',
+            selector: enhancementSelector,
+            onSelect(item) {
+                if (item.value === 'advanced') {
+                    this.setting.show = false
+                    showEnhancementPanel.value = true
+                    showGainPanel.value = false
+                    showEpPanel.value = false
+                    showQualityPanel.value = false
+                    return '高级设置'
+                }
+                void setEnhancement(item.value, preferredInterpolation.value)
+                return item.html
+            }
+        },
+        {
+            name: 'signalBoostSettings',
+            html: '流媒体增强',
+            width: 200,
+            tooltip: signalBoostLabel.value,
+            selector: [
+                { value: true, name: 'signal-boost-on', default: signalBoostEnabled.value, html: '增强' },
+                { value: false, name: 'signal-boost-off', default: !signalBoostEnabled.value, html: '标准' }
+            ],
+            onSelect(item) {
+                setSignalBoost(item.value === true || item.value === 'true')
+                return item.html
+            }
+        }
+    ]
 }
 
 function onEpisodeSelect(ep) {
@@ -284,23 +444,29 @@ function playM3u8(video, url, artInstance) {
     if (Hls.isSupported()) {
         if (artInstance.hls) { try { artInstance.hls.destroy() } catch (e) {} }
         const isLive = props.playType === 'live' || /live|stream|rtmp|twitch|ttvnw|kick|googlevideo/i.test(url)
+        const boosted = signalBoostEnabled.value
         const hls = new Hls({
             enableWorker: true,
             lowLatencyMode: false, // YouTube 直播关闭低延迟模式，避免音频丢失
             // 直播低延迟：播放头贴近直播边缘（liveSyncDurationCount=2 ≈ 4-6s 延迟，20→8 收紧最大容忍）
-            maxBufferLength: isLive ? 20 : 30,
-            backBufferLength: isLive ? 10 : 15,
+            maxBufferLength: isLive ? (boosted ? 28 : 20) : (boosted ? 60 : 30),
+            backBufferLength: isLive ? (boosted ? 12 : 10) : (boosted ? 30 : 15),
+            maxBufferSize: boosted ? 120 * 1000 * 1000 : 60 * 1000 * 1000,
+            maxBufferHole: boosted ? 0.35 : 0.5,
             liveSyncDurationCount: isLive ? 2 : undefined,
             liveMaxLatencyDurationCount: isLive ? 8 : undefined,
             liveDurationInfinity: false,
             // 强制加载音频轨道
             forceKeyFrameOnDiscontinuity: true,
-            fragLoadingMaxRetry: 6,
-            fragLoadingRetryDelay: 1000,
-            manifestLoadingMaxRetry: 4,
-            levelLoadingMaxRetry: 4,
+            startFragPrefetch: boosted,
+            fragLoadingMaxRetry: boosted ? 10 : 6,
+            fragLoadingRetryDelay: boosted ? 700 : 1000,
+            manifestLoadingMaxRetry: boosted ? 7 : 4,
+            manifestLoadingRetryDelay: boosted ? 700 : 1000,
+            levelLoadingMaxRetry: boosted ? 7 : 4,
+            levelLoadingRetryDelay: boosted ? 700 : 1000,
             // 确保音频和视频同步
-            appendErrorMaxRetry: 6
+            appendErrorMaxRetry: boosted ? 10 : 6
         })
         hls.loadSource(url)
         hls.attachMedia(video)
@@ -333,6 +499,12 @@ function playM3u8(video, url, artInstance) {
             } else {
                 showError('播放失败：' + (data.details || '致命错误'))
             }
+        })
+        installSignalRecovery(video, artInstance, () => {
+            try {
+                if (hls.media !== video) hls.attachMedia(video)
+                hls.startLoad(Math.max(0, Number(video.currentTime) || 0))
+            } catch (e) {}
         })
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = url
@@ -370,6 +542,7 @@ function playFlv(video, url, artInstance) {
         return
     }
     const isLiveStream = props.playType === 'live' || (props.playType === 'flv' && /live|stream/i.test(url))
+    const boosted = signalBoostEnabled.value
     const flvPlayer = mpegts.createPlayer({
         type: 'flv',
         url: url,
@@ -381,7 +554,7 @@ function playFlv(video, url, artInstance) {
         enableWorker: true,
         // 直播流必须启用 stashBuffer，否则缓冲不足导致一直卡在解析
         enableStashBuffer: true,
-        stashInitialSize: isLiveStream ? 1024 : 256,
+        stashInitialSize: isLiveStream ? (boosted ? 2048 : 1024) : (boosted ? 768 : 256),
         autoCleanupSourceBuffer: true,
         autoCleanupMaxBackwardDuration: 10,
         autoCleanupMinBackwardDuration: 5,
@@ -390,6 +563,7 @@ function playFlv(video, url, artInstance) {
         liveBufferLatencyMinRemain: 1,
         liveSync: isLiveStream,
         lazyLoad: false,
+        lazyLoadMaxDuration: boosted ? 120 : 60,
         fixAudioTimestampGap: true,
         fetchOptions: { mode: 'cors' },
         // 修复部分直播流 seek 越界
@@ -446,6 +620,13 @@ function playFlv(video, url, artInstance) {
         if (info?.videoCodec && /hevc|h265|265/i.test(info.videoCodec)) {
             console.warn('[FLV] 检测到 H.265 编码，当前环境可能不支持 MSE H.265 解码')
         }
+    })
+    installSignalRecovery(video, artInstance, () => {
+        try {
+            flvPlayer.pause()
+            flvPlayer.unload()
+            flvPlayer.load()
+        } catch (e) {}
     })
     const onMeta = () => {
         if (flvTimer) { clearTimeout(flvTimer); flvTimer = null }
@@ -585,6 +766,40 @@ function initDashAudio() {
 }
 
 // ===== 播放器实例生命周期 =====
+let enhancementRevision = 0
+async function setEnhancement(mode, interpolate, restore = false) {
+    if (enhancementBusy.value || !art) return
+    if (!restore) { preferredMode.value = mode; preferredInterpolation.value = interpolate; saveEnhancement() }
+    const instance = art, revision = ++enhancementRevision
+    enhancementBusy.value = true
+    enhancementHandle.value?.stop(); enhancementHandle.value = null; enhancementStatus.value = null
+    enhancementMode.value = 'off'; frameInterpolation.value = false
+    try {
+        if (mode === 'off' && !interpolate) { compareOriginal.value = false; return }
+        const handle = await createVideoEnhancement({ video: instance.video, container: instance.template.$player, mode, interpolate,
+            onStatus: status => { if (revision === enhancementRevision) enhancementStatus.value = status },
+            onError: message => {
+                if (revision !== enhancementRevision) return
+                enhancementHandle.value = null; enhancementMode.value = 'off'; frameInterpolation.value = false; enhancementStatus.value = null
+                compareOriginal.value = false
+                instance.notice.show = message
+                // Only a source dimension change warrants rebuilding automatically.
+                // Driver failure and overload keep the original video without a retry loop.
+                if (message === '视频分辨率已变化，请重新开启增强') queueMicrotask(restoreEnhancement)
+            }
+        })
+        if (revision !== enhancementRevision || art !== instance) { handle.stop(); return }
+        enhancementHandle.value = handle; enhancementMode.value = mode; frameInterpolation.value = interpolate
+        handle.setComparison(compareOriginal.value ? comparePosition.value : null)
+        instance.notice.show = interpolate ? '已开启运动补偿补帧；增加约一帧画面延迟' : '已开启 Anime4K 超分'
+    } catch (error) { if (art === instance) instance.notice.show = error.message || '画面增强开启失败' }
+    finally { if (revision === enhancementRevision) enhancementBusy.value = false }
+}
+function restoreEnhancement() {
+    if (!enhancementHandle.value && !enhancementBusy.value && (preferredMode.value !== 'off' || preferredInterpolation.value)) {
+        void setEnhancement(preferredMode.value, preferredInterpolation.value, true)
+    }
+}
 function resolveArtType(url) {
     const pt = props.playType
     // URL 优先判断：m3u8/FLV 以实际地址为准
@@ -597,6 +812,12 @@ function resolveArtType(url) {
 }
 
 async function destroyPlayer() {
+    stopLoadWatchdog(); stopLoadWatchdog = () => {}
+    enhancementRevision++; enhancementBusy.value = false
+    enhancementHandle.value?.stop(); enhancementHandle.value = null
+    enhancementMode.value = 'off'; frameInterpolation.value = false; enhancementStatus.value = null
+    compareOriginal.value = false; comparePosition.value = 50
+    showEnhancementPanel.value = false
     liveBadge.value = false
     if (!art) return destroying
     const inst = art
@@ -623,6 +844,7 @@ async function createPlayer(src) {
     playerError.value = ''
     showEpPanel.value = false
     showQualityPanel.value = false
+    showEnhancementPanel.value = false
     // 画质档位随新流重置：父层指定档优先，否则取最高档
     activeQn.value = props.currentQn || (props.qualities[0]?.qn || 0)
 
@@ -635,7 +857,7 @@ async function createPlayer(src) {
         // ArtPlayer 5.x 对 undefined 的 option.type 会抛 TypeError 导致播放器创建失败
         type: artType || '',
         // 必须在 ArtPlayer 设置 src 前设置；事后接入 Web Audio 无法消除媒体污染。
-        moreVideoAttr: { crossOrigin: 'anonymous' },
+        moreVideoAttr: { crossOrigin: 'anonymous', preload: signalBoostEnabled.value ? 'auto' : 'metadata' },
         customType: {
             m3u8: playM3u8,
             flv: playFlv
@@ -649,6 +871,7 @@ async function createPlayer(src) {
         theme: '#c20c0c',
         lang: 'zh-cn',
         setting: true,
+        settings: buildSettings(),
         playbackRate: true,
         aspectRatio: true,
         screenshot: true,
@@ -672,9 +895,8 @@ async function createPlayer(src) {
                 antiOverlap: true,
                 synchronousPlayback: true,
                 visible: danmakuOn.value,
-                // 弹幕发射器宽度阈值：播放器宽度小于该值时，输入框自动沉到播放器底部，
-                // 避免输入框占据控制条中部空间导致右侧按钮被挤压，最右全屏按钮始终可见
-                width: 800
+                // Keep the emitter in the shared control row until the player is genuinely narrow.
+                width: 640
             })
         ]
     })
@@ -686,6 +908,32 @@ async function createPlayer(src) {
 
     // 遮罩层 Teleport 到 $player 内（全屏时仍可见）
     playerEl.value = art.template.$player
+    const disposePreview = installSeekPreview(art)
+    art.on('destroy', disposePreview)
+    // ResizeObserver also follows fullscreen and sidebars, unlike viewport media queries.
+    const layoutInstance = art
+    const layoutObserver = new ResizeObserver(([entry]) => {
+        layoutInstance.template.$player.classList.toggle('avp-compact', entry.contentRect.width < 680)
+        layoutInstance.template.$player.classList.toggle('avp-has-danmaku', props.danmaku.length > 0)
+    })
+    layoutObserver.observe(playerEl.value)
+    art.on('destroy', () => layoutObserver.disconnect())
+    art.on('video:loadeddata', restoreEnhancement)
+    // A new resolution needs new GPU textures; preserve the user's requested mode.
+    art.on('video:loadedmetadata', () => {
+        enhancementRevision++; enhancementBusy.value = false
+        enhancementHandle.value?.stop(); enhancementHandle.value = null; enhancementStatus.value = null
+    })
+    const restoreAfterResize = () => {
+        if (enhancementHandle.value && (enhancementHandle.value.sourceWidth !== layoutInstance.video.videoWidth || enhancementHandle.value.sourceHeight !== layoutInstance.video.videoHeight)) {
+            enhancementRevision++; enhancementBusy.value = false
+            enhancementHandle.value.stop(); enhancementHandle.value = null; enhancementStatus.value = null
+        }
+        restoreEnhancement()
+    }
+    // ArtPlayer does not forward the media element's resize event.
+    layoutInstance.video.addEventListener('resize', restoreAfterResize)
+    layoutInstance.on('destroy', () => layoutInstance.video.removeEventListener('resize', restoreAfterResize))
 
     // 直播检测：duration 无限大 → 真直播，显示 LIVE 标识
     art.on('video:durationchange', () => {
@@ -751,6 +999,12 @@ async function createPlayer(src) {
             } catch (e) {}
         }, 5000)
     })
+    const watchedInstance = art
+    stopLoadWatchdog = installMediaLoadWatchdog(art.video, message => {
+        if (disposed || art !== watchedInstance || version !== playerVersion || playerError.value) return
+        try { watchedInstance.pause() } catch {}
+        showError(message)
+    }, { timeoutMs: props.loadTimeoutMs })
     art.on('video:error', () => {
         if (!playerError.value) showError('视频加载失败，请重试或更换线路')
     })
@@ -781,9 +1035,9 @@ watch(() => props.audioUrl, () => {
 // 弹幕数据后到（异步拉取完成）或更新：load() 换弹幕源，无需重建播放器
 // 显隐交给插件自带设置面板（"显示弹幕"开关），此处只负责喂数据
 // 音量增强档位变化：同步控制条按钮标签
-watch(gainBoost, (v) => {
-    const dom = art?.controls?.gainBoost
-    if (dom) dom.innerHTML = `<span class="avp-text-btn${v > 1.0 ? ' boost-active' : ''}">${gainLabel.value}</span>`
+watch(gainBoost, () => {
+    const setting = art?.setting?.find('gainBoostSettings')
+    if (setting) art.setting.update({ name: 'gainBoostSettings', tooltip: gainLabel.value })
 })
 
 watch(() => props.danmaku, (list) => {
@@ -831,38 +1085,47 @@ defineExpose({ get art() { return art } })
                 <span class="avp-live-dot"></span>LIVE
             </div>
 
+            <div v-if="compareOriginal && enhancementHandle && !playerError" class="avp-compare-overlay" @click.stop>
+                <div class="avp-compare-labels" aria-hidden="true"><span>原画</span><span>增强</span></div>
+                <div class="avp-compare-divider" :style="{ left: `${comparePosition}%` }" aria-hidden="true">
+                    <span><ChevronsLeftRight :size="18" /></span>
+                </div>
+                <input
+                    class="avp-compare-slider"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    :value="comparePosition"
+                    aria-label="原画与增强画面对比分割位置"
+                    @input="updateEnhancementComparison($event.target.value)"
+                />
+            </div>
+
             <!-- 音视频同步缓冲指示（大跳转/音频缓冲不足时转圈等待对齐） -->
             <div v-if="syncBuffering && !playerError" class="avp-sync-mask" @click.stop>
                 <div class="avp-sync-spinner"></div>
                 <p>音视频同步中…</p>
             </div>
 
-            <!-- 选集面板 -->
-            <transition name="avp-slide">
-                <div v-if="showEpPanel && !playerError" class="avp-ep-panel" @click.stop>
-                    <div class="avp-ep-header">
-                        <span>选集 ({{ episodes.length }})</span>
-                        <button class="avp-ep-close" @click="showEpPanel = false"><X :size="14" /></button>
-                    </div>
-                    <div v-if="!episodes.length" class="avp-ep-empty">暂无集数</div>
-                    <div v-else class="avp-ep-list">
-                        <button
-                            v-for="ep in episodes"
-                            :key="ep.title"
-                            class="avp-ep-item"
-                            :class="{ active: currentEpisode?.title === ep.title }"
-                            @click="onEpisodeSelect(ep)"
-                        >{{ ep.title }}</button>
-                    </div>
-                </div>
-            </transition>
+            <!-- 所有分区共用选集抽屉 -->
+            <VideoEpisodeDrawer
+                :open="showEpPanel && !playerError"
+                :episodes="episodes"
+                :current-episode="currentEpisode"
+                :title="episodeTitle"
+                :cover="episodeCover"
+                :local-mode="localMode"
+                @close="showEpPanel = false"
+                @select="onEpisodeSelect"
+            />
 
             <!-- 画质面板（B站TV 多档位，与选集面板互斥） -->
             <transition name="avp-slide">
                 <div v-if="showQualityPanel && !playerError" class="avp-ep-panel avp-quality-panel" @click.stop>
                     <div class="avp-ep-header">
                         <span>画质 ({{ qualities.length }})</span>
-                        <button class="avp-ep-close" @click="showQualityPanel = false"><X :size="14" /></button>
+                        <button class="avp-ep-close" aria-label="关闭画质选择" @click="showQualityPanel = false"><X :size="14" /></button>
                     </div>
                     <transition-group name="avp-qual" tag="div" class="avp-ep-list avp-quality-list">
                         <button
@@ -881,7 +1144,7 @@ defineExpose({ get art() { return art } })
                 <div v-if="showGainPanel && !playerError" class="avp-ep-panel avp-quality-panel avp-gain-panel" @click.stop>
                     <div class="avp-ep-header">
                         <span>音量增强</span>
-                        <button class="avp-ep-close" @click="showGainPanel = false"><X :size="14" /></button>
+                        <button class="avp-ep-close" aria-label="关闭音量增强" @click="showGainPanel = false"><X :size="14" /></button>
                     </div>
                     <div class="avp-ep-list avp-quality-list">
                         <button
@@ -895,6 +1158,35 @@ defineExpose({ get art() { return art } })
                 </div>
             </transition>
 
+            <transition name="avp-slide">
+                <div v-if="showEnhancementPanel && !playerError" class="avp-ep-panel avp-quality-panel avp-enhancement-panel" @click.stop>
+                    <div class="avp-ep-header"><span>画面增强</span><button class="avp-ep-close" aria-label="关闭画面增强" @click="showEnhancementPanel = false"><X :size="14" /></button></div>
+                    <div class="avp-enhancement-body">
+                    <div class="avp-ep-list avp-quality-list">
+                        <button v-for="mode in enhancementModes" :key="mode.value" class="avp-ep-item" :class="{ active: enhancementMode === mode.value }" :disabled="enhancementBusy" @click="setEnhancement(mode.value, frameInterpolation)">{{ mode.label }}</button>
+                        <button class="avp-ep-item" :class="{ active: frameInterpolation }" :disabled="enhancementBusy" @click="setEnhancement(enhancementMode, !frameInterpolation)">运动补偿补帧 · {{ frameInterpolation ? '开启' : '关闭' }}</button>
+                    </div>
+                    <button class="avp-info-toggle" role="switch" :aria-checked="showEnhancementInfo" @click="showEnhancementInfo = !showEnhancementInfo">
+                        <span>右上角实时信息</span><span class="avp-switch" :class="{ active: showEnhancementInfo }"></span>
+                    </button>
+                    <button class="avp-info-toggle" role="switch" :aria-checked="compareOriginal" :disabled="!enhancementHandle || enhancementBusy" @click="toggleEnhancementComparison">
+                        <span>原画对比</span><span class="avp-switch" :class="{ active: compareOriginal }"></span>
+                    </button>
+                    <p class="avp-enhancement-note">增强设置自动记忆，切集、切换画质后继续应用。</p>
+                    <p class="avp-enhancement-note">{{ enhancementBusy ? '正在编译显卡着色器…' : '本地 WebGPU 处理；最高 4K，低分辨率最多放大 4 倍。补帧以显示器刷新率输出，快速运动可能产生伪影；小窗同样会增加显卡负载。' }}</p>
+                    <p v-if="enhancementStatus" class="avp-enhancement-note">输出 {{ enhancementStatus.width }} × {{ enhancementStatus.height }} · 输入 {{ enhancementStatus.sourceFps }} fps · 绘制 {{ enhancementStatus.displayFps }} fps<span v-if="frameInterpolation"> · {{ enhancementStatus.algorithm }}</span></p>
+                    </div>
+                </div>
+            </transition>
+            <div v-if="showEnhancementInfo && (enhancementStatus || enhancementBusy)" class="avp-enhancement-info" :class="{ 'with-live': liveBadge }" aria-live="off">
+                <strong>{{ enhancementMode === 'off' ? '画面增强' : 'Anime4K' }}<span v-if="frameInterpolation"> · 运动补偿</span></strong>
+                <template v-if="enhancementStatus">
+                    <span>输入 {{ enhancementStatus.sourceWidth }} × {{ enhancementStatus.sourceHeight }}</span>
+                    <span>输出 {{ enhancementStatus.width }} × {{ enhancementStatus.height }}</span>
+                    <span>输入 {{ enhancementStatus.sourceFps }} fps · 绘制 {{ enhancementStatus.displayFps }} fps</span>
+                </template>
+                <span v-else>正在准备增强…</span>
+            </div>
             <!-- 错误遮罩 -->
             <div v-if="playerError" class="avp-error-mask" @click.stop>
                 <Film :size="36" />
@@ -908,6 +1200,8 @@ defineExpose({ get art() { return art } })
 </template>
 
 <style scoped>
+.avp-quality-panel.avp-enhancement-panel { width: 320px; max-width: calc(100% - 24px); }
+.avp-enhancement-note { color: #b9b9c0; font-size: 11px; line-height: 1.65; margin: 10px 14px; }
 .art-player-wrap {
     position: relative;
     width: 100%;
@@ -941,11 +1235,42 @@ defineExpose({ get art() { return art } })
     color: #ff6b6b;
 }
 
-/* ===== 控制条挤压策略：左右按钮组禁止收缩，空间不足时中间按钮被裁，最右全屏按钮始终贴边可见 ===== */
+/* Keep the primary controls and danmaku tools on one bottom row whenever space allows. */
 .art-container :deep(.art-controls-left),
 .art-container :deep(.art-controls-right) {
     flex-shrink: 0 !important;
 }
+.art-container :deep(.art-video-player) { --art-control-height: 36px; --art-control-icon-size: 28px; }
+.art-container :deep(.art-controls) { display: flex; align-items: center; height: 36px; padding: 0; }
+.art-container :deep(.art-controls-left) { height: 36px; align-items: center; gap: 5px; }
+.art-container :deep(.art-controls-right) { min-width: 0; height: 36px; gap: 5px; align-items: center; justify-content: flex-end; }
+.art-container :deep(.art-controls-center) { display: flex !important; flex: 1 1 auto; height: 36px; min-width: 0; padding: 0 6px; }
+.art-container :deep(.art-video-player:not(.avp-has-danmaku) .art-controls-center) { display: none !important; }
+/* The progress track also has .art-control; size only buttons in the control row. */
+.art-container :deep(.art-controls .art-control) { flex-shrink: 0; min-width: 32px; min-height: 34px; margin: 0; }
+.art-container :deep(.art-control-time) { padding: 0 4px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.art-container :deep(.art-control .avp-text-btn) {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-height: 28px; padding: 0 8px; border-radius: 7px;
+    background: rgba(30,32,38,.36); border: 1px solid rgba(255,255,255,.13);
+    max-width: 112px; overflow: hidden; text-overflow: ellipsis;
+}
+.art-container :deep(.art-control:hover .avp-text-btn) { background: rgba(255,255,255,.18); }
+.art-container :deep(.avp-compact .art-controls) { display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-rows: 36px; grid-auto-rows: 36px; gap: 0 4px; height: auto; flex-shrink: 0; }
+.art-container :deep(.avp-compact .art-controls-left) { grid-column: 1; grid-row: 1; width: auto; height: 36px; order: 0; }
+.art-container :deep(.avp-compact .art-controls-right) { grid-column: 2; grid-row: 1; width: auto; height: 36px; flex-wrap: nowrap; justify-content: flex-end; order: 1; }
+.art-container :deep(.avp-compact .art-controls-center) { grid-column: 1 / -1; grid-row: 2; height: 36px; width: 100%; min-width: 0; box-sizing: border-box; order: 2; justify-content: flex-end; padding: 0; }
+.art-container :deep(.avp-compact .art-controls-center:empty) { display: none !important; }
+.art-container :deep(.avp-compact .art-controls-right .art-control) { margin: 0; min-width: 32px; min-height: 34px; }
+.art-container :deep(.avp-compact .art-controls-right .avp-text-btn) { padding: 0 7px; }
+.art-container :deep(.avp-compact .avp-ep-panel) { bottom: 100px; max-height: calc(100% - 116px); }
+.art-container :deep(.art-control .avp-text-btn.quality-active) { color: #fff; }
+.art-container :deep(.avp-seek-preview) { position: absolute; width: 200px; padding: 3px; box-sizing: border-box; background: rgba(22,24,29,.94); border: 1px solid rgba(255,255,255,.22); border-radius: 9px; box-shadow: 0 8px 28px rgba(0,0,0,.4); pointer-events: none; z-index: 1100; overflow: hidden; }
+.art-container :deep(.avp-seek-preview[hidden]),
+.art-container :deep(.avp-seek-preview [hidden]) { display: none !important; }
+.art-container :deep(.avp-seek-preview canvas) { display: block; width: 192px; height: 108px; border-radius: 5px; }
+.art-container :deep(.avp-seek-preview > span:last-child) { display: block; color: #fff; padding: 6px 0 3px; font-size: 12px; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums; }
+.art-container :deep(.avp-seek-preview-loading) { display: grid; place-items: center; width: 192px; height: 108px; color: #c8cad0; background: #202127; font-size: 12px; }
 
 /* ===== 集数提示 ===== */
 .avp-badge {
@@ -1185,6 +1510,46 @@ defineExpose({ get art() { return art } })
 .avp-quality-list {
     grid-template-columns: 1fr;
 }
+/* Shared glass surfaces; every panel keeps a fixed header and a scrollable body. */
+.avp-ep-panel {
+    box-sizing: border-box; max-width: calc(100% - 24px); max-height: calc(100% - 88px);
+    background: rgba(25,27,33,.86); backdrop-filter: blur(24px) saturate(145%);
+    border: 1px solid rgba(255,255,255,.16); border-radius: 8px;
+    box-shadow: 0 14px 40px rgba(0,0,0,.4);
+}
+.avp-ep-header { padding: 12px; border-bottom: 1px solid rgba(255,255,255,.09); }
+.avp-ep-close { width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; }
+.avp-ep-close:hover { transform: none; }
+.avp-ep-list { min-height: 0; padding: 10px; gap: 7px; scrollbar-width: thin; }
+.avp-ep-item { min-height: 34px; padding: 8px 10px; border-radius: 6px; }
+.avp-ep-item.active { color: #fff; background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.4); }
+.avp-quality-panel, .avp-gain-panel { width: 212px; }
+.avp-quality-list .avp-ep-item { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.avp-gain-panel .avp-quality-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.avp-gain-panel .avp-ep-item { text-align: center; font-variant-numeric: tabular-nums; }
+.avp-enhancement-body { min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.avp-enhancement-body .avp-ep-list { overflow: visible; }
+.avp-info-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: calc(100% - 20px); margin: 0 10px; padding: 10px; border: 0; border-radius: 6px; background: rgba(255,255,255,.06); color: #fff; font: inherit; font-size: 12px; cursor: pointer; }
+.avp-info-toggle:disabled { opacity: .45; cursor: not-allowed; }
+.avp-switch { width: 30px; height: 18px; border-radius: 12px; background: #62636b; padding: 2px; box-sizing: border-box; flex-shrink: 0; }
+.avp-switch::after { content: ''; display: block; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.avp-switch.active { background: #32a865; }
+.avp-switch.active::after { transform: translateX(12px); }
+.avp-ep-panel button:focus-visible { outline: 2px solid #fff; outline-offset: -3px; }
+.avp-ep-item:disabled { opacity: .5; cursor: wait; }
+.avp-enhancement-info { position: absolute; top: 12px; right: 12px; max-width: calc(100% - 24px); display: grid; gap: 5px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.15); border-radius: 8px; background: rgba(25,27,33,.76); backdrop-filter: blur(16px); color: #eee; font-size: 11px; line-height: 1.4; font-variant-numeric: tabular-nums; pointer-events: none; z-index: 45; }
+.avp-enhancement-info.with-live { top: 48px; }
+.avp-compare-overlay { position: absolute; inset: 0; z-index: 30; pointer-events: none; }
+.avp-compare-labels { position: absolute; top: 14px; left: 14px; right: 14px; display: flex; justify-content: space-between; color: #fff; font-size: 11px; line-height: 1; text-shadow: 0 1px 5px #000; }
+.avp-compare-labels span { padding: 6px 8px; border: 1px solid rgba(255,255,255,.24); border-radius: 4px; background: rgba(12,14,18,.68); backdrop-filter: blur(8px); }
+.avp-compare-divider { position: absolute; top: 0; bottom: 0; width: 2px; transform: translateX(-1px); background: rgba(255,255,255,.94); box-shadow: 0 0 8px rgba(0,0,0,.7); }
+.avp-compare-divider span { position: absolute; top: 50%; left: 50%; display: grid; width: 38px; height: 38px; place-items: center; transform: translate(-50%,-50%); border: 1px solid rgba(255,255,255,.8); border-radius: 50%; background: rgba(20,22,27,.88); color: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.45); }
+.avp-compare-slider { position: absolute; top: calc(50% - 22px); left: 0; width: 100%; height: 44px; margin: 0; appearance: none; background: transparent; cursor: ew-resize; pointer-events: auto; }
+.avp-compare-slider::-webkit-slider-runnable-track { height: 44px; background: transparent; }
+.avp-compare-slider::-webkit-slider-thumb { width: 40px; height: 40px; appearance: none; border: 0; background: transparent; }
+.avp-compare-slider::-moz-range-track { height: 44px; background: transparent; }
+.avp-compare-slider::-moz-range-thumb { width: 40px; height: 40px; border: 0; background: transparent; }
+.avp-compare-slider:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
 /* 画质列表项折叠/展开动画 */
 .avp-qual-enter-active, .avp-qual-leave-active {
     transition: opacity .18s, transform .18s;

@@ -30,6 +30,7 @@ const SIDEBAR_SECTIONS = [
     { id: '/', label: '发现音乐' },
     { id: '/video', label: 'MV' },
     { id: '/anime', label: '动漫区' },
+    { id: '/anime-source', label: '动漫源' },
     { id: '/movie', label: '影视区' },
     { id: '/bilibili', label: 'B站区' },
     { id: '/entertainment', label: '娱乐专区' },

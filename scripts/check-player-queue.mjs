@@ -37,6 +37,30 @@ assert.equal(player.playlist[player.currentIndex + 1].id, 99)
 player.clearUpcoming()
 assert.equal(player.playlist.length, player.currentIndex + 1)
 
+const endedPlayer = store()
+endedPlayer.playlist = endedPlayer._normalizeQueue(songs)
+endedPlayer.currentIndex = 0
+endedPlayer.audio = { ended: true, currentTime: 0 }
+assert.equal(endedPlayer._handleAudioEnded(endedPlayer.audio), true, 'a current ended track advances the sequence')
+assert.equal(endedPlayer.currentIndex, 1)
+assert.equal(endedPlayer._handleAudioEnded(endedPlayer.audio), false, 'duplicate ended events cannot advance twice')
+assert.deepEqual(endedPlayer.calls, [songs[1].id])
+const staleAudio = { ended: true }
+endedPlayer.audio = { ended: false }
+assert.equal(endedPlayer._handleAudioEnded(staleAudio), false, 'an ended event from a replaced audio element is ignored')
+endedPlayer.audio = staleAudio
+endedPlayer.playbackLoading = true
+assert.equal(endedPlayer._handleAudioEnded(staleAudio), false, 'an ended event cannot interrupt an active track load')
+
+const replayEvents = {}
+const replayAudio = { paused: false, ended: true, addEventListener(name, handler) { replayEvents[name] = handler } }
+const replayPlayer = store()
+replayPlayer.audio = replayAudio
+replayPlayer._endingAudio = replayAudio
+replayPlayer._bindPlaybackStateEvents(replayAudio)
+replayEvents.play()
+assert.equal(replayPlayer._endingAudio, null, 'starting playback re-arms ended handling for loop/replay')
+
 player.playlist = player._normalizeQueue(songs)
 player.currentIndex = 0
 player._resetShuffleState()

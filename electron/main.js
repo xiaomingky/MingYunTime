@@ -30,6 +30,8 @@ function getFfmpegPath() {
 
 // 动漫模块
 import './anime.js'
+import { registerAnimeSourceRuleIPC, animeSourceMediaHeaders } from './anime-source-rules.js'
+registerAnimeSourceRuleIPC()
 import './bilibili-video.js'
 import './anime-meta.js'
 import './movie.js'
@@ -267,6 +269,8 @@ function createWindow() {
     session.defaultSession.webRequest.onBeforeSendHeaders(
         {
             urls: [
+                // Installed anime sources can resolve to arbitrary media CDNs.
+                'http://*/*', 'https://*/*',
                 'https://*.bilivideo.com/*', 'http://*.bilivideo.com/*',
                 'https://*.bilivideo.cn/*', 'http://*.bilivideo.cn/*',
                 'https://*.hdslb.com/*', 'http://*.hdslb.com/*',
@@ -310,6 +314,8 @@ function createWindow() {
         },
         (details, callback) => {
             const u = details.url
+            const sourceHeaders = animeSourceMediaHeaders(u)
+            if (sourceHeaders) Object.assign(details.requestHeaders, sourceHeaders)
             // TV 接口流（platform=android_tv_yst 签名的 upos/mcdn URL）：必须用 BilibiliTV UA 且不能带 Referer，
             // 2026-08-26 实测：带浏览器 UA 或 bili Referer 一律 403，仅 BilibiliTV UA + 无 Referer 返回 200
             if (/platform=android_tv_yst/i.test(u)) {

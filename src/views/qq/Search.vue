@@ -382,7 +382,7 @@ onUnmounted(() => { revision++; suggestRevision++; if (suggestTimer) clearTimeou
                     <span>{{ currentMv.name }} - {{ currentMv.artist }}</span>
                     <span class="qq-mv-close" @click="closeMv">×</span>
                 </div>
-                <ArtVideoPlayer :src="currentMv.url" play-type="direct" :autoplay="true" class="qq-mv-video" />
+                <ArtVideoPlayer :src="currentMv.url" :episode-title="currentMv.name" :episode-cover="currentMv.picUrl" :episodes="mvs" :current-episode="currentMv" @selectEpisode="playMv" play-type="direct" :autoplay="true" class="qq-mv-video" />
             </div>
         </div>
     </div>

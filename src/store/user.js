@@ -27,6 +27,8 @@ export const useUserStore = defineStore('user', {
         playlists: [], playlistsLoading: false, playlistsError: '', playlistsRequest: 0,
         likedPlaylistId: null,
         likedSongIds: new Set(),
+        pendingLikeIds: new Set(),
+        likeRevision: 0,
         vipInfo: null,
         vipLoading: false,
         vipError: '',
@@ -135,12 +137,16 @@ export const useUserStore = defineStore('user', {
             }
         },
         async getQrCodeData() {
+            let unikey
             try {
-                const { data: { unikey } } = await getQrKey()
+                unikey = (await getQrKey()).data?.unikey
+                if (!unikey) throw new Error('网易云未返回有效二维码标识')
                 const { data: { qrimg } } = await createQrCode(unikey)
+                if (!qrimg) throw new Error('网易云二维码图片为空，请重试')
                 return { unikey, qrimg }
             } catch (err) {
-                return null
+                if (unikey) request.get('/login/qr/cancel', { params: { key: unikey } }).catch(() => {})
+                return { error: err?.message || '网易云二维码生成失败，请重试' }
             }
         },
         async checkQrCodeStatus(key, stillActive = () => true) {
@@ -155,7 +161,7 @@ export const useUserStore = defineStore('user', {
                 }
                 return res
             } catch (err) {
-                return { code: 500 }
+                return { code: 500, message: err?.message || '网易云扫码状态获取失败，请重试' }
             }
         },
         async fetchStatus() {
@@ -242,11 +248,12 @@ export const useUserStore = defineStore('user', {
         },
         async fetchLikeList(uid) {
             const revision = this.revision
+            const likeRevision = this.likeRevision
             try {
                 const res = await request.get('/likelist', { params: { uid, timestamp: Date.now() } })
-                if (revision !== this.revision) return
+                if (revision !== this.revision || likeRevision !== this.likeRevision) return
                 if (res.ids) {
-                    this.likedSongIds = new Set(res.ids)
+                    this.likedSongIds = new Set(res.ids.map(Number))
                 }
             } catch (e) {
                 console.error('Fetch like list failed:', e)
@@ -255,6 +262,25 @@ export const useUserStore = defineStore('user', {
         isSongLiked(id) {
             if (!id) return false
             return this.likedSongIds.has(Number(id))
+        },
+        async setSongLiked(id, like) {
+            const songId = Number(id)
+            if (!Number.isSafeInteger(songId) || songId <= 0) throw new Error('歌曲 ID 无效')
+            if (!this.isLoggedIn) throw new Error('请先登录后再收藏')
+            if (this.pendingLikeIds.has(songId)) return false
+            const revision = this.revision
+            const pending = this.pendingLikeIds
+            pending.add(songId)
+            try {
+                const res = await request.get('/like', { params: { id: songId, uid: this.profile?.userId, like: Boolean(like), timestamp: Date.now() } })
+                if (revision !== this.revision || !this.isLoggedIn) return false
+                if (res?.code !== 200) throw new Error(res?.message || res?.msg || `操作失败（${res?.code ?? '未知错误'}）`)
+                this.likeRevision++
+                this.toggleLike(songId, Boolean(like))
+                return true
+            } finally {
+                pending.delete(songId)
+            }
         },
         toggleLike(id, like) {
             const numId = Number(id)
@@ -290,6 +316,8 @@ export const useUserStore = defineStore('user', {
             this.playlists = []
             this.likedPlaylistId = null
             this.likedSongIds = new Set()
+            this.pendingLikeIds = new Set()
+            this.likeRevision++
             this.vipInfo = null
             this.vipRequest++; this.vipLoading = false; this.vipError = ''; this.vipCheckedAt = 0
             localStorage.removeItem('music_cookie')

@@ -34,6 +34,7 @@ const KugouPlaylistCategory = () => import('../views/kugou/PlaylistCategory.vue'
 // 动漫模块（懒加载，减小首屏 bundle）
 const Anime = () => import('../views/Anime.vue')
 const AnimeDetail = () => import('../views/AnimeDetail.vue')
+const AnimeSource = () => import('../views/AnimeSource.vue')
 
 // 电影模块（懒加载）
 const Movie = () => import('../views/Movie.vue')
@@ -129,6 +130,11 @@ const routes = [
         path: '/anime',
         name: 'Anime',
         component: Anime
+    },
+    {
+        path: '/anime-source',
+        name: 'AnimeSource',
+        component: AnimeSource
     },
     {
         path: '/anime/:source/:id',

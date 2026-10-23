@@ -19,6 +19,7 @@ const client = new QishuiClient({ now: () => time, save: value => saved.push(val
         return { data: { my_info: { id: '12345', nickname: 'Synthetic music account' } } }
     }, passportRequest: async (id, spec) => {
         requests.push({ id, ...spec })
+        if (mode === 'limited') return {status:429, data:{message:'error',data:{error_code:7,description:'访问太频繁'}},headers:{'retry-after':'120'}}
         if (mode === 'pending') return wait.promise
         if (mode === 'denied') return { ...response({ error_code: 16, description: '该应用无权限' }), data: { message: 'error', data: { error_code: 16 } } }
         if (mode === 'verify') return response({ error_code: 2046, verify_center_decision_conf: 'sensitive-challenge' })
@@ -117,6 +118,15 @@ client.qrCancel(concurrent.loginId); wait.resolve(response())
 await rejects(work, 'cancelled')
 const cooldownFlow = account.create()
 await rejects(account.sendCode({ ...phone, loginId: cooldownFlow.loginId }), 'send_cooldown')
+client.clearLogins()
+
+time += 60001; mode = 'limited'
+const limitedPhone = account.create()
+await assert.rejects(account.sendCode({...phone,loginId:limitedPhone.loginId}), error => error.code === 'passport_rate_limited' && error.retryAt === time + 120000); checks++
+ok(account.cooldowns.get('+86 13800000000') === client.passportRetryAt, 'SMS retains longer server retry deadline instead of replacing it with local 60 seconds')
+const countBeforeRetry = requests.length
+await rejects(account.sendCode({...phone,loginId:account.create().loginId}), 'passport_rate_limited')
+ok(requests.length === countBeforeRetry, 'new phone flows cannot send during server cooldown')
 client.clearLogins()
 
 // Execute the production Vue composable, with only its transport replaced.

@@ -86,6 +86,15 @@ ok(!services.messages.some(m=>m.type==='success')&&!player.isPlaying&&!!player.c
 prepare('qishui');services.reply=async()=>({...response('qishui','higher'),duration:20,preview:true})
 player.audio.duration=20;await player.setQuality('higher')
 ok(player.audio.currentTime===19.75,'switching to a short authorized preview clamps the previous position within its duration')
+prepare('qq');services.reply=async()=>response('qq','128','expired')
+let starts=0
+player._startAudioPlayback=async function(audio){if(++starts===1)throw Error('expired cached stream');audio.paused=false;this.isPlaying=true;return true}
+await player.playSong({id:'expired',platform:'qq',name:'Cached',url:'https://expired.test/stream'},[],{suppressQualityPrompt:true})
+ok(starts===2&&services.requests.length===1&&player.isPlaying,'a stale queued URL is refreshed once and playback continues')
+prepare('qq');services.reply=async()=>response('qq','128','expired')
+starts=0;player._startAudioPlayback=async()=>{starts++;throw Error('persistent source failure')}
+await player.playSong({id:'expired',platform:'qq',name:'Cached',url:'https://expired.test/stream'},[],{suppressQualityPrompt:true})
+ok(starts===2&&services.requests.length===1&&!player.isPlaying,'a persistent decoder failure stops after one refresh without a retry loop')
 prepare('qq');let release
 services.reply=()=>new Promise(r=>release=r)
 const pending=player.setQuality('flac')

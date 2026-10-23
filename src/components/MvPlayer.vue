@@ -66,12 +66,25 @@ const close = () => {
     playerStore.currentMvAudioUrl = ''
     playerStore.currentMvPlayType = ''
     playerStore.currentMvDanmakuCid = null
+    playerStore.currentMvLocalMode = false
+    playerStore.currentMvEpisodes = []
+    playerStore.currentMvEpisode = null
     biliDanmaku.value = []
 }
 
 // 切换播放地址时重置“是否已开播”标记
 watch(() => playerStore.currentMvUrl, () => { didPlay.value = false })
 const onArtPlaying = () => { didPlay.value = true }
+const localEpisodes = computed(() => playerStore.currentMvLocalMode ? playerStore.currentMvEpisodes : [])
+const localEpisode = computed(() => playerStore.currentMvEpisode)
+function selectLocalEpisode(ep) {
+    if (!playerStore.currentMvLocalMode || !ep?.url) return
+    playerStore.currentMvEpisode = ep
+    playerStore.currentMvUrl = ep.url
+    playerStore.currentMvTitle = ep.title || ep.name || '本地视频'
+    playerStore.currentMvPlayType = 'direct'
+    playerStore.currentSong = { ...(playerStore.currentSong || {}), id: ep.id || ep.path, name: playerStore.currentMvTitle, url: ep.url, path: ep.path, duration: Number(ep.duration || 0) / 1000 }
+}
 // 播放器报错：若从未真正开始播放（典型：直播流未开播/地址失效），
 // 直接关闭全屏弹窗并轻提示，避免占满整屏退不出去
 const onArtError = (msg) => {
@@ -229,6 +242,12 @@ watch(() => playerStore.showMvPlayer, (val) => {
           :audioUrl="playerStore.currentMvAudioUrl"
           :danmaku="biliDanmaku"
           :autoplay="true"
+          :episode-title="playerStore.currentMvTitle"
+          :episode-cover="localEpisode?.thumbnail || ''"
+          :episodes="localEpisodes"
+          :current-episode="localEpisode"
+          :local-mode="playerStore.currentMvLocalMode"
+          @selectEpisode="selectLocalEpisode"
           @playing="onArtPlaying"
           @error="onArtError"
         />

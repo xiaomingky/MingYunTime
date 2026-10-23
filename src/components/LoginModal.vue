@@ -97,6 +97,13 @@ async function startSodaLogin() {
                     messageStore.success('汽水音乐登录成功'); stopSodaLogin(); emit('close'); return
                 }
                 if (['expired', 'cancelled'].includes(status.status)) { sodaMessage.value = '二维码已过期或取消，请刷新'; stopSodaLogin(); return }
+                if (status.status === 'rate_limited') {
+                    const seconds = Math.max(1, Math.ceil((status.retryAt - Date.now()) / 1000))
+                    sodaMessage.value = `汽水服务端拒绝了本次登录（访问频繁）。已停止自动查询；至少 ${seconds} 秒后可手动重新登录。等待结束不代表限制已解除。`
+                    sodaQr.value = ''
+                    stopSodaLogin()
+                    return
+                }
                 if (status.status === 'verification_required') {
                     sodaMessage.value = status.message || '请在弹出的窗口完成汽水安全验证，完成后会继续登录'
                     // Keep this QR and its isolated login session alive while the
@@ -105,7 +112,7 @@ async function startSodaLogin() {
                     return
                 }
                 sodaMessage.value = status.message || (['scanned', 'scaned'].includes(status.status) ? '已扫码，请在汽水音乐 App 中确认登录' : '请使用汽水音乐 App 扫码')
-                sodaTimer = setTimeout(poll, 2500)
+                sodaTimer = setTimeout(poll, 5000)
             } catch (e) {
                 if (generation !== sodaGeneration) return
                 sodaMessage.value = e.message || '汽水扫码状态获取失败，请刷新二维码'
@@ -144,7 +151,7 @@ const startQrPolling = async () => {
         if (data?.unikey) request.get('/login/qr/cancel', { params: { key: data.unikey } }).catch(() => {})
         return
     }
-    if (!data) { qrError.value = '二维码加载失败，请重试'; return }
+    if (!data?.unikey || !data.qrimg) { qrError.value = data?.error || '二维码加载失败，请重试'; return }
     qrKey.value = data.unikey
     qrImg.value = data.qrimg
     qrStatus.value = 801
@@ -522,7 +529,8 @@ onUnmounted(() => { stopAllPolling(); stopSodaLogin() })
             <label class="qq-phone-consent"><input v-model="qqPhoneLogin.consent" type="checkbox" />我已阅读并同意 <a href="https://y.qq.com/i/user_terms.html" target="_blank" rel="noopener noreferrer">用户协议</a>和<a href="https://y.qq.com/m/client/intro/privacy.html" target="_blank" rel="noopener noreferrer">隐私政策</a></label>
             <button type="submit" class="login-btn" :disabled="qqPhoneLogin.busy||!qqPhoneLogin.consent">{{ qqPhoneLogin.busy ? '正在处理…' : '验证并登录' }}</button>
             <p v-if="qqPhoneLogin.message" class="qr-tip" role="status" aria-live="polite">{{ qqPhoneLogin.message }}</p>
-            <a v-if="qqPhoneLogin.securityURL" :href="qqPhoneLogin.securityURL" target="_blank" rel="noopener noreferrer">打开 QQ 官方安全验证</a>
+            <button v-if="qqPhoneLogin.securityURL" type="button" class="login-btn" @click="qqPhoneLogin.verify()">打开 QQ 官方安全验证</button>
+            <button v-if="qqPhoneLogin.securityURL" type="button" class="login-btn" :disabled="qqPhoneLogin.busy || qqPhoneLogin.seconds > 0" @click="qqPhoneLogin.send()">验证完成，继续发送</button>
           </form>
           <div v-else-if="loginMode === 'qr'" class="qq-inline-qr qr-login" :class="{ 'qq-qr-wechat': qqOfficialMode === 'wechat' }">
             <div class="qq-scan-heading"><span class="qq-scan-eyebrow">QQ MUSIC · 安全扫码</span><h3>{{ qqOfficialMode === 'wechat' ? '微信扫一扫，音乐即刻回来' : '用手机 QQ，连接你的音乐' }}</h3></div>

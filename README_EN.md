@@ -2,15 +2,28 @@
 
 **Four music platforms, two lyric styles, videos and esports in a Windows desktop player.**
 
-[中文版](README.md) · [Download v4.0.2](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.2) · [Report an issue](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
+[中文版](README.md) · [Download v4.0.3](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.3) · [Report an issue](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
 [App website](https://music.xiaomingky.dpdns.org) · [Author website](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-4.0.2-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-4.0.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
 Built with Vue 3 and Electron 44, MingYun Time integrates NetEase Cloud Music, QQ Music, KuGou Concept Edition and Qishui Music. Discover music, search, open playlists and albums, arrange a playback queue, manage local music, switch between Classic and Apple Music-style lyrics, use desktop lyrics and EQ, and manage downloads in one place. The video area includes Bilibili, anime, movies, URL parsing and streams; the entertainment area covers CS / VAL esports; digital textbooks provide reading, annotation and companion audio.
 
-> This project is developed with AI assistance. This English README is a translation of the guide; it does not imply an English client interface. Qishui screenshots show v4.0.1; the settings screenshot below retains its v4.0.0 label; historical screenshots and GIFs retain their v3.6.1 labels. Online recommendations, charts and esports information change with their sources. Lyric GIFs demonstrate interface animation without audio. The local music screenshot uses sample file entries.
+> This project is developed with AI assistance. This English README is a translation of the guide; it does not imply an English client interface. Anime source screenshots show v4.0.3; Qishui screenshots show v4.0.1; the settings screenshot below retains its v4.0.0 label; historical screenshots and GIFs retain their v3.6.1 labels. Online recommendations, charts and esports information change with their sources. Lyric GIFs demonstrate interface animation without audio. The local music screenshot uses sample file entries.
+
+## 4.0.3 stable release
+
+Version 4.0.3 targets Windows 10 / 11 x64. Download the installer or portable archive from the [v4.0.3 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.3).
+
+- **Anime Sources:** a new standalone area under Video with bundled sources, discovery, a schedule, aggregate search, details, episodes, follows, history and source management. It is separate from the existing Anime area. Source availability depends on the upstream sites.
+- **Video playback:** a shared episode drawer with list/grid layouts, cover art and titles; local playlists are available in local-video mode. The player adds seek previews, image enhancement, optional frame interpolation, volume boost and stream-buffer recovery controls.
+- **Search:** anime-source search follows the music search interaction, with suggestions, history, clear and submit actions. Focus styling frames the complete search bar, including source selection.
+- **Reliability and accounts:** improved continuous-play recovery, video load-timeout feedback, NetEase QR/like actions, and Qishui / QQ verification flows. Platforms may still require verification based on account state, network and risk policy.
+
+![Anime source discovery](showimage/v4.0.3/anime-source-home.png)
+![Anime source details](showimage/v4.0.3/anime-source-detail.png)
+![Anime source episodes](showimage/v4.0.3/anime-source-episodes.png)
 
 ## 4.0.2 stable release
 
@@ -54,12 +67,12 @@ See [validation and measured results](docs/MODERNIZATION.md). Run `npm run check
 
 ## Download and installation
 
-1. Open the [v4.0.2 release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.2). Under **Assets**, choose the Windows installer `.exe`, or download the `.7z` archive for portable use, extract it completely and launch the application.
+1. Open the [v4.0.3 release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.3). Under **Assets**, choose the Windows installer `.exe`, or download the `.7z` archive for portable use, extract it completely and launch the application.
 2. The installer uses a native **NSIS wizard**, with a selectable destination and desktop / Start menu shortcuts.
 3. After launch, choose a platform at the top left and sign in if needed. Regular use does not require Node.js; official music clients and download utilities are included.
 4. Music requests connect directly to official platform services. If a page fails to load, check the network and login state, then retry.
 
-**4.0.2 stable release: Windows 10 / 11, 64-bit; Windows 7 / 8 / 8.1 are no longer supported.** The published v3.6.3 legacy release remains separate. On older computers, enable performance mode and 30 FPS for Apple Music-style lyrics, and turn off unnecessary spectrum and cover motion. System media overlays, HEVC decoding and similar capabilities still depend on the Windows version, drivers and codecs.
+**4.0.3 stable release: Windows 10 / 11, 64-bit; Windows 7 / 8 / 8.1 are no longer supported.** The published v3.6.3 legacy release remains separate. On older computers, enable performance mode and 30 FPS for Apple Music-style lyrics, and turn off unnecessary spectrum and cover motion. System media overlays, HEVC decoding and similar capabilities still depend on the Windows version, drivers and codecs.
 
 Online playback, downloads, audio quality and account operations depend on the platform's authorization, membership, regional restrictions and resource availability.
 

@@ -12,6 +12,7 @@ import { qqAccountId, qqCookieValue, qqGtk, qqPage, qqMembershipFromIcons } from
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import axios from 'axios'
 import { ipcMain, BrowserWindow, session, app, safeStorage, shell } from 'electron'
 // Node16 兼容探测/就绪等待/日志/广播
@@ -32,7 +33,14 @@ let loginWin = null
 let loginOpening = false
 let benefitsWin = null, benefitsOpening = false
 let accountSession
-const nativeLogin = new QQNativeLogin({client:qqClient})
+let phoneVerificationWindow = null, phoneSecurityURL = '', phoneBrowserSession = null
+const phonePartition = () => phoneBrowserSession ||= session.fromPartition('qq-phone-login-' + randomUUID())
+const nativePhoneClient = new QQClient({ request: async config => {
+    const response = await phonePartition().fetch(config.url, {method:config.method,headers:config.headers,body:config.data ? JSON.stringify(config.data) : undefined,signal:AbortSignal.timeout(12000)})
+    if (!response.ok) throw new Error('QQ 登录网络请求失败')
+    return {data:await response.json()}
+} })
+const nativeLogin = new QQNativeLogin({client:nativePhoneClient})
 const inlineQR = new QQInlineQR()
 function trustedAppSender(event) {
     try {
@@ -576,8 +584,27 @@ function registerQQIpcHandlers() {
     ipcMain.handle('qq:native-phone', async (event, params = {}) => {
         if(!trustedAppSender(event))return {code:-1,message:'仅允许应用窗口访问 QQ 原生登录'}
         try {
+            if(params.action==='verify') {
+                if(!phoneSecurityURL) return {code:-1,message:'没有等待处理的 QQ 安全验证，请先获取验证码'}
+                if(phoneVerificationWindow && !phoneVerificationWindow.isDestroyed()){phoneVerificationWindow.show();phoneVerificationWindow.focus();return {code:0}}
+                const allowed=value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&/(^|\.)(qq\.com|tencent\.com)$/.test(u.hostname)}catch{return false}}
+                if(!allowed(phoneSecurityURL)) return {code:-1,message:'QQ 安全验证地址无效，请重新获取验证码'}
+                const win=new BrowserWindow({width:520,height:760,title:'QQ 音乐安全验证',parent:BrowserWindow.fromWebContents(event.sender),webPreferences:{session:phonePartition(),sandbox:true,contextIsolation:true,nodeIntegration:false}})
+                phoneVerificationWindow=win
+                win.webContents.setWindowOpenHandler(()=>({action:'deny'}))
+                for(const name of ['will-navigate','will-redirect'])win.webContents.on(name,(e,url)=>{if(!allowed(url))e.preventDefault()})
+                win.once('closed',()=>{if(phoneVerificationWindow===win)phoneVerificationWindow=null})
+                try{await win.loadURL(phoneSecurityURL)}catch{if(!win.isDestroyed())win.destroy();throw new Error('QQ 安全验证页面打开失败，请重试')}
+                return {code:0}
+            }
+            if(params.action==='cancel') {
+                phoneSecurityURL='';phoneVerificationWindow?.destroy();phoneVerificationWindow=null
+                phoneBrowserSession=null
+            }
             if(params.action!=='cancel')inlineQR.cancel()
             const result=await nativeLogin.run(params.action,params)
+            if(result.securityURL) phoneSecurityURL=result.securityURL
+            if(result.code===0 && params.action==='send') {phoneSecurityURL='';phoneVerificationWindow?.destroy();phoneVerificationWindow=null}
             return result
         }catch(error){return {code:-1,message:error.message || 'QQ 原生登录失败，请检查验证码或稍后重试'}}
     })
@@ -602,6 +629,7 @@ function registerQQIpcHandlers() {
         if (!trustedAppSender(event)) return { code: -1, message: '仅允许应用窗口退出 QQ 登录' }
         accountSession.logout()
         nativeLogin.cancel()
+        phoneSecurityURL='';phoneVerificationWindow?.destroy();phoneVerificationWindow=null;phoneBrowserSession=null
         inlineQR.cancel()
         if (benefitsWin && !benefitsWin.isDestroyed()) benefitsWin.close()
         await session.fromPartition('qq-benefits').clearStorageData()

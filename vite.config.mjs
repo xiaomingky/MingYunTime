@@ -56,6 +56,13 @@ export default defineConfig({
   build: {
     target: 'chrome152',
     cssTarget: 'chrome152',
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.replaceAll('\\', '/').includes('/node_modules/anime4k-webgpu/')) return 'anime4k-webgpu'
+        }
+      }
+    },
     // 沙箱/安全删除保护会拦截 vite 清空 dist 的大批量删除(≥50 文件导致构建失败)，
     // 关闭自动清空改为覆盖写入（旧 hash 文件残留不影响功能；如需彻底清理可手动清 dist 后构建）
     emptyOutDir: false

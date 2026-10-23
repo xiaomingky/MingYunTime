@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "4.0.2",
+  "version": "4.0.3",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
@@ -24,6 +24,8 @@
     "check:qishui:account": "node scripts/check-qishui-account.mjs",
     "check:qishui:passport": "electron scripts/check-qishui-passport.cjs",
     "check:video:volume": "electron scripts/check-video-volume.cjs",
+    "check:video:enhancement": "electron scripts/check-video-enhancement.cjs",
+    "check:qq:phone-ui": "node scripts/check-qq-phone-ui.mjs",
     "check:qq:client": "node scripts/check-qq-client.mjs",
     "check:qq:benefits": "node scripts/check-qq-benefits.mjs",
     "check:qq:electron": "electron scripts/check-qq-electron.cjs",
@@ -53,6 +55,7 @@
     "@pixi/filter-bulge-pinch": "^5.1.1",
     "@pixi/filter-color-matrix": "^7.4.3",
     "@pixi/sprite": "^7.4.3",
+    "anime4k-webgpu": "1.0.0",
     "artplayer": "^5.4.0",
     "artplayer-plugin-danmuku": "^5.3.0",
     "axios": "^1.13.6",

@@ -7,6 +7,7 @@ const { createPinia, setActivePinia } = createRequire(import.meta.url)('pinia')
 // Bundle the production stores with API-only substitutes. Every account and
 // write in this suite is synthetic; no request reaches a music service.
 let checks = 0
+let pending, work
 const ok = (condition, label) => { assert.ok(condition, label); checks++ }
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r }); return { promise, resolve } }
 const tick = async () => { for (let i = 0; i < 12; i++) await Promise.resolve() }
@@ -39,10 +40,24 @@ const identity = id => ({code:200,account:{id},profile:{userId:id,nickname:'Synt
 n.handlers.get = async route => route==='/login/status' ? identity(11) : {}
 ns.fetchStatus = async () => true
 ok((await ns.loginWithCookie('MUSIC_U=old')).success && n.memory.get('music_cookie').includes('old'),'Netease accepts only officially matched identity')
+n.handlers.get=async (route,...args)=>{if(route==='/like'){n.lastLikeParams=args[0]?.params;return {code:200}}return identity(11)}
+ok(await ns.setSongLiked(123,true) && ns.isSongLiked(123),'Netease like updates local state only after official success')
+ok(n.lastLikeParams.like===true && String(n.lastLikeParams.uid)==='11','Netease song-like write includes the active account identity and desired state')
+n.handlers.get=async route=>route==='/like'?{code:503,message:'write rejected'}:identity(11)
+await assert.rejects(ns.setSongLiked(123,false),/write rejected/)
+ok(ns.isSongLiked(123),'rejected Netease unlike preserves the current liked state')
+pending=deferred();n.handlers.get=()=>pending.promise
+const likeWork=ns.setSongLiked(124,true)
+ok(!(await ns.setSongLiked(124,false)),'duplicate Netease like writes for one song are ignored while pending')
+pending.resolve({code:200});await likeWork
+pending=deferred();n.handlers.get=()=>pending.promise
+work=ns.setSongLiked(125,true);ns.logout();pending.resolve({code:200});await work
+ok(!ns.isLoggedIn && !ns.isSongLiked(125),'late Netease like result cannot repopulate a logged-out account')
+n.handlers.get=async()=>identity(11);await ns.loginWithCookie('MUSIC_U=old')
 n.handlers.get = async () => ({code:200,account:{id:11},profile:{userId:22}})
 ok(!(await ns.loginWithCookie('MUSIC_U=wrong')).success && ns.cookie.includes('old'),'mismatched candidate does not replace valid Netease session')
-let pending=deferred();n.handlers.get=()=>pending.promise
-let work=ns.loginWithCookie('MUSIC_U=late');ns.logout();pending.resolve(identity(11));await work
+pending=deferred();n.handlers.get=()=>pending.promise
+work=ns.loginWithCookie('MUSIC_U=late');ns.logout();pending.resolve(identity(11));await work
 ok(!ns.isLoggedIn && !n.memory.has('music_cookie'),'late Netease Cookie validation after logout cannot restore credentials')
 pending=deferred();n.handlers.get=()=>pending.promise
 let active=true;work=ns.loginWithCookie('MUSIC_U=closed',()=>active);active=false;pending.resolve(identity(11));await work

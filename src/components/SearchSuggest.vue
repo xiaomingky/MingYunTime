@@ -11,9 +11,10 @@ import { kugouSearch, normalizeKugouSong } from '../api/kugou'
 import { qishuiInvoke } from '../api/qishui'
 
 const props = defineProps({
-    module: { type: String, required: true }, // music | anime | movie | video
+    module: { type: String, required: true }, // music | anime | anime-source | movie | video
     query: { type: String, default: '' },     // 当前输入
-    visible: { type: Boolean, default: false }
+    visible: { type: Boolean, default: false },
+    liveSearch: { type: Function, default: null }
 })
 const emit = defineEmits(['select', 'clear-history', 'remove-item', 'select-item'])
 
@@ -44,7 +45,9 @@ async function doLiveSearch(kw, revision) {
     liveLoading.value = true
     try {
         const module = props.module
-        if (module === 'music') {
+        if (props.liveSearch) {
+            result = (await props.liveSearch(kw)).slice(0, 6)
+        } else if (module === 'music') {
             // 根据当前平台调用相应的搜索 API
             if (platformStore.isQishui) {
                 const res = await qishuiInvoke('search', { query: kw, type: 'track' })
@@ -149,11 +152,12 @@ async function doLiveSearch(kw, revision) {
 
 // Invalidate pending results immediately on input or platform changes, including
 // while the replacement request is still waiting for the debounce timer.
-watch(() => [props.query, props.module, platformStore.current], ([newQ]) => {
+watch(() => [props.query, props.module, platformStore.current, props.liveSearch ? props.visible : true], ([newQ]) => {
     const revision = ++liveRevision
     if (liveSearchTimer) clearTimeout(liveSearchTimer)
     liveResults.value = []
     const q = (newQ || '').trim()
+    if (props.liveSearch && !props.visible) { liveLoading.value = false; return }
     liveLoading.value = !!q
     if (!q) return
     liveSearchTimer = setTimeout(() => doLiveSearch(q, revision), 350)
@@ -209,7 +213,7 @@ function clearAll() {
                         @mousedown.prevent="selectLiveItem(item)"
                     >
                         <div class="live-cover" v-if="item.cover">
-                            <img :src="item.cover" referrerpolicy="no-referrer" @error="$event.target.style.display='none'" />
+                            <slot name="cover" :item="item"><img :src="item.cover" referrerpolicy="no-referrer" @error="$event.target.style.display='none'" /></slot>
                         </div>
                         <div class="live-cover placeholder" v-else>
                             <Search :size="14" />

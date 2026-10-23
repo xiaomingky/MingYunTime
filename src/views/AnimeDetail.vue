@@ -6,6 +6,7 @@ import { useAnimeStore } from '../store/anime'
 import { useMessageStore } from '../store/message'
 import PlayDisclaimer from '../components/PlayDisclaimer.vue'
 import ArtVideoPlayer from '../components/ArtVideoPlayer.vue'
+import VideoEpisodeDrawer from '../components/VideoEpisodeDrawer.vue'
 import {
     ChevronLeft, Heart, Star, Loader2, Film, RefreshCw, Users, Clapperboard, Download
 } from 'lucide-vue-next'
@@ -25,6 +26,7 @@ const related = ref([])
 
 const currentRouteIdx = ref(0)
 const currentEpisode = ref(null)
+const showFrameEpisodes = ref(false)
 
 const routes = computed(() => detail.value?.routes || [])
 const currentRoute = computed(() => routes.value[currentRouteIdx.value])
@@ -479,6 +481,8 @@ const handleDownloadEpisode = async () => {
                     <ArtVideoPlayer
                         v-if="playUrl && (playType === 'm3u8' || playType === 'direct') && !playerError"
                         :src="playUrl"
+                        :episode-title="displayTitle"
+                        :episode-cover="displayCover"
                         :play-type="playType"
                         :audio-url="dashAudioUrl"
                         :qualities="biliQualities"
@@ -507,6 +511,11 @@ const handleDownloadEpisode = async () => {
                         referrerpolicy="no-referrer"
                         @load="onIframeLoad"
                     ></iframe>
+                    <template v-if="playUrl && playType === 'iframe' && !playerError">
+                        <button class="frame-episode-toggle" @click="showFrameEpisodes = true">选集</button>
+                        <VideoEpisodeDrawer :open="showFrameEpisodes" :episodes="episodes" :current-episode="currentEpisode" :title="displayTitle" :cover="displayCover" @close="showFrameEpisodes = false" @select="showFrameEpisodes = false; playEpisode($event)" />
+                    </template>
+
 
                     <!-- 加载遮罩（仅 iframe 模式） -->
                     <div v-if="playerLoading && playType !== 'm3u8'" class="player-mask">
@@ -694,6 +703,7 @@ const handleDownloadEpisode = async () => {
 </template>
 
 <style scoped>
+.frame-episode-toggle { position: absolute; right: 16px; top: 16px; z-index: 10; border: 1px solid #ffffff35; border-radius: 9px; padding: 7px 14px; background: #171920cc; backdrop-filter: blur(12px); color: white; cursor: pointer; }
 .anime-detail {
     display: flex;
     flex-direction: column;

@@ -88,17 +88,12 @@ const toggleLike = async (song) => {
     if (!userStore.isLoggedIn) return messageStore.warning('请先登录后收藏')
     const isLiked = userStore.isSongLiked(song.id)
     try {
-        const res = await (await import('../api')).default.get('/like', { 
-            params: { id: song.id, like: !isLiked, timestamp: Date.now() } 
-        })
-        if (res.code === 200) {
-            userStore.toggleLike(song.id, !isLiked)
-            if (playerStore.currentSong.id === song.id) {
-                playerStore.isLiked = !isLiked
-            }
+        if (await userStore.setSongLiked(song.id, !isLiked)) {
+            if (String(playerStore.currentSong.id) === String(song.id)) playerStore.isLiked = !isLiked
+            messageStore.success(!isLiked ? '已添加到我喜欢的音乐' : '已取消喜欢')
         }
     } catch (e) {
-        console.error('Toggle like error:', e)
+        messageStore.error(e.message || '喜欢状态更新失败，请重试')
     }
 }
 
@@ -150,7 +145,8 @@ onMounted(handleSearch)
                 <Heart 
                     :size="14" 
                     class="clickable" 
-                    :class="{ 'text-red': userStore.isSongLiked(song.id) }"
+                    :class="{ 'text-red': userStore.isSongLiked(song.id), 'like-pending': userStore.pendingLikeIds.has(Number(song.id)) }"
+                    :aria-busy="userStore.pendingLikeIds.has(Number(song.id))"
                     :fill="userStore.isSongLiked(song.id) ? '#EC4141' : 'none'"
                     :color="userStore.isSongLiked(song.id) ? '#EC4141' : 'currentColor'"
                     @click.stop="toggleLike(song)"
@@ -213,6 +209,7 @@ onMounted(handleSearch)
 </template>
 
 <style scoped>
+:deep(.like-pending) { opacity: .45; pointer-events: none; }
 .search-view {
     padding: 30px;
     flex: 1;

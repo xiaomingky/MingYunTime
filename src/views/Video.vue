@@ -1,12 +1,14 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { getMvAll, cloudSearch } from '../api'
-import { Play, Search, Loader2 } from 'lucide-vue-next'
+import { Play, Search, Loader2, Film } from 'lucide-vue-next'
 import { usePlayerStore } from '../store/player'
 import { useSearchHistoryStore } from '../store/searchHistory'
 import SearchSuggest from '../components/SearchSuggest.vue'
 
 const playerStore = usePlayerStore()
+const router = useRouter()
 const searchHistoryStore = useSearchHistoryStore()
 
 const mvs = ref([])
@@ -50,6 +52,10 @@ const handleSearch = async () => {
 const onSelectSuggest = (kw) => {
     keyword.value = kw
     handleSearch()
+}
+
+function openAnimeSource() {
+    router.push('/anime')
 }
 // "您可能再找"实时搜索结果点击：mv → 直接播放
 const onSelectItem = (item) => {
@@ -119,6 +125,10 @@ onMounted(() => {
             <Loader2 v-if="searchLoading" :size="14" class="spin" />
             <Search v-else :size="14" />
             搜索
+        </button>
+        <button class="anime-source-btn" type="button" @click="openAnimeSource" title="打开动漫源">
+            <Film :size="14" />
+            动漫源
         </button>
         <button v-if="searchMode" class="back-btn" @click="exitSearch">返回</button>
     </div>
@@ -242,6 +252,25 @@ onMounted(() => {
     font-size: 13px;
     cursor: pointer;
     transition: all .2s;
+}
+.anime-source-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    border: 1px solid rgba(194, 12, 12, .22);
+    border-radius: 16px;
+    background: rgba(194, 12, 12, .06);
+    color: #a30a0a;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background .2s, border-color .2s, transform .2s;
+}
+.anime-source-btn:hover {
+    background: rgba(194, 12, 12, .12);
+    border-color: rgba(194, 12, 12, .38);
+    transform: translateY(-1px);
 }
 .mv-search-bar .back-btn:hover { border-color: #c20c0c; color: #c20c0c; }
 

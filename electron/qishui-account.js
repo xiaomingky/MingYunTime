@@ -65,9 +65,10 @@ export class QishuiAccount {
         const mobile = qishuiPhone(phone, countryCode)
         if (!['sms', 'voice'].includes(channel)) throw new QishuiError('invalid_channel', '验证码发送方式无效')
         return this.run(loginId, async login => {
+            if (this.client.passportRetryAt > this.client.now()) throw Object.assign(new QishuiError('passport_rate_limited', '汽水登录服务限制请求频率，请等待倒计时结束后重试'), { retryAt: this.client.passportRetryAt })
             for (const [number, until] of this.cooldowns) if (until <= this.client.now()) this.cooldowns.delete(number)
             if (this.cooldowns.get(mobile) > this.client.now()) {
-                const error = new QishuiError('send_cooldown', '请求过于频繁，请倒计时结束后重试')
+                const error = new QishuiError('send_cooldown', '验证码发送冷却中，请倒计时结束后重试')
                 error.retryAt = this.cooldowns.get(mobile)
                 throw error
             }
@@ -80,7 +81,11 @@ export class QishuiAccount {
             try {
                 response = await this.call(login, channel === 'voice' ? '/passport/web/send_voice_code/' : '/passport/web/send_code/', form)
                 this.error(response)
-            } catch (error) { error.retryAt = until; throw error }
+            } catch (error) {
+                error.retryAt = Math.max(until, Number(error.retryAt) || 0)
+                this.cooldowns.set(mobile, error.retryAt)
+                throw error
+            }
             merge(login.jar, response.headers?.['set-cookie'])
             return { sent: true, channel, retryAt: until, message: channel === 'voice' ? '语音验证码已发送，请留意手机来电' : '验证码已发送，请查看手机短信' }
         })

@@ -1,6 +1,7 @@
 import { NETEASE_OPERATION_ROUTES, neteaseOperation } from './netease-operations.js'
 import axios from 'axios'
 import QRCode from 'qrcode'
+import { createQrSession, neteaseQrRequest } from './netease-qr.js'
 import { NeteasePlayback } from './netease-playback.js'
 import { NETEASE_DIRECT_ROUTES } from '../src/api/netease-direct.js'
 
@@ -162,14 +163,15 @@ export class NeteaseClient {
         case '/top/song': { const data = await this.data('/api/v1/discovery/new/songs', { areaId: number(params.type, 0, 0, 100), total: true }, cookie); return { ...data, data: array(data.data, '新歌').map(neteaseTrack).filter(Boolean) } }
         case '/user/detail': return this.data('/api/v1/user/detail/' + id(params.uid), {}, cookie)
         case '/user/playlist': { const data = await this.data('/api/user/playlist', { uid: id(params.uid), offset: offset(), limit: limit(100,1000), includeVideo: true }, cookie); array(data.playlist, '用户歌单'); return data }
-        case '/login/status':
         case '/user/account': return this.data('/api/nuser/account/get', {}, cookie)
         case '/login/qr/key': {
             for (const [key, state] of this.qr) if (this.now() - state.time > 180000) this.qr.delete(key)
             if (this.qr.size >= 10) throw new Error('登录二维码创建过多，请稍后重试')
-            const data = await this.data('/api/login/qrcode/unikey', { type: 1 }, '')
+            const session = createQrSession()
+            const { body: data } = await neteaseQrRequest(this, '/api/login/qrcode/unikey', { type: 3 }, session)
+            if (data.code !== 200) throw new Error(data.message || '网易云二维码创建失败')
             if (typeof data.unikey !== 'string' || !/^[a-zA-Z0-9_-]{8,100}$/.test(data.unikey)) throw new Error('网易云未返回有效二维码标识')
-            this.qr.set(data.unikey, { time: this.now() })
+            this.qr.set(data.unikey, { time: this.now(), session })
             return { code: 200, data: { unikey: data.unikey } }
         }
         case '/login/qr/create': {
@@ -184,15 +186,15 @@ export class NeteaseClient {
             if (!state || this.now() - state.time > 180000) { this.qr.delete(key); return { code: 800, message: '二维码已过期，请刷新' } }
             if (state.pending) return state.pending
             state.pending = (async () => {
-                const result = await this.post('/api/login/qrcode/client/login', { key, type: 1 }, '')
+                const result = await neteaseQrRequest(this, '/api/login/qrcode/client/login', { key, type: 3 }, state.session)
                 if (this.qr.get(key) !== state) return { code: 800, message: '登录已取消' }
                 if (![800,801,802,803].includes(result.body.code)) throw new Error(result.body.message || '网易云扫码暂不可用')
                 if (result.body.code === 803) {
-                    const cookies = array(result.cookies, '登录 Cookie').map(value => value.split(';')[0]).join('; ')
+                    const cookies = state.session.cookie
                     if (!/(?:^|;\s*)MUSIC_U=/.test(cookies)) throw new Error('网易云未返回完整登录凭据，请重新扫码')
                     const account = await this.call('/login/status', {}, cookies)
                     if (this.qr.get(key) !== state) return { code: 800, message: '登录已取消' }
-                    if (!account.account?.id || !account.profile?.userId) throw new Error('网易云未确认有效登录，请重新扫码')
+                    if (!account.account?.id || !account.profile?.userId || String(account.account.id) !== String(account.profile.userId)) throw new Error('网易云未确认有效登录，请重新扫码')
                     this.qr.delete(key)
                     return { ...result.body, cookie: cookies, profile: account.profile }
                 }

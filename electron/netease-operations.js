@@ -52,10 +52,12 @@ export async function neteaseOperation(client, route, p, cookie) {
     const call = (path, data) => neteaseWebRequest(client, path, data, cookie)
     const limit = Number(p.limit || 30), offset = Number(p.offset || 0)
     switch (route) {
+    case '/login/status': return call('/api/w/nuser/account/get', {})
     case '/mv/all': return call('/api/mv/all', { tags: JSON.stringify({ 地区: p.area || '全部', 类型: p.type || '全部', 排序: p.order || '上升最快' }), limit, offset, total: true })
     case '/mv/url': return call('/api/song/enhance/play/mv/url', { id: id(p.id), r: Number(p.r || 1080) })
     case '/likelist': return call('/api/song/like/get', { uid: id(p.uid) })
-    case '/like': return call('/api/radio/like', { trackId: id(p.id), like: p.like !== false && p.like !== 'false', alg: 'itembased', time: 3 })
+    // Use the ordinary song-like contract and include the current account ID.
+    case '/like': return call('/api/song/like', { trackId: id(p.id), like: p.like !== false && p.like !== 'false', ...(p.uid ? { userid: id(p.uid) } : {}) })
     case '/comment/new': {
         const sortType = Number(p.sortType || 3) === 1 ? 99 : Number(p.sortType || 3)
         const pageNo = Number(p.pageNo || 1), pageSize = Number(p.pageSize || 20)

@@ -1344,21 +1344,36 @@ const playTypeForBili = (s) => {
 }
 
 const playVideo = (video) => {
+    const localEpisodes = localVideos.value.map(item => ({
+        id: item.id || item.path,
+        path: item.path,
+        title: item.name || item.path?.split(/[\\/]/).pop() || '本地视频',
+        name: item.name || item.path?.split(/[\\/]/).pop() || '本地视频',
+        url: item.url,
+        thumbnail: item.thumbnail || '',
+        duration: item.duration || 0,
+        format: item.format || ''
+    }))
+    const selectedEpisode = localEpisodes.find(item => item.path === video.path) || localEpisodes[0] || null
+    const selectedTitle = selectedEpisode?.title || video.name || video.path?.split(/[\\/]/).pop() || '本地视频'
     playerStore.currentSong = {
         id: video.id,
-        name: video.name,
+        name: selectedTitle,
         artist: video.format || '本地视频',
         al: { name: '本地视频', picUrl: '' },
-        duration: video.duration / 1000 || 0,
+        duration: Number(video.duration || 0) / 1000,
         url: video.url,
         path: video.path
     }
     playerStore.currentMvUrl = video.url
     playerStore.currentMvId = null
-    playerStore.currentMvTitle = video.name
+    playerStore.currentMvTitle = selectedTitle
     playerStore.currentMvAudioUrl = ''
     playerStore.currentMvDanmakuCid = null
     playerStore.currentMvPlayType = ''  // 本地视频走 direct
+    playerStore.currentMvLocalMode = true
+    playerStore.currentMvEpisodes = localEpisodes
+    playerStore.currentMvEpisode = selectedEpisode
     playerStore.showMvPlayer = true
     if (playerStore.isPlaying) {
         playerStore.audio.pause()

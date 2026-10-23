@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto'
 // APK 20.9.0.8 uses protocol version 20090008, not manifest versionCode 7458.
 const COMM = {ct:11,cv:20090008,v:20090008,tmeAppID:'qqmusic',tmeLoginMethod:'3',tmeLoginType:'0'}
 const phoneNumber = value => {const s=String(value||'').trim();if(!/^1[3-9]\d{9}$/.test(s))throw Error('请输入有效的中国大陆手机号');return s}
-const safeURL = value => {try{const u=new URL(value);return u.protocol==='https:' && /(^|\.)(qq\.com|tencent\.com)$/.test(u.hostname)?u.href:''}catch{return ''}}
+const safeURL = value => {try{const u=new URL(value);return u.protocol==='https:' && !u.username && !u.password && /(^|\.)(qq\.com|tencent\.com)$/.test(u.hostname)?u.href:''}catch{return ''}}
 export function qqNativeCookie(data) {
     const uin=String(data?.str_musicid || (Number.isSafeInteger(data?.musicid)?data.musicid:''))
     const key=String(data?.musickey||'')
@@ -32,7 +32,6 @@ export class QQNativeLogin {
         this.busy=true
         try {
             if(context)context.attempts++
-            if(action==='send'){this.globalRetryAt=this.now()+60000;this.cooldowns.set(phone,this.globalRetryAt)}
             const method=action==='send'?'SendPhoneAuthCode':'Login'
             const param=action==='send'?{tmeAppid:'qqmusic',phoneNo:phone,areaCode:'86'}:{code:String(params.code),phoneNo:phone,loginMode:1}
             const body=await this.client.send('https://u.y.qq.com/cgi-bin/musicu.fcg',{data:{comm:{...COMM,uin:'0',format:'json'},req:{module:'music.login.LoginServer',method,param}}})
@@ -42,8 +41,9 @@ export class QQNativeLogin {
             const valid=codes.every(value=>value===0)&&data&&typeof data==='object'&&!Array.isArray(data)
             const code=codes.find(value=>typeof value==='number'&&value!==0) || -1
             const securityURL=safeURL(data?.securityURL || data?.feedbackURL)
-            if(!valid||securityURL||data.errMsg||data.errtip) return {code,message:securityURL?'QQ 要求完成官方安全验证，请打开验证页后重新获取验证码':`QQ ${action==='send'?'验证码请求':'登录'}未通过（${code===-1?'响应异常':code}）`,securityURL,retryAt:this.globalRetryAt}
+            if(!valid||securityURL||data.errMsg||data.errtip) return {code,message:securityURL?'请完成 QQ 官方安全验证，然后点击“验证完成，继续发送”；尚未确认短信发送':`QQ ${action==='send'?'验证码请求':'登录'}未通过（${code===-1?'响应异常':code}）`,securityURL,retryAt:this.globalRetryAt}
             if(action==='send'){
+                this.globalRetryAt=this.now()+60000;this.cooldowns.set(phone,this.globalRetryAt)
                 this.contexts.clear();const contextId=randomUUID();this.contexts.set(contextId,{phone,expiresAt:this.now()+300000,attempts:0})
                 return {code:0,data:{contextId,retryAt:this.globalRetryAt,message:'验证码已发送，请查收短信'}}
             }

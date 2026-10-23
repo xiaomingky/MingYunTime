@@ -14,8 +14,8 @@ const hosts = [], results = [], fixtures = []
 const origin = 'https://api.qishui.com'
 const identity = { deviceId: '1234567890123456', installId: '123456789012345' }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
-const syntheticSDK = `window.bdms={init(){}}; window.ucSecondVerifyReact={};window.ucSecondVerifyReactDom={}; window.__test={renders:0,loads:[]};`
-const emptySecondarySDK = `window.bdms={init(){}}; window.__test={renders:0,loads:[]};`
+const syntheticSDK = `window._SdkGlueInit=(options,adapters)=>{window.__glueOptions=options;return adapters.bdms.init(options.bdms)};window.bdms={init(){}}; window.ucSecondVerifyReact={};window.ucSecondVerifyReactDom={}; window.__test={renders:0,loads:[]};`
+const emptySecondarySDK = `window._SdkGlueInit=(options,adapters)=>{window.__glueOptions=options;return adapters.bdms.init(options.bdms)};window.bdms={init(){}}; window.__test={renders:0,loads:[]};`
 const officialUMD = `window.__test.loads.push({kind:'umd',portrait:window.$$account_verify_portrait_id});window.ucSecondVerifyReact={};window.ucSecondVerifyReactDom={};`
 const captchaSDK = `window.verifySDK={initVerifyOptions:async options=>{window.__test.options=options},autoRender:options=>{window.__test.renders++;window.__test.render=options}};`
 const secondarySDK = `window.__test.loads.push({kind:'decision',portrait:window.$$account_verify_portrait_id,dependencies:!!(window.ucSecondVerifyReact&&window.ucSecondVerifyReactDom)});window.ucWebSecondVerify=options=>{window.__test.renders++;window.__test.secondary=options};`
@@ -44,8 +44,8 @@ app.whenReady().then(async () => {
         { host: 'api.qishui.com:444', path: '/verify.js' },
     ]) { assert.throws(() => qishuiVerifyResource(unsafe), /组件地址无效/); results.push('unsafe verification URL rejected: ' + (typeof unsafe === 'string' ? unsafe : JSON.stringify(unsafe))) }
     checked(qishuiVerifyResource({ host: 'lf-ucenter-web.yhgfb-cn-static.com', path: 'official.js' }) === 'https://lf-ucenter-web.yhgfb-cn-static.com/official.js', 'official secondary resource object resolves only within allowed HTTPS hosts')
-    function harness(route, timeout = 4000, secondaryGlobals = true) {
-        const records = [], unexpected = [], resources = [], host = new QishuiPassport({ identity, verificationTimeout: timeout, request: async () => ({ data: secondaryGlobals ? syntheticSDK : emptySecondarySDK }) })
+    function harness(route, timeout = 4000, secondaryGlobals = true, sdk = secondaryGlobals ? syntheticSDK : emptySecondarySDK) {
+        const records = [], unexpected = [], resources = [], host = new QishuiPassport({ identity, verificationTimeout: timeout, request: async () => ({ data: sdk }) })
         // Every host in this test starts from an independent in-memory snapshot.
         host.security = { cookies: [], storage: {} }
         host.securityFile = path.join(testRoot, 'security-' + hosts.length + '.enc')
@@ -71,6 +71,32 @@ app.whenReady().then(async () => {
         }
         hosts.push(host)
         const fixture = { host, records, unexpected, resources }; fixtures.push(fixture); return fixture
+    }
+
+    const environment = harness(() => success)
+    await environment.host.request('environment', spec('sms_login', { params: { aid: 386088, account_sdk_source_info: '00' } }))
+    const environmentEntry = environment.host.sessions.get('environment')
+    const bootstrap = await evaluate(environmentEntry, 'window.__glueOptions')
+    checked(bootstrap.self.aid === 386088 && bootstrap.self.pageId === 24554 && bootstrap.bdms.paths[0] === '/passport', 'official bootstrap receives matching application, page and Passport signing paths')
+    checked(!Object.keys(environment.records[0].headers).some(name => /^(origin|referer)$/i.test(name)), 'Passport transport removes Chromium automatic Origin and Referer like the official desktop request hook')
+    const encoded = environment.records[0].url.searchParams.get('account_sdk_source_info')
+    const info = JSON.parse(Buffer.from(encoded.match(/.{2}/g).map(hex => parseInt(hex, 16) ^ 5)).toString('utf8'))
+    const actual = await evaluate(environmentEntry, '({hardwareConcurrency:navigator.hardwareConcurrency,webdriver:navigator.webdriver,plugins:navigator.plugins.length,innerHeight,innerWidth,outerHeight,outerWidth,host:location.host,path:location.pathname,ua:navigator.userAgent})')
+    checked(encoded !== '00' && info.hardwareConcurrency === actual.hardwareConcurrency && info.webdriver === actual.webdriver && info.plugins === actual.plugins, 'Passport replaces placeholder source info with actual sandbox browser properties')
+    checked(info.innerHeight > 0 && info.innerWidth > 0 && info.outerHeight === actual.outerHeight && info.outerWidth === actual.outerWidth && info.request_host === actual.host && info.request_pathname === actual.path, 'environment snapshot contains real window dimensions and the exact request origin')
+    checked(!actual.ua.includes('Chrome/136.') && !actual.ua.includes('Electron/36.'), 'Passport uses the running Chromium user agent instead of obsolete fixed versions')
+    await environment.host.request('environment', spec())
+    checked(environment.records[1].url.searchParams.get('account_sdk_source_info') === encoded, 'subsequent QR and SMS requests reuse the same renderer environment snapshot')
+    checked(Array.isArray(info.permissions) && info.stoargeStatus && info.performance && typeof info.chromedriver === 'boolean' && typeof info.shelldriver === 'boolean' && typeof info.browser.bit_helper === 'boolean', 'Passport includes real permission, storage, performance and browser integrity properties')
+    await environment.host.closeAll()
+    for (const [label, sdk, expected] of [
+        ['HTML error page', '<!doctype html><html>unavailable</html>', 'security_sdk_response'],
+        ['missing export', 'window.anotherSDK = {};', 'security_sdk_init'],
+        ['initialization rejected', 'window._SdkGlueInit=(options,adapters)=>adapters.bdms.init(options.bdms);window.bdms={init:async()=>{throw Error("synthetic")}};', 'security_sdk_init'],
+    ]) {
+        const broken = harness(() => success, 4000, true, sdk)
+        const result = await observe(broken.host.request('broken', spec('sms_login')))
+        checked(result.error?.code === expected && broken.records.length === 0 && broken.host.sessions.size === 0 && broken.host.sdkPromise === null, label + ': initialization fails before login requests and clears the failed SDK cache')
     }
 
     const slider = harness((_request, rows) => rows.length === 1 ? captcha : success)

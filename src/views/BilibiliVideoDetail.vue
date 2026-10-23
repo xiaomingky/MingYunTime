@@ -66,6 +66,7 @@ const episodes = computed(() => {
         title: `P${p.page} ${p.part}`,
         page: p.page,
         part: p.part,
+        thumbnail: p.first_frame || video.value?.pic || '',
         cid: p.cid,
         duration: p.duration
     }))
@@ -94,6 +95,7 @@ const pgcEpisodes = computed(() => seasonEps.value.map(ep => ({
     title: ep.longTitle ? `第${ep.title}话 ${ep.longTitle}` : `第${ep.title}话`,
     cid: ep.cid,
     epId: ep.epId,
+    thumbnail: ep.cover || season.value?.cover || '',
     duration: ep.duration
 })))
 
@@ -1030,6 +1032,8 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                     <ArtVideoPlayer
                         v-if="playUrl && !playerError"
                         :src="playUrl"
+                        :episode-title="pageTitle"
+                        :episode-cover="isPgcMode ? season?.cover : video?.pic"
                         play-type="direct"
                         :audio-url="dashAudioUrl"
                         :qualities="biliQualities"

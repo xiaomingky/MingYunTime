@@ -144,6 +144,9 @@ export const usePlayerStore = defineStore('player', {
         currentMvAudioUrl: '', // DASH 音视频分离时的音频地址（下载时合并用）
         currentMvPlayType: '', // 播放类型提示：m3u8/flv/live/direct，优先于 URL 后缀判断
         currentMvDanmakuCid: null, // B站流的 cid（网址解析播放时按 cid 拉取弹幕；其他来源为 null）
+        currentMvLocalMode: false,
+        currentMvEpisodes: [],
+        currentMvEpisode: null,
         mvSearchCandidates: [], // 网易云 MV 搜索结果（供 UI 选择）
         showMvSearchPicker: false, // 是否显示 MV 选择弹层
         // 启动时默认不自动开启桌面歌词（即使上次开启过），需用户手动点击开关
@@ -283,10 +286,8 @@ export const usePlayerStore = defineStore('player', {
                     this.updateDesktopLyricsState()
                 }
             }
-            this.audio.onended = () => {
-                this._nextPreloaded = false
-                this.next()
-            }
+            const replacementAudio = this.audio
+            replacementAudio.onended = () => this._handleAudioEnded(replacementAudio)
             this.audio.onerror = (e) => {
                 if (e.target !== this.audio) return
                 console.error('Audio error:', e)
@@ -315,6 +316,7 @@ export const usePlayerStore = defineStore('player', {
         _bindPlaybackStateEvents(audio) {
             audio.addEventListener('play', () => {
                 if (this.audio !== audio || audio.paused) return
+                if (this._endingAudio === audio) this._endingAudio = null
                 this.isPlaying = true
                 this._setMediaSessionPlaybackState('playing')
             })
@@ -323,6 +325,13 @@ export const usePlayerStore = defineStore('player', {
                 this.isPlaying = false
                 this._setMediaSessionPlaybackState('paused')
             })
+        },
+        _handleAudioEnded(audio) {
+            if (this.audio !== audio || !audio?.ended || this.playbackLoading || this._endingAudio === audio) return false
+            this._endingAudio = audio
+            this._nextPreloaded = false
+            this.next()
+            return true
         },
         _hasAudioSource(audio = this.audio) {
             return !!audio?.getAttribute?.('src')
@@ -511,7 +520,8 @@ export const usePlayerStore = defineStore('player', {
                     this.updateDesktopLyricsState()
                 }
             }
-            this.audio.onended = () => { this._nextPreloaded = false; this.next() }
+            const replacementAudio = this.audio
+            replacementAudio.onended = () => this._handleAudioEnded(replacementAudio)
             this.audio.onerror = (e) => {
                 if (e.target !== this.audio) return
                 console.error('Audio error:', e)
@@ -1108,6 +1118,10 @@ export const usePlayerStore = defineStore('player', {
                     this.playbackLoading = false
                 } catch (error) {
                     if (!isCurrentRequest()) return
+                    if (!options.forceResolve && !isLocal && !isCloud) {
+                        console.warn('[Playback] Stream failed; retrying once with a fresh URL:', error.message)
+                        return this.playSong(song, [], { ...options, forceResolve: true, suppressQualityPrompt: true })
+                    }
                     this.isPlaying = false
                     this.currentSong.streamError = '音源加载或解码失败，请更换音质后重试'
                     console.error('Playback fail:', error)
@@ -1654,21 +1668,16 @@ export const usePlayerStore = defineStore('player', {
             const user = useUserStore()
             if (!user.isLoggedIn) { useMessageStore().warning('请先登录后再进行收藏'); return }
 
-            const newStatus = !this.isLiked
             try {
-                const res = await request.get('/like', {
-                    params: {
-                        id: this.currentSong.id,
-                        like: newStatus,
-                        timestamp: Date.now()
-                    }
-                })
-                if (res.code === 200) {
+                const songId = this.currentSong.id
+                const newStatus = !this.isLiked
+                if (await user.setSongLiked(songId, newStatus)) {
+                    if (String(this.currentSong.id) !== String(songId)) return
                     this.isLiked = newStatus
-                    user.toggleLike(this.currentSong.id, newStatus)
+                    useMessageStore().success(newStatus ? '已添加到我喜欢的音乐' : '已取消喜欢')
                 }
             } catch (e) {
-                console.error('Like failed:', e)
+                useMessageStore().error(e.message || '喜欢状态更新失败，请重试')
             }
         },
         updateFrequencyData() {

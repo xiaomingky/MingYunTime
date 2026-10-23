@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { movieDetail, movieParsePlayUrl, downloadVideo } from '../api'
 import { useMessageStore } from '../store/message'
 import ArtVideoPlayer from '../components/ArtVideoPlayer.vue'
+import VideoEpisodeDrawer from '../components/VideoEpisodeDrawer.vue'
 import PlayDisclaimer from '../components/PlayDisclaimer.vue'
 import {
     ChevronLeft, Loader2, Film, RefreshCw, Download
@@ -21,6 +22,7 @@ const detail = ref(null)
 
 const currentRouteIdx = ref(0)
 const currentEpisode = ref(null)
+const showFrameEpisodes = ref(false)
 
 const routes = computed(() => detail.value?.routes || [])
 const currentRoute = computed(() => routes.value[currentRouteIdx.value])
@@ -249,6 +251,8 @@ const handleDownloadEpisode = async () => {
                     <ArtVideoPlayer
                         v-if="playUrl && playType === 'm3u8'"
                         :src="playUrl"
+                        :episode-title="detail?.title || ''"
+                        :episode-cover="detail?.cover || ''"
                         play-type="m3u8"
                         :badge="currentEpisode ? `正在播放：${currentEpisode.title}` : ''"
                         :episodes="episodes"
@@ -271,6 +275,11 @@ const handleDownloadEpisode = async () => {
                         referrerpolicy="no-referrer"
                         @load="onIframeLoad"
                     ></iframe>
+                    <template v-if="playUrl && playType !== 'm3u8' && !playerError">
+                        <button class="frame-episode-toggle" @click="showFrameEpisodes = true">选集</button>
+                        <VideoEpisodeDrawer :open="showFrameEpisodes" :episodes="episodes" :current-episode="currentEpisode" :title="detail?.title || ''" :cover="detail?.cover || ''" @close="showFrameEpisodes = false" @select="showFrameEpisodes = false; playEpisode($event)" />
+                    </template>
+
 
                     <!-- iframe 模式加载遮罩 -->
                     <div v-if="playerLoading && playType !== 'm3u8'" class="player-mask">

@@ -71,6 +71,7 @@ export const useSearchHistoryStore = defineStore('searchHistory', () => {
     // 音乐模块按平台细分(music-netease/music-kugou/music-qq),热门词回退到 music
     function getHotKeywords(module) {
         if (module && module.startsWith('music-')) return HOT_KEYWORDS['music'] || []
+        if (module === 'anime-source') return HOT_KEYWORDS.anime
         return HOT_KEYWORDS[module] || []
     }
 

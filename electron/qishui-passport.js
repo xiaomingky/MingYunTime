@@ -7,7 +7,7 @@ import { qishuiChallenge, qishuiVerifyResource, installQishuiVerification } from
 const ORIGIN = 'https://api.qishui.com'
 const BOOTSTRAP = ORIGIN + '/__mingyun_passport_sdk__'
 const SDK = 'https://lf-c-flwb.bytetos.com/obj/rc-client-security/web/stable/1.0.0.41/bdms.js'
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) SodaMusic/3.7.0 Chrome/136.0.7103.59 Electron/36.4.0 Safari/537.36'
+const GLUE = 'https://lf-headquarters-speed.yhgfb-cn-static.com/obj/rc-client-security/web/glue/1.0.0.36/sdk-glue.js'
 const SECURITY_COOKIES = new Set(['msToken', 's_v_web_id', 'ttwid', 'odin_tt', '__ac_nonce', '__ac_signature'])
 const SECURITY_STORAGE = new Set(['s_v_web_id', 'xmst', 'bdms'])
 const HTML = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>汽水音乐安全验证</title><style>body{margin:0;padding:32px;background:#f5f5f7;color:#222;font:15px system-ui}h1{font-size:22px}#qishui-verify-status{line-height:1.8}</style><h1>汽水音乐安全验证</h1><p id="qishui-verify-status">正在准备安全验证…</p>'
@@ -18,6 +18,48 @@ const businessParams = value => {
         try { value = JSON.parse(value) } catch { return {} }
     }
     return value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
+}
+
+// Runs in the same sandbox as Passport's XHR and security SDK. Report actual
+// Chromium values; never substitute invented device or automation attributes.
+async function passportBrowserInfo() {
+    const permissions = []
+    try { const result = await navigator.permissions.query({ name: 'notifications' }); permissions.push({ name: result.name || 'notifications', state: result.state }) } catch {}
+    let storageQuotaStatus = {}, localStorageStatus = {}, webgl = {}
+    try { const { usage, quota } = await navigator.storage.estimate(); storageQuotaStatus = { usage, quota, isPrivate: quota && quota < 120000000 } } catch {}
+    try {
+        const key = '__mingyun_storage_probe__', previous = localStorage.getItem(key)
+        let write = false
+        try { localStorage.setItem(key, '1'); write = localStorage.getItem(key) === '1' }
+        finally { if (previous === null) localStorage.removeItem(key); else localStorage.setItem(key, previous) }
+        localStorageStatus = { isSupportLStorage: write, write, size: Object.keys(localStorage).reduce((size, key) => size + localStorage.getItem(key).length, 0) }
+    } catch { localStorageStatus = { isSupportLStorage: false, write: false, size: -1 } }
+    try {
+        const gl = document.createElement('canvas').getContext('webgl'), extension = gl?.getExtension('WEBGL_debug_renderer_info')
+        if (extension) webgl = { vendor: gl.getParameter(extension.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(extension.UNMASKED_RENDERER_WEBGL) }
+        gl?.getExtension('WEBGL_lose_context')?.loseContext()
+    } catch {}
+    const driverPrefix = 'cdc_adoQpoasnfa76pfcZLmcfl'
+    const chromedriver = ['Array', 'Object', 'Promise', 'Proxy', 'Symbol', 'JSON'].some(name => Object.hasOwn(window, driverPrefix + '_' + name) || window[driverPrefix + '_' + name] === window[name]) || '$cdc_asdjflasutopfhvcZLmcfl_' in document
+    let shelldriver = false
+    try { shelldriver = !navigator.language || !Array.isArray(navigator.languages) || !navigator.languages.length || !navigator.plugins.length || !navigator.mimeTypes.length || Object.getPrototypeOf(navigator.plugins[0]) !== Plugin.prototype || Object.getPrototypeOf(navigator.plugins) !== PluginArray.prototype || navigator.plugins[0][Symbol.toStringTag] !== 'Plugin' } catch {}
+    const navigation = performance.getEntries()[0] || {}
+    const playDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'play')
+    return {
+        hardwareConcurrency: navigator.hardwareConcurrency,
+        webdriver: navigator.webdriver || /headless/i.test(navigator.userAgent),
+        chromedriver, shelldriver,
+        plugins: navigator.plugins.length,
+        permissions,
+        innerHeight, innerWidth, outerHeight, outerWidth,
+        stoargeStatus: { indexedDB: { idb: typeof indexedDB, open: typeof indexedDB?.open, indexedDB: typeof indexedDB, IDBKeyRange: typeof IDBKeyRange, openDatabase: typeof openDatabase, isSafari: /(Safari|iPhone|iPad|iPod)/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent) && !/BlackBerry/.test(navigator.platform), hasFetch: typeof fetch === 'function' && fetch.toString().includes('[native code') }, localStorage: localStorageStatus, storageQuotaStatus },
+        webgl,
+        notificationPermission: typeof Notification === 'function' ? Notification.permission : 'none',
+        performance: { timeOrigin: performance.timeOrigin, usedJSHeapSize: performance.memory?.usedJSHeapSize || 'unsupport', navigationTiming: { decodedBodySize: navigation.decodedBodySize, entryType: navigation.entryType, initiatorType: navigation.initiatorType, name: navigation.name, renderBlockingStatus: navigation.renderBlockingStatus, serverTiming: (navigation.serverTiming || []).map(item => item.name).join(','), guleStart: performance.getEntriesByName('script_glue_start')[0]?.startTime || 'none', guleDuration: performance.getEntriesByName('scriptGlueDuration')[0]?.duration || 'none' } },
+        request_host: location.host,
+        request_pathname: location.pathname,
+        browser: { t: String(Date.now()).split('').reverse().join(''), bit_protocol: '', bit_helper: HTMLMediaElement.prototype.play.name !== 'play' || playDescriptor?.writable === false },
+    }
 }
 
 // Each login keeps an independent anonymous jar. Only known device/security state
@@ -37,15 +79,24 @@ export class QishuiPassport {
     }
     async sdk() {
         if (!this.sdkPromise) this.sdkPromise = this.requestSDK({ url: SDK, method: 'GET', timeout: 15000 })
-            .then(response => {
-                if (typeof response.data !== 'string' || !response.data.includes('window.bdms')) throw new Error('汽水官方安全组件返回无效')
-                return response.data
+            .then(async response => {
+                if (typeof response.data !== 'string' || !response.data.trim() || /^\s*<(?:!doctype|html)\b/i.test(response.data)) throw failure('security_sdk_response', '汽水安全组件下载结果无效，请检查网络后重试')
+                const glue = await this.requestSDK({ url: GLUE, method: 'GET', timeout: 15000 })
+                if (typeof glue.data !== 'string' || !glue.data.trim() || /^\s*<(?:!doctype|html)\b/i.test(glue.data)) throw failure('security_sdk_response', '汽水安全引导组件下载结果无效，请检查网络后重试')
+                return glue.data + '\n;\n' + response.data
             }).catch(error => { this.sdkPromise = null; throw error })
         return this.sdkPromise
     }
     async create(id) {
         const isolated = session.fromPartition('qishui-passport-' + randomUUID())
-        isolated.setUserAgent(UA)
+        // Official desktop transport removes renderer Origin/Referer before all
+        // requests, including Passport. Do this after Chromium constructs them;
+        // filtering the XHR input headers alone cannot remove automatic headers.
+        isolated.webRequest.onBeforeSendHeaders({ urls: ['https://*.qishui.com/*', 'https://auth.zijieapi.com/*'] }, (details, callback) => {
+            const requestHeaders = { ...details.requestHeaders }
+            for (const name of Object.keys(requestHeaders)) if (/^(origin|referer)$/i.test(name)) delete requestHeaders[name]
+            callback({ requestHeaders })
+        })
         isolated.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
         isolated.setPermissionCheckHandler(() => false)
         isolated.protocol.handle('https', request => request.url === BOOTSTRAP
@@ -77,8 +128,24 @@ export class QishuiPassport {
         return entry.promise
     }
     async installRenderer(entry, code) {
-        await entry.window.webContents.executeJavaScript(code)
-        await entry.window.webContents.executeJavaScript('window.bdms.init({aid:386088,paths:["/passport"]})')
+        entry.browserInfo = null
+        try {
+            await entry.window.webContents.executeJavaScript(code)
+            await entry.window.webContents.executeJavaScript(`(async () => {
+                if (typeof window.bdms?.init !== 'function') throw new Error('Missing security SDK export');
+                if (typeof window._SdkGlueInit !== 'function') throw new Error('Missing security bootstrap export');
+                let initialized;
+                window._SdkGlueInit({self:{aid:386088,pageId:24554},bdms:{aid:386088,paths:["/passport"]}}, {bdms:{
+                    isLoaded:()=>true,
+                    init:options=>{initialized=Promise.resolve(window.bdms.init(options));return initialized}
+                }});
+                if (!initialized) throw new Error('Security bootstrap did not initialize signing');
+                await initialized;
+            })()`)
+        } catch {
+            this.sdkPromise = null
+            throw failure('security_sdk_init', '汽水安全组件初始化失败，请重试；若持续出现，请使用官方客户端登录')
+        }
         await entry.window.webContents.executeJavaScript(`(${installQishuiVerification.toString()})()`)
     }
     async request(id, options) {
@@ -114,6 +181,13 @@ export class QishuiPassport {
         if (target.protocol !== 'https:' || target.username || target.password || !['api.qishui.com', 'bff-pc.qishui.com', 'auth.zijieapi.com'].includes(target.hostname)) throw new Error('汽水登录请求地址无效')
         for (const [key, value] of Object.entries(params)) target.searchParams.set(key, String(value))
         if (this.sessions.get(id) !== entry || entry.window.isDestroyed()) throw failure('cancelled', '汽水登录已取消')
+        if (target.pathname.startsWith('/passport/')) {
+            const info = entry.browserInfo || await entry.window.webContents.executeJavaScript(`(${passportBrowserInfo.toString()})()`)
+            entry.browserInfo = info
+            // Passport's source-info wire encoding is UTF-8 bytes XOR 5 in hex.
+            const encoded = [...Buffer.from(JSON.stringify(info), 'utf8')].map(byte => (byte ^ 5).toString(16)).join('')
+            target.searchParams.set('account_sdk_source_info', encoded)
+        }
         // Cookie and user agent headers belong to Chromium's isolated jar.
         const safeHeaders = Object.fromEntries(Object.entries(headers).filter(([name]) => !/^(cookie|host|user-agent|origin|referer)$/i.test(name)))
         const cookiesForOrigin = await entry.session.cookies.get({ url: ORIGIN })
@@ -127,7 +201,7 @@ export class QishuiPassport {
                 const spec=${JSON.stringify(spec)}, xhr=new XMLHttpRequest();
                 xhr.open(spec.method,spec.url,true);xhr.withCredentials=true;xhr.timeout=15000;
                 for(const [name,value] of Object.entries(spec.headers)) xhr.setRequestHeader(name,String(value));
-                xhr.onload=()=>resolve({status:xhr.status,text:xhr.responseText});
+                xhr.onload=()=>resolve({status:xhr.status,text:xhr.responseText,retryAfter:xhr.getResponseHeader('Retry-After')});
                 xhr.onerror=()=>reject(new Error('汽水登录网络请求失败'));
                 xhr.ontimeout=()=>reject(new Error('汽水登录请求超时'));xhr.send(spec.body);
             })`)
@@ -141,7 +215,7 @@ export class QishuiPassport {
         const cookies = await entry.session.cookies.get({})
         const allowedCookies = cookies.filter(cookie => /(^|\.)qishui\.com$/.test(cookie.domain.replace(/^\./, '')))
         return { status: response.status, data: payload,
-            headers: { 'set-cookie': allowedCookies.map(cookie => `${cookie.name}=${cookie.value};`) } }
+            headers: { ...(response.retryAfter ? { 'retry-after': response.retryAfter } : {}), 'set-cookie': allowedCookies.map(cookie => `${cookie.name}=${cookie.value};`) } }
     }
     async verify(id, entry, challenge, spec) {
         if (entry.verifying) return entry.verifying

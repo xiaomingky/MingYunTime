@@ -105,6 +105,8 @@ function goUserSpace(uid) {
                 <ArtVideoPlayer
                     v-if="streamUrl"
                     :src="streamUrl"
+                    :episode-title="live.title || '直播间'"
+                    :episode-cover="live.cover || ''"
                     play-type="flv"
                     autoplay
                 />

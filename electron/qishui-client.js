@@ -156,6 +156,7 @@ export class QishuiClient {
         this.pcRequest = pcRequest
         this.passportRequest = passportRequest; this.passportClose = passportClose
         this.cookie = load() || ''; this.logins = new Map()
+        this.passportRetryAt = 0; this.passportRateCount = 0
         const digits = length => Array.from({ length }, (_, index) => String(randomInt(index ? 0 : 1, 10))).join('')
         this.identity = identity || { deviceId:digits(16), installId:digits(15) }
     }
@@ -262,21 +263,33 @@ export class QishuiClient {
         return { isLoggedIn: true, profile }
     }
     async passportCall(login, path, { method = 'GET', params = {}, data } = {}) {
+        if (this.passportRetryAt > this.now()) throw Object.assign(new QishuiError('passport_rate_limited', '汽水登录服务限制请求频率，请等待倒计时结束后重试'), { retryAt: this.passportRetryAt })
         const traceId = randomBytes(8).toString('hex')
         const query = { ...passport, language: 'zh', account_sdk_source: 'web', p_js_v: '2.4.13', p_js_t: 'pro',
             p_zt: '0', p_ver: '1.0.29', request_host: encodeURIComponent(PC), p_bd: '1.0.0.41',
             biz_trace_id: traceId, is_new_login: '1', is_from_iesaccountsaas: '1',
             device_id: login.deviceId, install_id: login.installId, did: login.deviceId, iid: login.installId,
-            device_platform: 'PC', version_code: '3.7.0', account_sdk_source_info: '00', ...params }
+            device_platform: 'PC', version_code: '3.7.0', ...params }
         const headers = { Accept: 'application/json, text/javascript',
             'x-tt-passport-verify-portrait': login.portrait, 'x-tt-passport-trace-id': traceId }
         if (data !== undefined) {
             headers['Content-Type'] = 'application/x-www-form-urlencoded'
             headers['x-ss-stub'] = createHash('md5').update(data).digest('hex').toUpperCase()
         }
-        if (this.passportRequest) return this.passportRequest(login.id, { url: PC + path, method, params: query, data, headers })
-        return this.request({ url: PC + path, method, params: query, data, timeout: 15000,
-            headers: { ...headers, 'User-Agent': UA, Cookie: cookieString(login.jar) } })
+        const response = this.passportRequest
+            ? await this.passportRequest(login.id, { url: PC + path, method, params: query, data, headers })
+            : await this.request({ url: PC + path, method, params: query, data, timeout: 15000, headers: { ...headers, 'User-Agent': UA, Cookie: cookieString(login.jar) } })
+        const payload = response.data?.data, errorCode = Number(payload?.error_code ?? response.data?.error_code ?? 0)
+        const description = String(payload?.description || payload?.message || response.data?.description || '')
+        if (response.status === 429 || (errorCode !== 0 && /频繁|频率|too many|rate.?limit/i.test(description))) {
+            this.passportRateCount++
+            const header = response.headers?.['retry-after']
+            const retryAfter = header === undefined ? 0 : /^\d+(?:\.\d+)?$/.test(String(header)) ? this.now() + Number(header) * 1000 : Date.parse(header)
+            this.passportRetryAt = Math.max(this.now() + Math.min(300000, 60000 * 2 ** Math.min(this.passportRateCount - 1, 3)), Number.isFinite(retryAfter) ? retryAfter : 0)
+            throw Object.assign(new QishuiError('passport_rate_limited', '汽水登录服务限制请求频率，请等待倒计时结束后重试'), { retryAt: this.passportRetryAt })
+        }
+        if (response.data?.message === 'success' && errorCode === 0) this.passportRateCount = 0
+        return response
     }
     beginLogin(kind = 'qr', lifetime = 180000) {
         for (const [id, login] of this.logins) if (login.expiresAt < this.now()) this.qrCancel(id)
@@ -323,8 +336,9 @@ export class QishuiClient {
         const login = this.logins.get(id)
         if (login && login.kind !== 'qr') throw new QishuiError('invalid_login', '请使用对应的登录方式')
         if (!login || login.expiresAt <= this.now()) { this.qrCancel(id); return { status: 'expired' } }
+        if (this.passportRetryAt > this.now()) return { status: 'rate_limited', retryAt: this.passportRetryAt, message: '汽水服务端限制了状态查询，已停止自动请求；冷却结束后可手动重新登录' }
         if (login.busy || login.cooldownUntil > this.now()) return { status: login.lastStatus || 'waiting' }
-        if (this.passportRequest && this.now() - login.lastCheckAt < 2500) return { status: login.lastStatus || 'waiting' }
+        if (this.passportRequest && this.now() - login.lastCheckAt < 5000) return { status: login.lastStatus || 'waiting' }
         login.lastCheckAt = this.now()
         login.busy = true
         try {
@@ -334,10 +348,12 @@ export class QishuiClient {
             if (this.logins.get(id) !== login || this.revision !== login.revision) return { status: 'cancelled' }
             if (login.expiresAt <= this.now()) { this.qrCancel(id); return { status: 'expired' } }
             const p = res.data?.data, code = Number(p?.error_code || 0)
-            if (code === 7) { login.cooldownUntil = this.now() + 5000; return { status: login.lastStatus || 'waiting', message: '正在等待汽水 App 确认，请稍候' } }
             if (code === 2 || String(p?.status) === 'expired') { this.qrCancel(id); return { status: 'expired' } }
             if (p?.verify_center_decision_conf || p?.verify_center_secondary_decision_conf || [1105,2032,2046].includes(code)) return { status: 'verification_required', message: '汽水安全验证尚未完成，请刷新后完成弹出的验证窗口' }
-            if (res.data?.message !== 'success' || !p || code !== 0) throw new QishuiError('qr_rejected', p?.description || '登录二维码已失效，请刷新')
+            if (res.data?.message !== 'success' || !p || code !== 0) {
+                const description = typeof p?.description === 'string' ? p.description.slice(0, 160) : ''
+                throw new QishuiError('qr_rejected', code !== 0 ? `汽水扫码状态查询失败（${code}）：${description || '服务端拒绝请求，请刷新二维码重试'}` : description || '登录二维码已失效，请刷新')
+            }
             mergeCookies(login.jar, res.headers?.['set-cookie'])
             const state = String(p.status || 'waiting').toLowerCase()
             login.lastStatus = state === '1' ? 'new' : state === '2' ? 'scanned' : state
@@ -363,6 +379,9 @@ export class QishuiClient {
             }
             if (state === 'cancelled') this.qrCancel(id)
             return { status: login.lastStatus }
+        } catch (error) {
+            if (error.code === 'passport_rate_limited') return { status: 'rate_limited', retryAt: error.retryAt, message: error.message }
+            throw error
         } finally { login.busy = false }
     }
     qrCancel(id) {

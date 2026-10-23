@@ -51,8 +51,8 @@ const flow = new QishuiClient({ identity, now: () => now, save: value => { saved
     passportClose: id => { closed.push(id) }, passportRequest: async (id, spec) => {
         passportCalls.push({ id, ...spec })
         if (spec.url.includes('get_qrcode')) return { data: { message: 'success', data: { token: 'secret-token', qrcode: 'unused-old-image', qrcode_index_url: scanURL, expire_time: 180 } }, headers: { 'set-cookie': ['flow=isolated;'] } }
-        const data = qrMode === 'limited' ? { error_code: 7 } : qrMode === 'verify' ? { error_code: 2046 } : { status: qrMode, error_code: 0 }
-        return { data: { message: 'success', data }, headers: qrMode === '3' ? { 'set-cookie': ['sessionid_ss=test-session;'] } : {} }
+        const data = qrMode === 'rejected' ? { error_code: 7, description: '安全组件无效' } : qrMode === 'verify' ? { error_code: 2046 } : { status: qrMode, error_code: 0 }
+        return { status: qrMode === 'limited' ? 429 : 200, data: { message: 'success', data }, headers: qrMode === '3' ? { 'set-cookie': ['sessionid_ss=test-session;'] } : {} }
     } })
 const qr = await flow.qrCreate()
 const officialScan = new URL('https://bff-pc.qishui.com/light/invoke/scan_login')
@@ -71,17 +71,33 @@ check(poll.params.device_id === identity.deviceId && poll.params.install_id === 
 check(/^[0-9A-F]{32}$/.test(poll.headers['x-ss-stub']) && new URLSearchParams(poll.data).get('token') === 'secret-token', 'poll has real token form and uppercase MD5 body stub')
 await flow.qrCheck(qr.loginId)
 check(passportCalls.at(-1) === poll, 'fast duplicate polls respect 2.5 second minimum')
-now += 2600; qrMode = 'limited'
-check((await flow.qrCheck(qr.loginId)).status === 'new', 'error 7 keeps flow alive instead of expiring it')
-const limitedCount = passportCalls.length; now += 2600; await flow.qrCheck(qr.loginId)
-check(passportCalls.length === limitedCount, 'rate limit cools down for five seconds')
-now += 2600; qrMode = 'verify'
+now += 5100; qrMode = 'rejected'
+await assert.rejects(flow.qrCheck(qr.loginId), error => error.code === 'qr_rejected' && error.message.includes('（7）') && error.message.includes('安全组件无效')); checks++
+check(!saved && flow.logins.has(qr.loginId), 'rejected QR polling cannot claim confirmation or save a session')
+now += 5100; qrMode = 'limited'
+const limited = await flow.qrCheck(qr.loginId)
+check(limited.status === 'rate_limited' && limited.retryAt === now + 60000, 'HTTP 429 pauses QR polling for a minute')
+await assert.rejects(flow.qrCreate(), error => error.code === 'passport_rate_limited' && error.retryAt === limited.retryAt); checks++
+const phoneDuringLimit = flow.beginLogin('phone')
+await assert.rejects(flow.passportCall(phoneDuringLimit, '/passport/web/send_code/'), error => error.code === 'passport_rate_limited'); checks++
+const limitedCount = passportCalls.length; now += 5100; await flow.qrCheck(qr.loginId)
+check(passportCalls.length === limitedCount, 'cooldown suppresses requests without a new network call')
+const blockedStatus = await flow.qrCheck(qr.loginId)
+check(blockedStatus.status === 'rate_limited' && blockedStatus.message.includes('手动重新登录') && !blockedStatus.message.includes('自动重试'), 'backend reports stopped requests without promising automatic retries')
+now = limited.retryAt + 1; qrMode = 'verify'
 check((await flow.qrCheck(qr.loginId)).status === 'verification_required', 'additional verification is explicit, never fake login')
-now += 2600; qrMode = '3'
+now += 5100; qrMode = '3'
 check((await flow.qrCheck(qr.loginId)).status === 'confirmed' && saved.includes('sessionid_ss=test-session'), 'numeric confirmed state and secure session cookie validate before persistence')
 check(profileCookie.includes('sessionid_ss=test-session'), 'authenticated profile is validated through the signed PC provider')
 await Promise.resolve()
 check(closed.includes(qr.loginId) && flow.logins.size === 0, 'successful login releases its browser jar')
+qrMode = 'rejected'
+const oldPassport = flow.passportRequest
+flow.passportRequest = async () => ({status:200,data:{message:'error',data:{error_code:7,description:'访问太频繁，请稍后再试'}},headers:{'retry-after':'120'}})
+const rateFlow = flow.beginLogin('phone')
+await assert.rejects(flow.passportCall(rateFlow, '/passport/web/sms_login/'), error => error.code === 'passport_rate_limited' && error.retryAt === now + 120000); checks++
+flow.passportRequest = oldPassport
+now = flow.passportRetryAt + 1
 const nextFlow = flow.beginLogin('phone'), repeatedFlow = flow.beginLogin('qr')
 check(nextFlow.deviceId === identity.deviceId && repeatedFlow.installId === identity.installId && nextFlow.id !== repeatedFlow.id && nextFlow.jar !== repeatedFlow.jar, 'different phone and QR attempts retain device identity while separating login grants and cookies')
 flow.clearLogins()
@@ -125,6 +141,10 @@ await ui.startSodaLogin()
 check(ui.model.sodaQr.value === 'same-qr' && ui.model.sodaMessage.value === '请完成安全验证' && !ui.calls.some(call => call.name === 'qr-cancel'), 'security challenge preserves the existing QR and isolated login session')
 await ui.tick(); await ui.tick()
 check(ui.accepted.length === 1 && ui.emitted[0] === 'close' && ui.timers.size === 0 && ui.calls.filter(call => call.name === 'qr-check').every(call => call.args.loginId === 'same-flow'), 'successful post-verification poll accepts the validated account and releases the original flow')
+const rateUI = uiHarness(async name => name === 'qr-create' ? {loginId:'limited-flow',image:'qr'} : {status:'rate_limited',retryAt:Date.now()+60000})
+await rateUI.startSodaLogin()
+check(rateUI.model.sodaMessage.value.includes('已停止自动查询') && rateUI.timers.size === 0 && rateUI.calls.some(call=>call.name==='qr-cancel'), 'rate-limit UI cancels the grant and never repeatedly retries a rejected login')
+rateUI.stopSodaLogin()
 const inFlight = deferred()
 const serial = uiHarness(async name => name === 'qr-create' ? { loginId: 'serial-flow', image: 'qr' } : name === 'qr-check' ? inFlight.promise : {})
 const starting = serial.startSodaLogin(); await new Promise(resolve => setImmediate(resolve))

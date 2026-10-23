@@ -99,18 +99,15 @@ const toggleLike = async (track) => {
     if (!userStore.isLoggedIn) return messageStore.warning('请先登录后收藏')
     const isLiked = userStore.isSongLiked(track.id)
     try {
-        const res = await request.get('/like', { 
-            params: { id: track.id, like: !isLiked, timestamp: Date.now() } 
-        })
-        if (res.code === 200) {
-            userStore.toggleLike(track.id, !isLiked)
+        if (await userStore.setSongLiked(track.id, !isLiked)) {
             // If it's the current playing song, sync playerStore state too
-            if (playerStore.currentSong.id === track.id) {
+            if (String(playerStore.currentSong.id) === String(track.id)) {
                 playerStore.isLiked = !isLiked
             }
+            messageStore.success(!isLiked ? '已添加到我喜欢的音乐' : '已取消喜欢')
         }
     } catch (e) {
-        console.error('Toggle like fail:', e)
+        messageStore.error(e.message || '喜欢状态更新失败，请重试')
     }
 }
 
@@ -346,7 +343,8 @@ const handleCoverChange = async (e) => {
                         <Heart
                           :size="14"
                           class="icon clickable"
-                          :class="{ 'text-red': playerStore.isLiked && playerStore.currentSong.id === track.id || userStore.isSongLiked(track.id) }"
+                          :class="{ 'text-red': playerStore.isLiked && playerStore.currentSong.id === track.id || userStore.isSongLiked(track.id), 'like-pending': userStore.pendingLikeIds.has(Number(track.id)) }"
+                          :aria-busy="userStore.pendingLikeIds.has(Number(track.id))"
                           :fill="(playerStore.isLiked && playerStore.currentSong.id === track.id || userStore.isSongLiked(track.id)) ? '#EC4141' : 'none'"
                           :color="(playerStore.isLiked && playerStore.currentSong.id === track.id || userStore.isSongLiked(track.id)) ? '#EC4141' : 'currentColor'"
                           @click.stop="toggleLike(track)"
@@ -442,6 +440,7 @@ const handleCoverChange = async (e) => {
 </template>
 
 <style scoped>
+:deep(.like-pending) { opacity: .45; pointer-events: none; }
 .playlist-load-status { display: flex; justify-content: center; align-items: center; gap: 18px; padding: 18px; color: var(--text-secondary); }
 .playlist-load-status button { padding: 8px 18px; border: 1px solid var(--primary-color); border-radius: 18px; background: transparent; color: var(--primary-color); cursor: pointer; }
 /* 歌曲行骨架屏：与歌曲表格行同节奏（序号/标题/歌手/时长） */

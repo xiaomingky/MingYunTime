@@ -45,6 +45,14 @@ async function signal(label) {
     assert.ok(value.rms > .02, label + ' has a non-zero decoded signal')
     assert.ok(value.gain > 0 && value.ctx === 'running', label + ' has an active output')
 }
+async function waitFor(expression, label) {
+    const deadline = Date.now() + 10000
+    while (Date.now() < deadline) {
+        if (await js(expression)) return
+        await delay(50)
+    }
+    throw new Error('Timed out: ' + label)
+}
 async function run() {
     const click = selector => js(`(() => { const el=document.querySelector(${JSON.stringify(selector)}); if (!el) throw new Error('missing '+${JSON.stringify(selector)}); (el.click ? el.click() : el.dispatchEvent(new MouseEvent('click',{bubbles:true}))); return true })()`)
     function sourceFiles(dir) {
@@ -81,6 +89,14 @@ async function run() {
     await js("player.setAudioDevice('removed-device-for-regression')"); await signal('missing device fallback')
     assert.equal(await js('player.currentDeviceId'), '')
     main.hide(); await delay(2300); main.show(); await signal('hidden-window recovery')
+    const sequence = ['local-sequence-a', 'local-sequence-b', 'local-sequence-c'].map(id => ({ id, name: id, artist: 'sequence test', url, path: file, duration: 30, al: { name: 'test', picUrl: '' } }))
+    await js(`player.playMode=0;player.playNow(${JSON.stringify(sequence[0])},${JSON.stringify(sequence)})`)
+    await waitFor("player.currentSong?.id==='local-sequence-a'&&player.isPlaying", 'sequence test first track')
+    for (const id of ['local-sequence-b', 'local-sequence-c', 'local-sequence-a']) {
+        await js('player.audio.currentTime=Math.max(0,player.audio.duration-.08)')
+        await waitFor(`player.currentSong?.id===${JSON.stringify(id)}&&player.isPlaying&&player.audio.currentTime<1`, 'automatic sequence advance to ' + id)
+    }
+    report.interactions.push('natural audio ended advances through three queued tracks and wraps in sequence mode')
     for (const style of ['classic', 'apple']) {
         await js(`pinia._s.get('song-detail').style=${JSON.stringify(style)}; pinia._s.get('settings').setInterfaceMotion('on'); player.showSongDetail=true`)
         await delay(90)

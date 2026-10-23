@@ -1,4 +1,5 @@
 <script setup>
+import ArtVideoPlayer from '../../components/ArtVideoPlayer.vue'
 import QQSongBadge from '../../components/QQSongBadge.vue'
 import { ref, onBeforeUnmount, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -264,7 +265,7 @@ onBeforeUnmount(() => revision++)
                     <span>{{ currentMv.name }} - {{ currentMv.artist }}</span>
                     <span class="qq-mv-close" @click="closeMv">×</span>
                 </div>
-                <ArtVideoPlayer :src="currentMv.url" play-type="direct" :autoplay="true" class="qq-mv-video" />
+                <ArtVideoPlayer :src="currentMv.url" :episode-title="currentMv.name" :episode-cover="currentMv.picUrl" :episodes="mvs" :current-episode="currentMv" @selectEpisode="playMv" play-type="direct" :autoplay="true" class="qq-mv-video" />
             </div>
         </div>
     </div>
