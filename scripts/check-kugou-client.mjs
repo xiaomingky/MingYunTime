@@ -32,6 +32,9 @@ respond = config => config.url.endsWith('special/info') ? {status:1,data:{specia
 result = await client.call('/playlist/track/all',{id:'special:123'})
 ok(result.data.list_info._officialPublic && result.data.list_info.imgurl.startsWith('https:'),'public playlist has explicit identifier namespace and loadable metadata')
 ok(client.supports('/playlist/track/all',{id:'123'}),'public global collection IDs have an official native route')
+respond = () => ({status:1,data:{count:1,songs:[{hash}],list_info:{name:'Collected'}}})
+result = await client.call('/playlist/track/all',{id:'collection_3_2132029040_287_0'})
+ok(client.supports('/playlist/detail',{ids:'collection_3_2132029040_287_0'}) && requests.at(-1).params.global_collection_id==='collection_3_2132029040_287_0' && result.data.count===1,'collected playlist uses its creator global collection ID to read songs')
 respond = () => ({status:1,hash:other,extra:{'320hash':hash,'128timelength':240000},url:'https://sharefs.kugou.com/a.mp3',timeLength:240,bitRate:128})
 result = await client.call('/song/url',{hash,quality:'flac'})
 ok(result.data.quality==='128' && result.data.fullDuration===240 && result.data.requestedHash===hash,'official lower quality reported honestly; hash variant must belong to the same song')
@@ -134,4 +137,16 @@ const countBeforeChallenge=requests.length
 respond=()=>({status:0,error_code:20028})
 await reject(client.call('/song/url',{hash,token:'fixture-token',userid:'123',quality:'high'}),/安全验证/)
 ok(requests.length===countBeforeChallenge+1,'native challenge never cascades into web/guest requests')
+let retryCalls=0
+respond=config=>{
+    if(config.url.endsWith('/v5/url')) {
+        retryCalls++
+        if(retryCalls===1) return {status:0,error_code:20028}
+        return {status:1,data:{hash,url:['http://fs.youthandroid2.kugou.com/playlist-fallback.mp3'],extName:'mp3',bitRate:128000,timeLength:236}}
+    }
+    return {status:0,error_code:20017}
+}
+result=await client.call('/song/url',{hash,token:'fixture-token',userid:'123',album_id:'9007199254740991',album_audio_id:'9007199254740992',quality:'128'})
+ok(retryCalls===2&&result.data.url.endsWith('playlist-fallback.mp3'),'playlist validation retries account playback with hash-only identifiers')
+ok(requests.at(-2).params.album_audio_id==='9007199254740992'&&requests.at(-1).params.album_audio_id==='0','large playlist identifiers stay exact, then hash-only retry clears stale catalogue IDs')
 console.log(`Kugou independent client checks passed: ${checks} assertions.`)

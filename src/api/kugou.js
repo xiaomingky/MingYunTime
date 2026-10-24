@@ -45,11 +45,19 @@ export function setKugouProfile(p) {
 export function clearKugouProfile() {
     localStorage.removeItem(KUGOU_PROFILE_KEY)
 }
+export function getKugouDfid() {
+    return localStorage.getItem(KUGOU_DFID_KEY) || getKugouProfile()?.dfid || ''
+}
+export function setKugouDfid(value) {
+    const dfid = String(value || '').trim()
+    if (dfid && dfid !== '-') localStorage.setItem(KUGOU_DFID_KEY, dfid)
+    else localStorage.removeItem(KUGOU_DFID_KEY)
+}
+export function clearKugouDfid() {
+    localStorage.removeItem(KUGOU_DFID_KEY)
+}
 export function getKugouUserid() {
     return getKugouProfile()?.userid || ''
-}
-function getKugouDfid() {
-    return localStorage.getItem(KUGOU_DFID_KEY) || ''
 }
 
 const kugouRequest = axios.create({ baseURL: 'https://www.kugou.com', timeout: 30000, withCredentials: true })

@@ -7,7 +7,7 @@ import {
     kugouWxCreate, kugouWxCheck,
     kugouLoginToken, kugouUserDetail, kugouUserVip, kugouUserPlaylist,
     getKugouCookie, setKugouCookie, clearKugouCookie,
-    getKugouProfile, setKugouProfile, clearKugouProfile, getKugouUserid,
+    getKugouProfile, setKugouProfile, setKugouDfid, clearKugouDfid, clearKugouProfile, getKugouUserid,
     normalizeKugouPlaylist, normalizeKugouSong, kugouLikeSong, kugouUnlikeSong,
     kugouPlaylistAdd, kugouPlaylistDel, kugouPlaylistTracksAdd, kugouPlaylistTracksDel,
     kugouPlaylistSongsNew
@@ -160,6 +160,9 @@ export const useKugouUserStore = defineStore('kugouUser', {
             this.vipError = ''; this.vipLoading = false; this.vipCheckedAt = 0; this.vipRequest++
             this.playlistsError = ''; this.playlistsLoading = false; this.playlistsRequest++
             setKugouProfile(profile)
+            // The concept client uses dfid in signed playback requests. It is
+            // returned by some login/token responses and must survive reloads.
+            setKugouDfid(data.dfid || data.user?.dfid || data.userInfo?.dfid || profile.dfid || '')
             this.cookie = token
             this.userid = userid
             this.profile = profile
@@ -542,6 +545,7 @@ export const useKugouUserStore = defineStore('kugouUser', {
         logout() {
             this.revision++
             clearKugouCookie()
+            clearKugouDfid()
             clearKugouProfile()
             this.isLoggedIn = false
             this.profile = null

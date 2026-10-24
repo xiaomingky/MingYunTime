@@ -14,8 +14,11 @@ export const KUGOU_DIRECT_ROUTES = new Set([
     '/youth/month/vip/record', '/youth/union/vip', '/login', '/login/cellphone',
     '/captcha/sent', '/login/wx/create', '/login/wx/check', '/login/openplat'
 ])
+// 歌单 ID 既可能是纯数字（用户歌单），也可能是 collection_3_xxx_xxx_x
+// （官方歌单/收藏歌单的 global_collection_id），多 ID 用逗号分隔。
+const KUGOU_PLAYLIST_ID = /^(?:special:)?[1-9]\d*$|^collection_\d+_\d+_\d+_\d+$/
 export function isKugouDirectRoute(route, params = {}) {
     if (route === '/search' && params.type && !['song','author','album','special','mv','lyric'].includes(params.type)) return false
     return KUGOU_DIRECT_ROUTES.has(route) || (['/playlist/detail', '/playlist/track/all'].includes(route)
-        && /^(special:)?[1-9]\d*$/.test(String(params.ids || params.id || '')))
+        && String(params.ids || params.id || '').split(',').every(value => KUGOU_PLAYLIST_ID.test(value)))
 }

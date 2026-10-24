@@ -56,7 +56,14 @@ export class KugouPrivateClient {
         const selected = String(params.quality || '128')
         const quality = ['128','320','flac','high','super','viper_clear','viper_atmos'].includes(selected) ? selected : '128'
         const key = md5(`${fileHash}185672dd44712f60bb1736df5a377e823116${this.mid}${auth.userid}`)
-        const result = await this.call('/v5/url',auth,{router:'trackercdn.kugou.com',params:{album_id:Number(params.album_id || 0),area_code:1,hash:fileHash,ssa_flag:'is_fromtrack',version:11430,page_id:967177915,quality,album_audio_id:Number(params.album_audio_id || 0),behavior:'play',pid:411,cmd:26,pidversion:3001,IsFreePart:0,ppage_id:'356753938,823673182,967485191',cdnBackup:1,module:'',clientver:11430,key}})
+        // Playlist entries can carry an album_audio_id from a different
+        // catalogue revision. Keep identifiers as strings to avoid losing
+        // precision, and let the caller retry with hash-only authorization.
+        const numericId = value => {
+            const text = String(value ?? '').trim()
+            return /^\d+$/.test(text) ? text : '0'
+        }
+        const result = await this.call('/v5/url',auth,{router:'trackercdn.kugou.com',params:{album_id:numericId(params.album_id),area_code:1,hash:fileHash,ssa_flag:'is_fromtrack',version:11430,page_id:967177915,quality,album_audio_id:numericId(params.album_audio_id),behavior:'play',pid:411,cmd:26,pidversion:3001,IsFreePart:0,ppage_id:'356753938,823673182,967485191',cdnBackup:1,module:'',clientver:11430,key}})
         const data = result.data || result
         const url = Array.isArray(data?.url) ? data.url[0] : data?.url
         // Lossless files have their own hash; std_hash identifies the requested

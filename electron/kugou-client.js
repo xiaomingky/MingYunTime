@@ -11,6 +11,9 @@ const integer = (value, fallback, min = 1, max = 100) => {
     return number
 }
 const id = value => { const s = String(value ?? ''); if (!/^[1-9]\d{0,17}$/.test(s) || (typeof value === 'number' && !Number.isSafeInteger(value))) throw new Error('酷狗 ID 无效'); return s }
+// 歌单的 global_collection_id 可能是数字，也可能是 collection_3_xxx_xxx_x
+// （官方歌单/收藏歌单）。收藏歌单只有用创建者的 list_create_gid 才能取到歌曲。
+const gcid = value => { const s = String(value ?? ''); if (!/^(?:[1-9]\d{0,17}|collection_\d+_\d+_\d+_\d+)$/.test(s) || (typeof value === 'number' && !Number.isSafeInteger(value))) throw new Error('酷狗 ID 无效'); return s }
 const hash = value => { if (!/^[a-fA-F0-9]{32}$/.test(value || '')) throw new Error('酷狗歌曲标识无效'); return value.toUpperCase() }
 const list = (items, label) => { if (!Array.isArray(items)) throw new Error(`酷狗${label}响应不完整`); return items }
 function image(url) { return String(url || '').replace('{size}', '480').replace(/^http:\/\//, 'https://') }
@@ -188,8 +191,8 @@ export class KugouClient {
         case '/playlist/detail':
         case '/playlist/track/all': {
             if (!String(params.ids || params.id).startsWith('special:')) {
-                if (route === '/playlist/detail') return this.privateClient.call('/v3/get_list_info',params,{anonymous:!params.token,router:'pubsongs.kugou.com',data:{data:String(params.ids || params.id).split(',').map(value=>({global_collection_id:id(value)})),userid:params.userid || 0,token:params.token || ''}})
-                return this.privateClient.call('/pubsongs/v2/get_other_list_file_nofilt',params,{anonymous:!params.token,params:{area_code:1,begin_idx:(page()-1)*size(),plat:1,type:1,mode:1,personal_switch:1,extend_fields:'abtags,hot_cmt,popularization',pagesize:size(),global_collection_id:id(params.id)}})
+                if (route === '/playlist/detail') return this.privateClient.call('/v3/get_list_info',params,{anonymous:!params.token,router:'pubsongs.kugou.com',data:{data:String(params.ids || params.id).split(',').map(value=>({global_collection_id:gcid(value)})),userid:params.userid || 0,token:params.token || ''}})
+                return this.privateClient.call('/pubsongs/v2/get_other_list_file_nofilt',params,{anonymous:!params.token,params:{area_code:1,begin_idx:(page()-1)*size(),plat:1,type:1,mode:1,personal_switch:1,extend_fields:'abtags,hot_cmt,popularization',pagesize:size(),global_collection_id:gcid(params.id)}})
             }
             const specialid = id(String(params.ids || params.id).slice(8))
             const info = await this.mobile('special/info', { specialid })
@@ -210,9 +213,24 @@ export class KugouClient {
                 hash(params.hash)
                 try { result = await this.privateClient.playback(params,params) }
                 catch (error) {
-                    if (error.requiresVerification) throw error
-                    try { result = await this.accountAudio(params) }
-                    catch (e) { accountNotice = e.message + '；当前尝试游客可用音源' }
+                    // A personal playlist may contain stale album identifiers
+                    // after a catalogue migration. The official tracker can
+                    // reject that combination as a client validation error
+                    // even though the hash is playable. Retry the same account
+                    // grant with only the immutable file hash before surfacing
+                    // a real verification challenge.
+                    if (error.requiresVerification && (params.album_id || params.album_audio_id)) {
+                        try {
+                            result = await this.privateClient.playback(params, { ...params, album_id: '', album_audio_id: '' })
+                        } catch (retryError) {
+                            if (retryError.requiresVerification) throw retryError
+                        }
+                    }
+                    if (!result) {
+                        if (error.requiresVerification) throw error
+                        try { result = await this.accountAudio(params) }
+                        catch (e) { accountNotice = e.message + '；当前尝试游客可用音源' }
+                    }
                 }
             }
             if (!result) result = await this.audio(params.hash)
