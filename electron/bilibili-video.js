@@ -31,16 +31,21 @@ let biliGuestCookieCache = { cookie: '', ts: 0 }
 
 // Web 登录 Cookie（与 main.js 网址解析的「B站登录」共用 bilibili-cookie.json，登录后搜索/收藏夹可用）
 const BILI_COOKIE_FILE = () => path.join(app.getPath('userData'), 'bilibili-cookie.json')
-function biliWebCookie() {
+function biliWebCookies() {
   try {
     const raw = fs.readFileSync(BILI_COOKIE_FILE(), 'utf8')
     const data = JSON.parse(raw)
     // 与 main.js loadBiliCookie 相同的 30 天过期判断
-    if (data.savedAt && Date.now() - data.savedAt > 30 * 24 * 60 * 60 * 1000) return ''
+    if (data.savedAt && Date.now() - data.savedAt > 30 * 24 * 60 * 60 * 1000) return null
     const cookies = data.cookies
-    if (!cookies || !cookies.SESSDATA) return ''
-    return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ')
-  } catch (e) { return '' }
+    if (!cookies || !cookies.SESSDATA) return null
+    return cookies
+  } catch (e) { return null }
+}
+
+function biliWebCookie() {
+  const cookies = biliWebCookies()
+  return cookies ? Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ') : ''
 }
 
 // 请求 Cookie：游客 buvid 设备标识恒携带（B站搜索/首页等接口裸请求会被 -412 风控拦截，
@@ -667,25 +672,20 @@ async function biliCommentReplies({ aid, rpid, pn = 1, upMid = 0 }) {
 // 互动：点赞 / 投币 / 收藏（需 Web 登录，csrf = bili_jct）
 // ============================================================
 
-// 读取 csrf token（cookie 文件里的 bili_jct）
-function biliCsrf() {
-  try {
-    const raw = fs.readFileSync(BILI_COOKIE_FILE(), 'utf8')
-    const data = JSON.parse(raw)
-    return data.cookies?.bili_jct || ''
-  } catch (e) { return '' }
-}
-
 // 登录态下的 POST（表单编码 + Cookie + csrf 校验）
-async function biliApiPost(url, form) {
-  const cookie = biliWebCookie()
-  if (!cookie) throw new Error('请先登录B站账号（右上角「B站登录」）')
-  const csrf = biliCsrf()
-  const body = new URLSearchParams({ ...form, csrf })
+async function biliApiPost(url, form, referer = 'https://www.bilibili.com/') {
+  // Cookie 与 CSRF 必须来自同一份登录快照，避免重新登录时混用两次读取的账号。
+  const cookies = biliWebCookies()
+  if (!cookies) throw new Error('请先登录B站账号（右上角「B站登录」）')
+  const csrf = cookies.bili_jct
+  if (!csrf) throw new Error('B站登录信息缺少校验值（bili_jct），请重新扫码登录后再试')
+  const cookie = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ')
+  const body = new URLSearchParams({ ...form, csrf, csrf_token: csrf })
   const res = await axios.post(url, body.toString(), {
     headers: {
       'User-Agent': UA,
-      'Referer': 'https://www.bilibili.com/',
+      'Referer': referer,
+      'Origin': 'https://www.bilibili.com',
       'Content-Type': 'application/x-www-form-urlencoded',
       Cookie: cookie
     },
@@ -695,6 +695,8 @@ async function biliApiPost(url, form) {
   const d = res.data
   if (d?.code === 0) return d
   if (d?.code === -101) throw new Error('B站登录已失效，请重新扫码登录')
+  if (d?.code === -111) throw new Error('B站登录校验失败，请重新扫码登录后再试')
+  if (d?.code === -403) throw new Error('B站拒绝了本次互动请求（非法访问），请重新登录后再试；若仍失败，请稍后重试')
   if (d?.code === 65006) throw new Error('投币失败：硬币余额不足')
   if (d?.code === 34002) throw new Error('已投过硬币，不能重复投币')
   if (d?.code === 11001) throw new Error('请求过于频繁，请稍后再试')
@@ -720,7 +722,8 @@ async function biliCoin({ bvid, aid = 0, multiply = 1, selectLike = 0 }) {
   }
   if (!realAid) throw new Error('该内容缺少投币信息（av 号），暂不支持投币')
   await biliApiPost('https://api.bilibili.com/x/web-interface/coin/add',
-    { aid: realAid, multiply, select_like: selectLike ? 1 : 0 })
+    { aid: realAid, multiply, select_like: selectLike ? 1 : 0 },
+    `https://www.bilibili.com/video/av${realAid}/`)
   return { ok: true }
 }
 

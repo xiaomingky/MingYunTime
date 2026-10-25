@@ -159,6 +159,11 @@ const routes = [
         component: BilibiliVideo
     },
     {
+        path: '/bilibili/feed',
+        name: 'BilibiliFeed',
+        component: () => import('../views/BilibiliFeed.vue')
+    },
+    {
         path: '/bilibili/:bvid',
         name: 'BilibiliVideoDetail',
         component: BilibiliVideoDetail

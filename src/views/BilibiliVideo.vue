@@ -11,7 +11,7 @@ import SearchSuggest from '../components/SearchSuggest.vue'
 import BiliCookieLogin from '../components/BiliCookieLogin.vue'
 import BiliIcon from '../components/BiliIcon.vue'
 import CustomSelect from '../components/CustomSelect.vue'
-import { Search, Loader2, Tv, Music, Gamepad2, BookOpen, Smartphone, Coffee, Dog, Wand2, Shirt, PartyPopper, Clapperboard, MonitorPlay, RefreshCw, X, Check, LogOut, Flame, TrendingUp, Play, MessageSquare, ChevronLeft, ChevronRight, Sparkles, Folder, Heart, Film, Star, Radio, ArrowUpDown } from 'lucide-vue-next'
+import { Search, Loader2, Tv, Music, Gamepad2, BookOpen, Smartphone, Coffee, Dog, Wand2, Shirt, PartyPopper, Clapperboard, MonitorPlay, RefreshCw, X, Check, LogOut, Flame, TrendingUp, Play, MessageSquare, ChevronLeft, ChevronRight, ChevronDown, Sparkles, Folder, Heart, Film, Star, Radio, ArrowUpDown } from 'lucide-vue-next'
 import './anime-common.css'
 
 // keep-alive include 按组件名匹配（App.vue 缓存本列表页，返回时保留搜索/收藏夹状态）
@@ -459,6 +459,9 @@ onUnmounted(() => {
             <h2 class="page-title bili-brand">
                 <BiliIcon name="logo" :size="22" /> B站视频
             </h2>
+            <button class="feed-entry" @click="router.push('/bilibili/feed')">
+                <Play :size="15" fill="currentColor" /> 推荐放映 <ArrowUpDown :size="14" />
+            </button>
             <!-- 合并登录入口：单胶囊 + 下拉面板（Web / TV 两行） -->
             <div class="bili-login-wrap login-merged" @click.stop>
                 <button
@@ -947,6 +950,9 @@ onUnmounted(() => {
 
 /* B站品牌粉 */
 .bili-brand { color: #fb7299; }
+.feed-entry { display: inline-flex; align-items: center; gap: 8px; padding: 9px 16px; border: 0; border-radius: 20px; background: #fb7299; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(251,114,153,.2); }
+.feed-entry:hover { background: #ed5e89; }
+.feed-entry:focus-visible { outline: 2px solid #d94c77; outline-offset: 3px; }
 
 /* 分区导航栏 */
 .region-nav {

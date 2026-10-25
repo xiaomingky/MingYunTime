@@ -1,13 +1,13 @@
 {
   "name": "MingYunTime",
-  "version": "4.0.3",
+  "version": "4.0.4",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/xiaomingky/MingYunTime"
   },
   "scripts": {
-    "dev": "set NODE_OPTIONS=--max-old-space-size=1024 && vite",
+    "dev": "set NODE_OPTIONS=--max-old-space-size=4096 && vite",
     "dev:light": "set NODE_OPTIONS=--max-old-space-size=512 && vite",
     "build": "set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/&& set electron_config_cache=%cd%\\.eb-cache&& node scripts/clean-dist.cjs && node scripts/ensure-qishui-runtime.cjs && vite build && electron-builder",
     "preview": "vite preview",

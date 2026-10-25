@@ -2,15 +2,23 @@
 
 **Four music platforms, two lyric styles, videos and esports in a Windows desktop player.**
 
-[中文版](README.md) · [Download v4.0.3](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.3) · [Report an issue](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
+[中文版](README.md) · [Download v4.0.4](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.4) · [Report an issue](https://github.com/xiaomingky/MingYunTime/issues) · [GitHub Star](https://github.com/xiaomingky/MingYunTime)
 
 [App website](https://music.xiaomingky.dpdns.org) · [Author website](https://xiaomingky.dpdns.org)
 
-![Version](https://img.shields.io/badge/version-4.0.3-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
+![Version](https://img.shields.io/badge/version-4.0.4-EC4141) ![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4) ![Electron](https://img.shields.io/badge/Electron-44-47848F) ![License](https://img.shields.io/badge/license-MIT-31C27C)
 
 Built with Vue 3 and Electron 44, MingYun Time integrates NetEase Cloud Music, QQ Music, KuGou Concept Edition and Qishui Music. Discover music, search, open playlists and albums, arrange a playback queue, manage local music, switch between Classic and Apple Music-style lyrics, use desktop lyrics and EQ, and manage downloads in one place. The video area includes Bilibili, anime, movies, URL parsing and streams; the entertainment area covers CS / VAL esports; digital textbooks provide reading, annotation and companion audio.
 
 > This project is developed with AI assistance. This English README is a translation of the guide; it does not imply an English client interface. Anime source screenshots show v4.0.3; Qishui screenshots show v4.0.1; the settings screenshot below retains its v4.0.0 label; historical screenshots and GIFs retain their v3.6.1 labels. Online recommendations, charts and esports information change with their sources. Lyric GIFs demonstrate interface animation without audio. The local music screenshot uses sample file entries.
+
+## 4.0.4 stable release
+
+Version 4.0.4 targets Windows 10 / 11 x64. Download the installer or portable archive from the [v4.0.4 Release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.4).
+
+- **Bilibili recommendations:** add an immersive feed with mouse-wheel, touch-swipe and arrow-key navigation, plus like, coin, favorite and detail actions.
+- **Bilibili interactions:** correct the pairing of login Cookies and CSRF, video Referer and Origin headers for coin requests; report login expiry and access-denied responses clearly.
+- **Development startup:** raise the Vite development server's Node.js heap limit to avoid startup exits on this larger project.
 
 ## 4.0.3 stable release
 
@@ -67,12 +75,12 @@ See [validation and measured results](docs/MODERNIZATION.md). Run `npm run check
 
 ## Download and installation
 
-1. Open the [v4.0.3 release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.3). Under **Assets**, choose the Windows installer `.exe`, or download the `.7z` archive for portable use, extract it completely and launch the application.
+1. Open the [v4.0.4 release](https://github.com/xiaomingky/MingYunTime/releases/tag/v4.0.4). Under **Assets**, choose the Windows installer `.exe`, or download the `.7z` archive for portable use, extract it completely and launch the application.
 2. The installer uses a native **NSIS wizard**, with a selectable destination and desktop / Start menu shortcuts.
 3. After launch, choose a platform at the top left and sign in if needed. Regular use does not require Node.js; official music clients and download utilities are included.
 4. Music requests connect directly to official platform services. If a page fails to load, check the network and login state, then retry.
 
-**4.0.3 stable release: Windows 10 / 11, 64-bit; Windows 7 / 8 / 8.1 are no longer supported.** The published v3.6.3 legacy release remains separate. On older computers, enable performance mode and 30 FPS for Apple Music-style lyrics, and turn off unnecessary spectrum and cover motion. System media overlays, HEVC decoding and similar capabilities still depend on the Windows version, drivers and codecs.
+**4.0.4 stable release: Windows 10 / 11, 64-bit; Windows 7 / 8 / 8.1 are no longer supported.** The published v3.6.3 legacy release remains separate. On older computers, enable performance mode and 30 FPS for Apple Music-style lyrics, and turn off unnecessary spectrum and cover motion. System media overlays, HEVC decoding and similar capabilities still depend on the Windows version, drivers and codecs.
 
 Online playback, downloads, audio quality and account operations depend on the platform's authorization, membership, regional restrictions and resource availability.
 
