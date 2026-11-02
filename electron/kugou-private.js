@@ -2,16 +2,44 @@ import { createHash, randomBytes } from 'node:crypto'
 
 const md5 = value => createHash('md5').update(value).digest('hex')
 const SALT = 'LnT6xpN3khm36zse0QzvmgTZ3waWdRSA'
+// Concept-client tracker constants (UrlRequestor / BasicTrackerProtocol / g0).
+const APPID = 3116
+const PID = 411
+const PID_VERSION = '3001'
+const TRACKER_SECRET = '185672dd44712f60bb1736df5a377e82'
+const VIP_TYPE = 65530
+// SongQuality.qualityToParams(): only these four wire values exist.
+const QUALITY_PARAMS = { '128': '128', '320': '320', flac: 'flac', high: 'high', super: 'flac', viper_tape: 'viper_tape', viper_clear: '128', viper_atmos: '128' }
+const albumAudioId = value => {
+    const text = String(value ?? '').trim()
+    return /^\d+$/.test(text) ? text : '0'
+}
+const trackerUrl = data => {
+    const value = Array.isArray(data?.url) ? data.url[0] : data?.url
+    return typeof value === 'string' ? value : ''
+}
+const trackerResult = (data, requestedHash, accountAuthorized) => {
+    const requested = String(requestedHash).toUpperCase()
+    // A tracker may answer with another quality variant of the same recording
+    // (lower bitrate or lossless file hash); every advertised variant must
+    // still identify the requested song instead of a different one.
+    const variants = [data?.hash, data?.std_hash, ...Object.entries(data?.extra || {}).filter(([key]) => /hash$/i.test(key)).map(([, value]) => value)]
+        .filter(Boolean).map(value => String(value).toUpperCase())
+    if (variants.length && !variants.includes(requested)) throw new Error('酷狗返回的歌曲与所选歌曲不匹配')
+    return {...data, url:trackerUrl(data), bitRate:Number(data.bitRate || data.bitrate) > 10000 ? Number(data.bitRate || data.bitrate)/1000 : Number(data.bitRate || data.bitrate),
+        requestedHash:requested, accountAuthorized, is_trial:!!data.free_part}
+}
+
 export class KugouPrivateClient {
     constructor({ request, now }) { Object.assign(this, { request, now }); this.mid = randomBytes(16).toString('hex') }
-    async call(path, { token, userid, dfid = '-' }, { host = 'gateway.kugou.com', params = {}, data, router, anonymous = false, method, headers = {}, responseType, decode, allowErrors = [] } = {}) {
+    async call(path, { token, userid, dfid = '-' }, { host = 'gateway.kugou.com', params = {}, data, router, anonymous = false, method, headers = {}, responseType, decode, allowErrors = [], protocol = 'https', uuid = '-' } = {}) {
         if (!anonymous && (!/^[a-zA-Z0-9_-]{8,2048}$/.test(String(token || '')) || !/^[1-9]\d{0,17}$/.test(String(userid || '')))) throw new Error('酷狗登录凭据不完整')
-        const query = { dfid, mid:this.mid, uuid:'-', appid:3116, clientver:11440, clienttime:Math.floor(this.now()/1000), ...(!anonymous ? {token, userid:String(userid)} : {}), ...params }
+        const query = { dfid, mid:this.mid, ...(uuid ? {uuid} : {}), appid:APPID, clientver:11440, clienttime:Math.floor(this.now()/1000), ...(!anonymous ? {token, userid:String(userid)} : {}), ...params }
         const body = data === undefined ? '' : typeof data === 'string' ? data : JSON.stringify(data)
         query.signature = md5(SALT + Object.keys(query).sort().map(key => `${key}=${query[key]}`).join('') + body + SALT)
         let response
         if (!/(^|\.)kugou\.com$/.test(host)) throw new Error('非官方酷狗请求地址')
-        try { response = await this.request({ url:`https://${host}${path}`, method:method || (data === undefined ? 'GET' : 'POST'), params:query, ...(data === undefined ? {} : {data:body}), ...(responseType ? {responseType} : {}), timeout:15000, maxRedirects:0,
+        try { response = await this.request({ url:`${protocol}://${host}${path}`, method:method || (data === undefined ? 'GET' : 'POST'), params:query, ...(data === undefined ? {} : {data:body}), ...(responseType ? {responseType} : {}), timeout:15000, maxRedirects:0,
             headers:{'Content-Type':'application/json','User-Agent':'Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi',dfid,mid:this.mid,clienttime:query.clienttime,'kg-rc':'1','kg-thash':'5d816a0','kg-rec':1,'kg-rf':'B9EDA08A64250DEFFBCADDEE00F8F25F',...(router ? {'x-router':router} : {}),...headers} }) }
         catch { throw new Error('酷狗账号服务连接失败，请重试') }
         const result = decode ? decode(response?.data) : response?.data
@@ -51,24 +79,36 @@ export class KugouPrivateClient {
     async deletePlaylistTracks(auth, listid, fileids) {
         return this.call('/v4/delete_songs',auth,{data:{listid,userid:String(auth.userid),token:auth.token,list_ver:0,type:0,data:fileids.map(fileid=>({fileid}))},router:'cloudlist.service.kugou.com'})
     }
+    // UrlRequestor.h(true): charged account tracker (gateway -> trackercdn).
     async playback(auth, params) {
         const fileHash = String(params.hash).toLowerCase()
-        const selected = String(params.quality || '128')
-        const quality = ['128','320','flac','high','super','viper_clear','viper_atmos'].includes(selected) ? selected : '128'
-        const key = md5(`${fileHash}185672dd44712f60bb1736df5a377e823116${this.mid}${auth.userid}`)
-        // Playlist entries can carry an album_audio_id from a different
-        // catalogue revision. Keep identifiers as strings to avoid losing
-        // precision, and let the caller retry with hash-only authorization.
-        const numericId = value => {
-            const text = String(value ?? '').trim()
-            return /^\d+$/.test(text) ? text : '0'
-        }
-        const result = await this.call('/v5/url',auth,{router:'trackercdn.kugou.com',params:{album_id:numericId(params.album_id),area_code:1,hash:fileHash,ssa_flag:'is_fromtrack',version:11430,page_id:967177915,quality,album_audio_id:numericId(params.album_audio_id),behavior:'play',pid:411,cmd:26,pidversion:3001,IsFreePart:0,ppage_id:'356753938,823673182,967485191',cdnBackup:1,module:'',clientver:11430,key}})
-        const data = result.data || result
-        const url = Array.isArray(data?.url) ? data.url[0] : data?.url
-        // Lossless files have their own hash; std_hash identifies the requested
-        // standard recording in the official tracker response.
-        if (!url || ![data.hash,data.std_hash].some(h=>String(h || '').toUpperCase() === String(params.hash).toUpperCase())) throw new Error('酷狗未返回匹配的会员歌曲授权')
-        return {...data,url,bitRate:Number(data.bitRate)>10000 ? Number(data.bitRate)/1000 : Number(data.bitRate),requestedHash:String(params.hash).toUpperCase(),accountAuthorized:true,is_trial:!!data.free_part}
+        const quality = QUALITY_PARAMS[String(params.quality || '128')] || '128'
+        const albumId = String(params.album_id ?? '').trim()
+        // UrlRequestor.h(true) marks the charge tracker with IsFreePart=1 so
+        // the server grants the complete recording instead of a listen part.
+        const request = key => this.call('/v5/url',auth,{router:'trackercdn.kugou.com',params:{cmd:26,hash:fileHash,key,pidversion:PID_VERSION,pid:PID,version:11440,vipType:VIP_TYPE,ssa_flag:'is_fromtrack',
+            ptype:0,behavior:'play',module:'',area_code:'1',album_audio_id:albumAudioId(params.album_audio_id),quality,IsFreePart:1,...(albumId ? {album_id:albumId} : {})}})
+        const result = await request(md5(`${fileHash}${TRACKER_SECRET}${APPID}${this.mid}${auth.userid}`))
+            .catch(error => {
+                // The official key switches to the plain cloud branch when the
+                // server-pushed YL/ZL config is absent; retry that branch once.
+                if (Number(error.code) === 31833) return request(md5(`${fileHash}kgcloudv2`))
+                throw error
+            })
+        return trackerResult(result.data || result, params.hash, true)
+    }
+    // BasicTrackerProtocol: guest tracker with no account grant.
+    async guestPlayback(params) {
+        const fileHash = String(params.hash).toLowerCase()
+        const result = await this.call('/trackercdn/v5/url',{}, {anonymous:true,uuid:'',params:{cmd:25,quality:'128',hash:fileHash,key:md5(`${fileHash}${TRACKER_SECRET}`),
+            pidversion:PID_VERSION,pid:PID,appid:APPID,mid:'-',behavior:'play',module:'',dfid:'-',clientver:'-',album_audio_id:albumAudioId(params.album_audio_id)}})
+        return trackerResult(result.data || result, params.hash, false)
+    }
+    // g0 / PartListenTrackerProtocol: official listen-part (trial) tracker.
+    async partPlayback(auth, params) {
+        const fileHash = String(params.hash).toLowerCase()
+        const result = await this.call('/v5/url',auth,{host:'trackercdn.kugou.com',protocol:'http',params:{pidversion:PID_VERSION,pid:PID,appid:APPID,mid:this.mid,version:11440,
+            vipType:VIP_TYPE,behavior:'play',module:'',album_audio_id:albumAudioId(params.album_audio_id),quality:'128',IsFreePart:'2',hash:fileHash,key:md5(`${fileHash}${TRACKER_SECRET}`)}})
+        return {...trackerResult(result.data || result, params.hash, true), free_part:1}
     }
 }

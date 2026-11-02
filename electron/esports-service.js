@@ -3,6 +3,9 @@ import { parseVrsStandings, vrsTeamKey } from '../src/utils/esports-vrs.js'
 
 const APP = 'https://app.5eplay.com'
 const DATA = 'https://esports-data.5eplaycdn.com'
+// 5EPlay community comments are served by the article site for the same
+// event model that the match page belongs to.
+const COMMENT = 'https://csgo.5eplay.com'
 const cache = new Map()
 const pending = new Map()
 const games = { csgo: 1, val: 5 }
@@ -202,6 +205,16 @@ function cursor(v) {
     if (s.length > 500 || !/^[a-zA-Z0-9_ ,:.-]*$/.test(s)) throw new Error('分页参数无效')
     return s
 }
+function localDay(value) {
+    const stamp = new Date(Number(value) * 1000)
+    return Number.isNaN(stamp.getTime()) ? '' : `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, '0')}-${String(stamp.getDate()).padStart(2, '0')}`
+}
+function nextDay(value) {
+    const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''))
+    if (!parts) return ''
+    const stamp = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]) + 1)
+    return `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, '0')}-${String(stamp.getDate()).padStart(2, '0')}`
+}
 async function get(host, path, params = {}, ttl = 15000) {
     const key = JSON.stringify([host, path, params])
     const hit = cache.get(key)
@@ -286,6 +299,56 @@ function normalizeSeriesEvent(row, leagueId, regionId) {
     }
 }
 
+// 5EPlay's match discussion is the union of the player-comment threads that
+// belong to the current match. Each thread is keyed by the encoded match/player
+// alias (from_type 31), so the tournament thread (model_type 20) is never used.
+async function matchCommentThreads(game, matchId, pageNumber, limitNumber) {
+    if (pageNumber > 1) return { total: 0, limit: limitNumber, page: pageNumber, list: [], has_more: false }
+    let tabs = []
+    try {
+        tabs = await get(APP, '/api/score/match_score_tab', {
+            match_id: matchId, game_type: games[game]
+        }, 30000)
+    } catch { tabs = [] }
+    const teams = (Array.isArray(tabs) ? tabs : []).filter(team => team.tab === 'match_player' && team.id)
+    const lists = await Promise.all(teams.map(team => get(APP, '/api/score/match_score_list', {
+        match_id: matchId, tab: team.tab, game_type: games[game], team_id: team.id
+    }, 30000).catch(() => [])))
+    const players = []
+    for (let index = 0; index < lists.length; index += 1) {
+        const team = teams[index], rows = Array.isArray(lists[index]) ? lists[index] : []
+        for (const player of rows) if (player?.id) players.push({ player, team })
+    }
+    const threads = await Promise.all(players.map(async ({ player, team }) => {
+        try {
+            const data = await get(APP, '/api/comment/index', {
+                page: 1,
+                from_id: JSON.stringify({ matchId, playerId: String(player.id) }),
+                from_type: 31,
+                comment_id: matchId,
+                child_comment_id: String(player.id),
+                sort: '0'
+            }, 30000)
+            return (Array.isArray(data?.list) ? data.list : []).map(comment => ({
+                ...comment,
+                subject: {
+                    playerId: String(player.id),
+                    playerName: player.name || '',
+                    playerLogo: player.logo || player.half_logo || '',
+                    teamName: team.name || '',
+                    teamLogo: team.logo || ''
+                }
+            }))
+        } catch { return [] }
+    }))
+    const unique = new Map()
+    for (const row of threads.flat()) if (row?.comment_id) unique.set(String(row.comment_id), row)
+    const list = [...unique.values()]
+        .sort((a, b) => (Number(b.dateline) || 0) - (Number(a.dateline) || 0))
+        .slice(0, Math.max(limitNumber, 100))
+    return { total: list.length, limit: list.length, page: 1, list, has_more: false }
+}
+
 export async function esportsRequest(operation, input = {}) {
     const p = input || {}
     const game = p.game || 'csgo'
@@ -294,17 +357,39 @@ export async function esportsRequest(operation, input = {}) {
     const page = integer(p.page, 1, 1000)
     const limit = integer(p.limit, 30)
     switch (operation) {
-        case 'matches':
-            return get(APP, '/api/tournament/session_list', {
-                game_type: games[game], game_status: '1', page, limit,
-                ...(p.date ? { game_date: date(p.date) } : {}),
-                ...(p.eventId ? { tt_ids: identifier(p.eventId) } : {})
-            }, 5000)
-        case 'results':
+        case 'matches': {
+            // The upstream ignores both `date` and `game_date`; it always
+            // returns the next upcoming matches. Fetch two pages (about 59
+            // fixtures across the next two weeks) and select the calendar day
+            // locally instead of letting the picker blank the schedule.
+            const query = { game_type: games[game], game_status: '1', limit,
+                ...(p.eventId ? { tt_ids: identifier(p.eventId) } : {}) }
+            const selected = p.date ? date(p.date).slice(0, 10) : ''
+            if (!selected) return get(APP, '/api/tournament/session_list', { ...query, page }, 5000)
+            const first = await get(APP, '/api/tournament/session_list', { ...query, page: 1 }, 5000)
+            const second = await get(APP, '/api/tournament/session_list', { ...query, page: 2 }, 5000).catch(() => ({ matches: [] }))
+            const matches = [...(first?.matches || []), ...(second?.matches || [])].filter(row => localDay(row?.mc_info?.plan_ts) === selected)
+            return { ...(first || {}), matches, page: 1 }
+        }
+        case 'results': {
+            const selected = p.date ? date(p.date).slice(0, 10) : localDay(Date.now() / 1000)
+            const boundary = nextDay(selected)
+            if (boundary) {
+                // `asc` + next-day 00:00 returns the latest results before the
+                // following day. Trim to the selected calendar day locally so a
+                // date picker always shows exactly that day's results.
+                const response = await get(APP, '/api/tournament/session_result_list', {
+                    game_type: games[game], page_size: 100, order_by: 'asc',
+                    page_token: `${boundary} 00:00:00`
+                })
+                const matches = (response?.matches || []).filter(row => localDay(row?.mc_info?.plan_ts) === selected)
+                return { ...(response || {}), matches, page_token: '', has_more: false }
+            }
             return get(APP, '/api/tournament/session_result_list', {
                 game_type: games[game], page_size: limit, order_by: 'asc',
-                page_token: cursor(p.cursor || `${date(p.date)} 23:59:59`)
+                page_token: cursor(p.cursor || '')
             })
+        }
         case 'events': {
             const path = game === 'csgo'
                 ? '/api/csgo/tournament/csgo_event_list'
@@ -389,6 +474,52 @@ export async function esportsRequest(operation, input = {}) {
             }, 0)
         case 'event':
             return get(DATA, `${root}/tournaments/${identifier(p.id)}/introduction`, {}, 60000)
+        // 5EPlay exposes event discussion through model_type=20. Matches do not
+        // carry a comment ID, so the match page resolves its tournament first
+        // and then reads that tournament's official community thread.
+        // 5EPlay user ratings: tabs select the two teams, the list carries the
+        // community score, star distribution and the latest player comment.
+        case 'score-tabs':
+            return get(APP, '/api/score/match_score_tab', {
+                match_id: identifier(p.matchId || p.id), game_type: games[game]
+            }, 60000)
+        case 'scores': {
+            const tab = /^[a-z_]{1,30}$/.test(String(p.tab || '')) ? String(p.tab) : 'match_player'
+            const teamId = p.teamId ? identifier(p.teamId) : ''
+            return get(APP, '/api/score/match_score_list', {
+                match_id: identifier(p.matchId || p.id), tab, game_type: games[game],
+                ...(teamId ? { team_id: teamId } : {})
+            }, 30000)
+        }
+        case 'comments': {
+            const pageNumber = integer(p.page, 1, 1000)
+            const limitNumber = integer(p.limit, 20, 50)
+            // Match pages must never borrow the tournament's thread. The score
+            // API carries the current match's spectator reviews per player.
+            const matchId = String(p.matchId || '').trim()
+            if (matchId) {
+                if (!/^[a-zA-Z0-9_-]{1,90}$/.test(matchId)) throw new Error('评论目标无效')
+                return matchCommentThreads(game, matchId, pageNumber, limitNumber)
+            }
+            let modelId = String(p.id || '').trim()
+            let modelType = p.kind === 'article' ? 19 : 20
+            if (p.ttId) {
+                const intro = await get(DATA, `${root}/tournaments/${identifier(p.ttId)}/introduction`, {}, 60000)
+                modelId = String(intro?.basic?.id || '')
+                modelType = 20
+            }
+            if (!modelId) return { total: 0, limit: limitNumber, page: pageNumber, list: [], has_more: false }
+            if (!/^\d{1,18}$/.test(modelId)) throw new Error('评论目标无效')
+            const data = await get(COMMENT, '/api/comment', {
+                model_type: modelType, model_id: modelId, page: pageNumber, limit: limitNumber
+            }, 30000)
+            const total = Number(data?.total) || 0
+            const list = Array.isArray(data?.list) ? data.list : []
+            // The upstream may cap the page size below the requested limit.
+            const effective = Number(data?.limit) || list.length || limitNumber
+            return { total, limit: effective, page: pageNumber, list,
+                has_more: pageNumber * effective < total }
+        }
         case 'stages':
             return get(DATA, `${root}/tournaments/${identifier(p.id)}/stages`, {}, 60000)
         case 'event-matches':

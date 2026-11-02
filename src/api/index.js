@@ -210,6 +210,7 @@ export const animeRuleImport = (input) => animeBridge().invoke('anime:rule-impor
 export const animeRuleCatalog = (refresh = false) => animeBridge().invoke('anime:rule-catalog', { refresh })
 export const animeRuleRestore = () => animeBridge().invoke('anime:rule-restore')
 export const animeRuleHealth = (source) => animeBridge().invoke('anime:rule-health', { source })
+export const animeLatency = (urls) => animeBridge().invoke('anime:latency', { urls })
 export const animeRuleInstall = (name) => animeBridge().invoke('anime:rule-install', { name })
 export const animeRuleVerify = (source) => animeBridge().invoke('anime:rule-verify', { source })
 export const animeRuleCancel = () => animeBridge().invoke('anime:rule-cancel')

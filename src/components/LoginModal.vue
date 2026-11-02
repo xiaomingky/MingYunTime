@@ -26,7 +26,7 @@ const kugouUserStore = useKugouUserStore()
 const platformStore = usePlatformStore()
 const messageStore = useMessageStore()
 const loading = ref(false)
-const loginMode = ref(platformStore.isQishui ? 'cookie' : 'qr') // qr, phone, email, cookie
+const loginMode = ref('qr') // qr, phone, email, cookie, wx (酷狗微信)
 
 // 是否 QQ 平台
 const isQQ = computed(() => platformStore.isQQ)
@@ -57,36 +57,50 @@ let qrTimer = null
 let qrGeneration = 0
 const qrError = ref('')
 const sodaQr = ref(''), sodaMessage = ref(''), sodaCookie = ref(''), sodaBusy = ref(false)
+const sodaCooling = ref(false), sodaCanCheck = ref(false)
 const sodaPhoneLogin = reactive(useQishuiPhoneLogin({ onConfirmed(profile) {
     qishuiUserStore.acceptProfile(profile)
     messageStore.success('汽水音乐登录成功')
     emit('close')
 } }))
 const sodaTabs = [
-    { mode: 'cookie', label: 'Cookie 登录', icon: FileCode },
     { mode: 'qr', label: '汽水扫码', icon: QrCode },
-    { mode: 'phone', label: '手机验证码', icon: Smartphone }
+    { mode: 'phone', label: '手机验证码', icon: Smartphone },
+    { mode: 'cookie', label: 'Cookie 登录', icon: FileCode }
 ]
 function focusSodaTab(event, index) {
     const selected = (index + sodaTabs.length) % sodaTabs.length
     loginMode.value = sodaTabs[selected].mode
     event.currentTarget.parentElement.querySelectorAll('[role="tab"]')[selected]?.focus()
 }
-let sodaLoginId = '', sodaTimer = null, sodaGeneration = 0
-function stopSodaLogin() {
+let sodaLoginId = '', sodaTimer = null, sodaGeneration = 0, sodaPollOnce = null
+function stopSodaPolling() {
     sodaGeneration++
     if (sodaTimer) clearTimeout(sodaTimer)
-    sodaTimer = null
+    sodaTimer = null; sodaPollOnce = null
+    sodaCooling.value = false; sodaCanCheck.value = false
+}
+function stopSodaLogin() {
+    stopSodaPolling()
     if (sodaLoginId) qishuiInvoke('qr-cancel', { loginId: sodaLoginId }).catch(() => {})
     sodaLoginId = ''; sodaBusy.value = false
 }
+function checkSodaLogin() {
+    if (!sodaCooling.value && sodaPollOnce) return sodaPollOnce()
+}
 async function startSodaLogin() {
-    stopSodaLogin(); sodaQr.value = ''; sodaMessage.value = '正在生成登录二维码…'; sodaBusy.value = true
+    // While Passport is cooling down, refreshing would only re-use the same
+    // QR. Keep it on screen and let the scheduled auto-check resume instead.
+    if (sodaCooling.value && sodaQr.value) { sodaMessage.value = '二维码仍然有效，正在等待自动续查…'; return }
+    // Keep the current Passport grant: the client reuses a fresh QR instead of
+    // requesting a new one, so clicking refresh cannot trip the request limit.
+    stopSodaPolling(); sodaMessage.value = '正在准备登录二维码…'; sodaBusy.value = true
     const generation = sodaGeneration
     try {
         const res = await qishuiInvoke('qr-create')
         if (generation !== sodaGeneration || !props.show) { qishuiInvoke('qr-cancel', { loginId: res.loginId }).catch(() => {}); return }
         sodaLoginId = res.loginId; sodaQr.value = res.image; sodaBusy.value = false
+        sodaMessage.value = res.reused ? '二维码仍然有效，正在检查登录状态…' : '请使用汽水音乐 App 扫码'
         const poll = async () => {
             if (generation !== sodaGeneration) return
             try {
@@ -98,10 +112,13 @@ async function startSodaLogin() {
                 }
                 if (['expired', 'cancelled'].includes(status.status)) { sodaMessage.value = '二维码已过期或取消，请刷新'; stopSodaLogin(); return }
                 if (status.status === 'rate_limited') {
-                    const seconds = Math.max(1, Math.ceil((status.retryAt - Date.now()) / 1000))
-                    sodaMessage.value = `汽水服务端拒绝了本次登录（访问频繁）。已停止自动查询；至少 ${seconds} 秒后可手动重新登录。等待结束不代表限制已解除。`
-                    sodaQr.value = ''
-                    stopSodaLogin()
+                    // Keep the QR and its isolated Passport session. Resume
+                    // automatically; the client applies a short, capped pause.
+                    const wait = Math.max(2000, (status.retryAt || Date.now()) - Date.now() + 500)
+                    const seconds = Math.max(1, Math.ceil(wait / 1000))
+                    sodaCooling.value = true
+                    sodaMessage.value = `查询请求较多，已自动放慢，${seconds} 秒后自动继续；二维码仍然有效。`
+                    sodaTimer = setTimeout(() => { sodaCooling.value = false; poll() }, wait)
                     return
                 }
                 if (status.status === 'verification_required') {
@@ -111,8 +128,20 @@ async function startSodaLogin() {
                     sodaTimer = setTimeout(poll, 2500)
                     return
                 }
-                sodaMessage.value = status.message || (['scanned', 'scaned'].includes(status.status) ? '已扫码，请在汽水音乐 App 中确认登录' : '请使用汽水音乐 App 扫码')
-                sodaTimer = setTimeout(poll, 5000)
+                if (['scanned', 'scaned'].includes(status.status)) {
+                    // The phone has read the QR. Keep polling until the user
+                    // confirms in the app, then accept the account automatically.
+                    sodaMessage.value = '已扫码，请在汽水音乐 App 中点击确认，确认后会自动登录'
+                    sodaCanCheck.value = true
+                    sodaTimer = setTimeout(poll, 5000)
+                    return
+                }
+                sodaMessage.value = status.message || '请使用汽水音乐 App 扫码'
+                sodaCanCheck.value = true
+                // Waiting for a scan needs no rapid polling. A slower interval
+                // still detects it automatically and leaves Passport's request
+                // budget for the confirmation phase.
+                sodaTimer = setTimeout(poll, 15000)
             } catch (e) {
                 if (generation !== sodaGeneration) return
                 sodaMessage.value = e.message || '汽水扫码状态获取失败，请刷新二维码'
@@ -120,8 +149,21 @@ async function startSodaLogin() {
                 else stopSodaLogin()
             }
         }
-        await poll()
-    } catch (e) { if (generation === sodaGeneration) { sodaMessage.value = e.message; sodaBusy.value = false } }
+        sodaPollOnce = poll; sodaCanCheck.value = true
+        // The first status query right after creation looks like a frequency
+        // burst to Passport; let the server register the QR before polling.
+        sodaTimer = setTimeout(poll, 3000)
+    } catch (e) {
+        if (generation !== sodaGeneration) return
+        if (e.retryAt) {
+            const seconds = Math.max(1, Math.ceil((e.retryAt - Date.now()) / 1000))
+            sodaMessage.value = `汽水登录服务暂缓请求，${seconds} 秒后自动重试。`
+            sodaBusy.value = false
+            sodaTimer = setTimeout(() => { if (generation === sodaGeneration) startSodaLogin() }, Math.max(2000, e.retryAt - Date.now() + 1000))
+        } else {
+            sodaMessage.value = e.message; sodaBusy.value = false
+        }
+    }
 }
 async function loginSodaCookie() {
     if (sodaBusy.value) return
@@ -438,7 +480,9 @@ watch(() => props.show, (newVal) => {
 }, { immediate: true })
 
 watch(loginMode, (newVal) => {
-    if (isQishui.value) { sodaMessage.value = ''; sodaPhoneLogin.cancel(); if (newVal === 'qr' && props.show) startSodaLogin(); else stopSodaLogin(); return }
+    // Keep the QR grant while visiting another 汽水 sign-in tab so returning
+    // to 扫码 reuses the same code instead of requesting another one.
+    if (isQishui.value) { sodaMessage.value = ''; sodaPhoneLogin.cancel(); if (newVal === 'qr' && props.show) startSodaLogin(); else stopSodaPolling(); return }
     // 先停止所有轮询
     stopAllPolling()
     if (isKugou.value) {
@@ -452,7 +496,7 @@ watch(loginMode, (newVal) => {
 // 平台切换时重置登录态
 watch(() => platformStore.currentPlatform, () => {
     stopAllPolling()
-    loginMode.value = isQishui.value ? 'cookie' : 'qr'
+    loginMode.value = 'qr'
     qrImg.value = ''
     qrStatus.value = 0
     if (props.show && loginMode.value === 'qr') startPlatformQr()
@@ -481,6 +525,7 @@ onUnmounted(() => { stopAllPolling(); stopSodaLogin() })
             <div class="qr-container"><img v-if="sodaQr" :src="sodaQr" alt="汽水登录二维码" /><div v-else class="qr-placeholder"><QrCode :size="38" /><span>{{ sodaBusy ? '正在准备二维码' : '二维码暂不可用' }}</span></div></div>
             <p class="qr-tip" role="status" aria-live="polite">{{ sodaMessage || '请使用汽水音乐 App 扫码' }}</p>
             <button class="login-btn" :disabled="sodaBusy" @click="startSodaLogin">{{ sodaBusy ? '生成中…' : '刷新二维码' }}</button>
+            <button v-if="sodaQr && !sodaBusy" class="soda-cookie-fallback" :disabled="sodaCooling || !sodaCanCheck" @click="checkSodaLogin">{{ sodaCooling ? '正在自动续查…' : '检查登录状态' }}</button>
             <button v-if="!sodaBusy && !sodaQr" class="soda-cookie-fallback" @click="loginMode = 'cookie'">使用 Cookie 登录</button>
           </div>
           <form v-else-if="loginMode === 'phone'" class="form soda-phone-form" @submit.prevent="sodaPhoneLogin.login()">
@@ -567,7 +612,11 @@ onUnmounted(() => { stopAllPolling(); stopSodaLogin() })
         <div class="login-tabs">
           <div class="tab" :class="{ active: loginMode === 'qr' }" @click="loginMode = 'qr'">
             <QrCode :size="16" />
-            扫码
+            酷狗扫码
+          </div>
+          <div class="tab" :class="{ active: loginMode === 'wx' }" @click="loginMode = 'wx'">
+            <MessageCircle :size="16" />
+            微信
           </div>
           <div class="tab" :class="{ active: loginMode === 'phone' }" @click="loginMode = 'phone'">
             <Smartphone :size="16" />
@@ -599,6 +648,27 @@ onUnmounted(() => { stopAllPolling(); stopSodaLogin() })
             </div>
             <p class="qr-tip">{{ kugouQrMessage || '请使用酷狗概念版 APP 扫码' }}</p>
             <button class="login-btn" :disabled="kugouQrMessage === '正在生成二维码…'" @click="startKugouQrLogin">刷新二维码</button>
+          </div>
+
+          <!-- 酷狗开放平台微信扫码 -->
+          <div v-if="loginMode === 'wx'" class="qr-login">
+            <div class="qr-container">
+              <img :src="kugouWxImg" v-if="kugouWxImg" :class="{ blur: kugouWxStatus === 402 || kugouWxStatus === 403 }" />
+              <div class="qr-overlay" v-if="kugouWxStatus === 405">
+                <div class="success-icon">✓</div>
+                <p>登录成功</p>
+              </div>
+              <div class="qr-overlay" v-if="kugouWxStatus === 402">
+                <p>二维码已过期</p>
+                <button @click="startKugouWxLogin">刷新</button>
+              </div>
+              <div class="qr-overlay" v-if="kugouWxStatus === 403">
+                <p>已拒绝登录</p>
+                <button @click="startKugouWxLogin">重试</button>
+              </div>
+            </div>
+            <p class="qr-tip">{{ kugouWxMessage || '使用微信扫一扫，登录酷狗音乐账号' }}</p>
+            <button class="login-btn" @click="startKugouWxLogin">刷新二维码</button>
           </div>
 
           <!-- 手机号 + 验证码 -->

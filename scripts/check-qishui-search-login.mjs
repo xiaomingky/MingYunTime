@@ -76,14 +76,16 @@ await assert.rejects(flow.qrCheck(qr.loginId), error => error.code === 'qr_rejec
 check(!saved && flow.logins.has(qr.loginId), 'rejected QR polling cannot claim confirmation or save a session')
 now += 5100; qrMode = 'limited'
 const limited = await flow.qrCheck(qr.loginId)
-check(limited.status === 'rate_limited' && limited.retryAt === now + 60000, 'HTTP 429 pauses QR polling for a minute')
-await assert.rejects(flow.qrCreate(), error => error.code === 'passport_rate_limited' && error.retryAt === limited.retryAt); checks++
+check(limited.status === 'rate_limited' && limited.retryAt === now + 8000, 'HTTP 429 pauses QR polling with a short progressive backoff')
+const beforeReuse = passportCalls.length
+const reused = await flow.qrCreate()
+check(reused.reused === true && reused.loginId === qr.loginId && reused.image === qr.image && passportCalls.length === beforeReuse, 'refresh during cooldown reuses the still-valid QR instead of requesting another Passport grant')
 const phoneDuringLimit = flow.beginLogin('phone')
 await assert.rejects(flow.passportCall(phoneDuringLimit, '/passport/web/send_code/'), error => error.code === 'passport_rate_limited'); checks++
 const limitedCount = passportCalls.length; now += 5100; await flow.qrCheck(qr.loginId)
 check(passportCalls.length === limitedCount, 'cooldown suppresses requests without a new network call')
 const blockedStatus = await flow.qrCheck(qr.loginId)
-check(blockedStatus.status === 'rate_limited' && blockedStatus.message.includes('手动重新登录') && !blockedStatus.message.includes('自动重试'), 'backend reports stopped requests without promising automatic retries')
+check(blockedStatus.status === 'rate_limited' && blockedStatus.message.includes('自动继续'), 'backend reports a resumable cooldown instead of a dead end')
 now = limited.retryAt + 1; qrMode = 'verify'
 check((await flow.qrCheck(qr.loginId)).status === 'verification_required', 'additional verification is explicit, never fake login')
 now += 5100; qrMode = '3'
@@ -123,12 +125,12 @@ const qrController = modal.slice(modal.indexOf("let sodaLoginId = ''"), modal.in
 check(qrController.startsWith("let sodaLoginId = ''"), 'production QR controller is available for lifecycle regression checks')
 function uiHarness(handler) {
     const calls = [], accepted = [], timers = new Map(), props = { show: true }, model = {}, messages = [], emitted = []
-    for (const name of ['sodaQr', 'sodaMessage', 'sodaBusy']) model[name] = { value: name === 'sodaBusy' ? false : '' }
+    for (const name of ['sodaQr', 'sodaMessage', 'sodaBusy', 'sodaCooling', 'sodaCanCheck']) model[name] = { value: ['sodaBusy', 'sodaCooling', 'sodaCanCheck'].includes(name) ? false : '' }
     let timerId = 0
     const invoke = async (name, args) => { calls.push({ name, args }); return handler(name, args) }
     const schedule = callback => { const id = ++timerId; timers.set(id, callback); return id }
     const unschedule = id => timers.delete(id)
-    const controller = new Function('qishuiInvoke', 'props', 'qishuiUserStore', 'messageStore', 'emit', 'setTimeout', 'clearTimeout', 'sodaQr', 'sodaMessage', 'sodaBusy', qrController + '\nreturn { startSodaLogin, stopSodaLogin }')(invoke, props, { acceptProfile: profile => accepted.push(profile) }, { success: value => messages.push(value) }, event => emitted.push(event), schedule, unschedule, model.sodaQr, model.sodaMessage, model.sodaBusy)
+    const controller = new Function('qishuiInvoke', 'props', 'qishuiUserStore', 'messageStore', 'emit', 'setTimeout', 'clearTimeout', 'sodaQr', 'sodaMessage', 'sodaBusy', 'sodaCooling', 'sodaCanCheck', qrController + '\nreturn { startSodaLogin, stopSodaLogin, checkSodaLogin }')(invoke, props, { acceptProfile: profile => accepted.push(profile) }, { success: value => messages.push(value) }, event => emitted.push(event), schedule, unschedule, model.sodaQr, model.sodaMessage, model.sodaBusy, model.sodaCooling, model.sodaCanCheck)
     const tick = async () => { check(timers.size === 1, 'only one next poll is scheduled'); const [id, callback] = timers.entries().next().value; timers.delete(id); await callback() }
     return { ...controller, calls, accepted, timers, props, model, messages, emitted, tick }
 }
@@ -138,24 +140,31 @@ const ui = uiHarness(async name => name === 'qr-create' ? { loginId: 'same-flow'
     { status: 'verification_required', message: '请完成安全验证' }, { status: 'scanned' }, { status: 'confirmed', profile: { userId: 'verified' } }
 ][statusIndex++] : {})
 await ui.startSodaLogin()
-check(ui.model.sodaQr.value === 'same-qr' && ui.model.sodaMessage.value === '请完成安全验证' && !ui.calls.some(call => call.name === 'qr-cancel'), 'security challenge preserves the existing QR and isolated login session')
-await ui.tick(); await ui.tick()
+check(ui.model.sodaQr.value === 'same-qr' && ui.timers.size === 1 && !ui.calls.some(call => call.name === 'qr-check'), 'QR creation defers the first status query instead of bursting Passport')
+await ui.tick()
+check(ui.model.sodaMessage.value === '请完成安全验证' && !ui.calls.some(call => call.name === 'qr-cancel'), 'security challenge preserves the existing QR and isolated login session')
+await ui.tick()
+check(ui.timers.size === 1 && ui.model.sodaMessage.value.includes('确认后会自动登录') && ui.model.sodaCanCheck.value === true, 'scanned state schedules the confirmation poll automatically')
+await ui.tick()
 check(ui.accepted.length === 1 && ui.emitted[0] === 'close' && ui.timers.size === 0 && ui.calls.filter(call => call.name === 'qr-check').every(call => call.args.loginId === 'same-flow'), 'successful post-verification poll accepts the validated account and releases the original flow')
 const rateUI = uiHarness(async name => name === 'qr-create' ? {loginId:'limited-flow',image:'qr'} : {status:'rate_limited',retryAt:Date.now()+60000})
 await rateUI.startSodaLogin()
-check(rateUI.model.sodaMessage.value.includes('已停止自动查询') && rateUI.timers.size === 0 && rateUI.calls.some(call=>call.name==='qr-cancel'), 'rate-limit UI cancels the grant and never repeatedly retries a rejected login')
+await rateUI.tick()
+check(rateUI.model.sodaQr.value === 'qr' && rateUI.model.sodaMessage.value.includes('自动继续') && rateUI.model.sodaCooling.value === true && rateUI.timers.size === 1 && rateUI.calls.filter(call=>call.name==='qr-check').length === 1 && !rateUI.calls.some(call=>call.name==='qr-cancel'), 'rate-limit UI keeps the QR and resumes polling automatically after the cooldown')
 rateUI.stopSodaLogin()
 const inFlight = deferred()
 const serial = uiHarness(async name => name === 'qr-create' ? { loginId: 'serial-flow', image: 'qr' } : name === 'qr-check' ? inFlight.promise : {})
-const starting = serial.startSodaLogin(); await new Promise(resolve => setImmediate(resolve))
+await serial.startSodaLogin()
+const polling = serial.tick(); await new Promise(resolve => setImmediate(resolve))
 check(serial.timers.size === 0 && serial.calls.filter(call => call.name === 'qr-check').length === 1, 'a pending verification request cannot schedule overlapping polls')
-inFlight.resolve({ status: 'verification_required' }); await starting
+inFlight.resolve({ status: 'verification_required' }); await polling
 check(serial.timers.size === 1 && serial.model.sodaMessage.value.includes('完成汽水安全验证'), 'pending request schedules one follow-up only after the response')
 serial.stopSodaLogin()
 check(serial.timers.size === 0 && serial.calls.some(call => call.name === 'qr-cancel' && call.args.loginId === 'serial-flow'), 'closing during security wait cancels the timer and original flow')
 const latePoll = deferred()
 const closing = uiHarness(async name => name === 'qr-create' ? { loginId: 'closing-flow', image: 'qr' } : name === 'qr-check' ? latePoll.promise : {})
-const waiting = closing.startSodaLogin(); await new Promise(resolve => setImmediate(resolve)); closing.stopSodaLogin()
+await closing.startSodaLogin()
+const waiting = closing.tick(); await new Promise(resolve => setImmediate(resolve)); closing.stopSodaLogin()
 latePoll.resolve({ status: 'confirmed', profile: { userId: 'late' } }); await waiting
 check(closing.accepted.length === 0 && closing.timers.size === 0 && closing.emitted.length === 0, 'a late confirmation after closing cannot accept an account or restart polling')
 const verifyError = uiHarness(async name => {
@@ -164,6 +173,7 @@ const verifyError = uiHarness(async name => {
     return {}
 })
 await verifyError.startSodaLogin()
+await verifyError.tick()
 check(verifyError.timers.size === 1 && !verifyError.calls.some(call => call.name === 'qr-cancel'), 'explicit unfinished-verification errors also preserve the flow for continuation')
 verifyError.stopSodaLogin()
 console.log(`Qishui search/login checks passed: ${checks} assertions; persistent identity, real browser context, signed PC discovery, QR verification continuation, serialized polling and cancellation.`)

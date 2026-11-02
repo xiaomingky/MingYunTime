@@ -42,24 +42,27 @@
 :root body input[type="checkbox"]:not(.visually-hidden):checked::after {
     content: '';
     position: absolute;
-    left: 4px;
-    top: 3px;
-    width: 6px;
-    height: 9px;
+    left: 50%;
+    top: 50%;
+    width: 7px;
+    height: 10px;
     border: solid #fff;
     border-width: 0 2px 2px 0;
-    transform: rotate(45deg);
+    /* Centre the tick for every checkbox size instead of the old 4px/3px
+       offsets, which left the mark visibly off-centre. */
+    transform: translate(-50%, -50%) rotate(45deg);
 }
 :root body input[type="checkbox"]:not(.visually-hidden):indeterminate::after {
     content: '';
     position: absolute;
-    inset: 7px 3px;
-    width: auto;
+    left: 3px;
+    right: 3px;
+    top: 50%;
     height: 2px;
     border: 0;
     border-radius: 2px;
     background: #fff;
-    transform: none;
+    transform: translateY(-50%);
 }
 :root body input[type="radio"]:checked::after {
     content: '';

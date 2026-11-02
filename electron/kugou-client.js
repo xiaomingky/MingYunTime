@@ -59,39 +59,12 @@ export class KugouClient {
         }).finally(() => { this.homePending = null })
         return this.homePending
     }
-    async publicPlaylists(page, size) {
-        // The official mobile site returns fixed 30-item pages. Translate the
-        // caller's page size without skipping or repeating catalogue entries.
-        const offset=(page-1)*size, songs=[], batch=30
-        let cursor=Math.floor(offset/batch)+1, total=Infinity, skip=offset%batch
-        while (songs.length<size && (cursor-1)*batch<total) {
-            const response=await this.data('https://m.kugou.com/plist/index', {json:true,page:cursor})
-            const data=response.plist?.list, items=list(data?.info,'推荐歌单')
-            total=Number(data.total)
-            if (!Number.isSafeInteger(total) || total<0 || items.length>batch) throw new Error('酷狗歌单分页响应异常')
-            songs.push(...items.slice(skip,skip+size-songs.length)); skip=0; cursor++
-            if (items.length<batch) break
-        }
-        return {status:1,data:{special_list:songs.map(publicPlaylist),total,has_next:offset+songs.length<total?1:0}}
-    }
     async audio(value) {
         const requested = hash(value)
         const result = await this.data('https://m.kugou.com/app/i/getSongInfo.php', { cmd: 'playInfo', hash: requested })
         const variants = [result.hash, result.req_hash, ...Object.entries(result.extra || {}).filter(([k]) => /hash$/i.test(k)).map(([,v]) => v)].filter(Boolean).map(s => String(s).toUpperCase())
         if (!variants.includes(requested)) throw new Error('酷狗返回的歌曲与所选歌曲不匹配')
         return { ...result, requestedHash: requested }
-    }
-    async accountAudio(params) {
-        const requested = hash(params.hash), userid = id(params.userid)
-        if (!/^[a-zA-Z0-9_-]{8,2048}$/.test(String(params.token || ''))) throw new Error('酷狗登录凭据格式无效，请重新登录')
-        const query = { appid:1014, platid:4, hash:requested, userid, token:params.token }
-        for (const field of ['album_id','album_audio_id']) if (params[field]) query[field] = id(params[field])
-        const result = await this.data('https://wwwapi.kugou.com/play/songinfo', kugouWebSign(query, this.now(), this.account.mid))
-        const data = result.data
-        if (!data || String(data.hash || '').toUpperCase() !== requested) throw new Error('酷狗返回的账号歌曲与所选歌曲不匹配')
-        if (!data.play_url) throw new Error('酷狗账号未获得该歌曲的播放授权')
-        return { ...data, url:data.play_url, bitRate:Number(data.bitrate || data.bitRate || 0), extName:data.extname || '', timeLength:Number(data.timelength || 0)/1000,
-            is_trial:data.is_free_part === 1, requestedHash:requested, accountAuthorized:true }
     }
     async call(route, params = {}) {
         if (!this.supports(route, params)) throw new Error('该酷狗操作尚未独立接入')
@@ -120,20 +93,47 @@ export class KugouClient {
             const fileids = values.map(value => { const n=Number(id(value)); if (!Number.isSafeInteger(n)) throw new Error('歌单歌曲 ID 超出安全精度'); return n })
             return this.privateClient.deletePlaylistTracks(params,id(params.listid),fileids)
         }
-        case '/top/song': return {status:1,data:(await this.home()).data.map(artwork)}
+        // YuekuNewSongProtocol: POST musicadservice/v1/newsong_publish_sp,
+        // body { pagesize, token? } and query uid.
+        case '/top/song': {
+            const result = await this.privateClient.call('/musicadservice/v1/newsong_publish_sp', params, {
+                anonymous:true, method:'POST', params:{uid: params.userid || 0},
+                data:{pagesize:4, ...(params.token ? {token:params.token} : {})}
+            })
+            const items = result.data?.song?.chn
+            return {status:1,data:(Array.isArray(items) ? items : []).map(artwork)}
+        }
+        // The concept client's banner comes from the ads gateway, which the ad
+        // service answers empty for this client; keep the public mobile banner
+        // and let a banner-only failure degrade to an empty carousel instead of
+        // blocking the rest of the discovery page.
         case '/pc/diantai': {
-            const data=(await this.home()).banner.filter(item => !item.isAd && !item.is_ad && item.extra?.specialid && item.imgurl)
-                .map(item => ({code:image(item.imgurl),title:item.title || '',url:'/kugou/playlist/special:'+id(item.extra.specialid)}))
-            return {status:1,data:{data}}
+            try {
+                const data = (await this.home()).banner.filter(item => !item.isAd && !item.is_ad && item.extra?.specialid && item.imgurl)
+                    .map(item => ({code:image(item.imgurl),title:item.title || '',url:'/kugou/playlist/special:'+id(item.extra.specialid)}))
+                return {status:1,data:{data}}
+            } catch { return {status:1,data:{data:[]}} }
         }
+        // mobile_newalbum_sp: body apiver/token/page/pagesize/withpriv/type.
         case '/top/album': {
-            if (params.type) return this.privateClient.call('/musicadservice/v1/mobile_newalbum_sp',params,{anonymous:!params.token,data:{apiver:6,token:params.token || '',page:page(),pagesize:size(),withpriv:1,type:Number(params.type)}})
-            const result=await this.mobile('album/list',{page:page(),pagesize:size()})
-            return {status:1,data:list(result.data?.info,'新碟').map(artwork)}
+            const result = await this.privateClient.call('/musicadservice/v1/mobile_newalbum_sp', params, {
+                anonymous:!params.token, method:'POST', params:{uid: params.userid || 0},
+                data:{apiver:6,token:params.token || '',page:page(),pagesize:size(),withpriv:1,...(params.type ? {type:Number(params.type)} : {})}
+            })
+            const items = result.data?.chn
+            return {status:1,data:(Array.isArray(items) ? items : []).map(artwork)}
         }
-        case '/top/playlist':
-            if (Number(params.category_id || 0)) return this.privateClient.call('/v2/special_recommend',params,{anonymous:!params.token,router:'specialrec.service.kugou.com',data:{appid:3116,mid:this.privateClient.mid,clientver:11440,platform:'android',clienttime:Math.floor(this.now()/1000),userid:params.userid || 0,module_id:1,page:page(),pagesize:size(),special_recommend:{withtag:Number(params.withtag ?? 1),withsong:Number(params.withsong ?? 1),sort:1,ugc:1,is_selected:0,withrecommend:1,area_code:1,categoryid:Number(params.category_id)},req_multi:1,retrun_min:5,return_special_falg:1}})
-            return this.publicPlaylists(page(),size())
+        // SpecialSubProtocol: /v2/special_recommend through specialrec.service.
+        case '/top/playlist': {
+            const result = await this.privateClient.call('/v2/special_recommend', params, {
+                anonymous:!params.token, router:'specialrec.service.kugou.com',
+                data:{platform:'android',module_id:'1',mid:this.privateClient.mid,page:page(),pagesize:size(),
+                    req_multi:1,return_min:5,return_special_flag:1,...(params.token && params.userid ? {userid:String(params.userid)} : {}),
+                    special_recommend:{withtag:1,sort:3,ugc:1,categoryid:String(Number(params.category_id || 0)),is_selected:0}}
+            })
+            const items = result.data?.special_list
+            return {status:1,data:{special_list:(Array.isArray(items) ? items : []).map(publicPlaylist),total:Number(result.data?.total) || 0,has_next:Number(result.data?.has_next) || 0}}
+        }
         case '/artist/lists': {
             if ([params.sextypes,params.type,params.musician].some(value=>Number(value || 0)!==0)) return this.privateClient.call('/ocean/v6/singer/list',params,{anonymous:!params.token,params:{musician:Number(params.musician || 0),sextype:Number(params.sextypes || 0),showtype:2,type:Number(params.type || 0),hotsize:integer(params.hotsize,30,1,100)}})
             const result=await this.mobile('singer/list',{page:1,pagesize:integer(params.hotsize,30,1,100)})
@@ -208,32 +208,35 @@ export class KugouClient {
             return { status:1, data:[{ ...result, hash:result.requestedHash, name:result.songName, author_name:result.singerName, timelen:result.timeLength*1000, cover:image(result.album_img), album_id:result.albumid, mixsongid:result.album_audio_id }] }
         }
         case '/song/url': {
-            let result, accountNotice = ''
+            const requested = hash(params.hash), target = { ...params, hash: requested }
+            let result, accountNotice = '', failure = ''
             if (params.token && params.userid) {
-                hash(params.hash)
-                try { result = await this.privateClient.playback(params,params) }
+                let verification = false
+                try { result = await this.privateClient.playback(params, target) }
                 catch (error) {
-                    // A personal playlist may contain stale album identifiers
-                    // after a catalogue migration. The official tracker can
-                    // reject that combination as a client validation error
-                    // even though the hash is playable. Retry the same account
-                    // grant with only the immutable file hash before surfacing
-                    // a real verification challenge.
-                    if (error.requiresVerification && (params.album_id || params.album_audio_id)) {
-                        try {
-                            result = await this.privateClient.playback(params, { ...params, album_id: '', album_audio_id: '' })
-                        } catch (retryError) {
-                            if (retryError.requiresVerification) throw retryError
-                        }
+                    failure = error.message; verification = error.requiresVerification
+                    // A personal playlist may carry stale album identifiers
+                    // after a catalogue migration. The official tracker rejects
+                    // that pair even though the immutable hash is playable.
+                    if (params.album_id || params.album_audio_id) {
+                        try { result = await this.privateClient.playback(params, { ...target, album_id: '', album_audio_id: '' }) }
+                        catch (retryError) { failure = retryError.message; verification = verification || retryError.requiresVerification }
                     }
-                    if (!result) {
-                        if (error.requiresVerification) throw error
-                        try { result = await this.accountAudio(params) }
-                        catch (e) { accountNotice = e.message + '；当前尝试游客可用音源' }
-                    }
+                    if (!result && verification) accountNotice = '酷狗要求安全验证，请在官方客户端完成验证；当前尝试游客可用音源'
+                }
+                if (!result) {
+                    // g0 PartListenTrackerProtocol: the official listen-part
+                    // grant that the concept client uses for restricted songs.
+                    try { result = await this.privateClient.partPlayback(params, target) }
+                    catch { /* the official guest tracker below remains */ }
                 }
             }
-            if (!result) result = await this.audio(params.hash)
+            if (!result) {
+                // BasicTrackerProtocol: official guest tracker, never the
+                // legacy mobile playInfo endpoint (that one answers status 0).
+                try { result = await this.privateClient.guestPlayback(target) }
+                catch (error) { throw new Error(failure || error.message) }
+            }
             const stream = kugouStreamInfo(result)
             let url = result.url || ''
             if (url) {

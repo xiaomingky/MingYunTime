@@ -285,10 +285,17 @@ export class QishuiClient {
             this.passportRateCount++
             const header = response.headers?.['retry-after']
             const retryAfter = header === undefined ? 0 : /^\d+(?:\.\d+)?$/.test(String(header)) ? this.now() + Number(header) * 1000 : Date.parse(header)
-            this.passportRetryAt = Math.max(this.now() + Math.min(300000, 60000 * 2 ** Math.min(this.passportRateCount - 1, 3)), Number.isFinite(retryAfter) ? retryAfter : 0)
-            throw Object.assign(new QishuiError('passport_rate_limited', '汽水登录服务限制请求频率，请等待倒计时结束后重试'), { retryAt: this.passportRetryAt })
+            // Passport's cooldown is short-lived. A long local block keeps a
+            // still-valid QR unusable after the server has already recovered;
+            // pause briefly, then let the view resume by itself.
+            const backoff = Math.min(30000, 8000 * 2 ** Math.min(this.passportRateCount - 1, 2))
+            this.passportRetryAt = Math.max(this.now() + backoff, Number.isFinite(retryAfter) ? retryAfter : 0)
+            throw Object.assign(new QishuiError('passport_rate_limited', '汽水登录服务限制请求频率，将在冷却结束后自动继续'), { retryAt: this.passportRetryAt })
         }
-        if (response.data?.message === 'success' && errorCode === 0) this.passportRateCount = 0
+        // Any accepted Passport response (waiting, scanned or confirmed) proves
+        // the cooldown is over. Do not require the literal success message,
+        // which escalates later limits to the longest backoff unnecessarily.
+        if (response.status === 200 && errorCode === 0) this.passportRateCount = 0
         return response
     }
     beginLogin(kind = 'qr', lifetime = 180000) {
@@ -302,6 +309,19 @@ export class QishuiClient {
         return login
     }
     async qrCreate() {
+        const now = this.now()
+        // Pressing refresh while a QR is still valid must not mint another
+        // Passport grant (each one also opens an isolated browser). Reusing it
+        // avoids the get_qrcode burst that triggers Passport's request limit.
+        const reusable = [...this.logins.values()]
+            .filter(login => login.kind === 'qr' && login.image && typeof login.createdAt === 'number' &&
+                login.expiresAt > now + 5000 &&
+                !['scanned', 'confirmed', 'expired', 'cancelled'].includes(login.lastStatus))
+            .sort((a, b) => b.createdAt - a.createdAt)[0]
+        if (reusable) return { loginId: reusable.id, image: reusable.image, expiresAt: reusable.expiresAt, reused: true }
+        // A new QR replaces abandoned QR grants instead of consuming the
+        // five-flow budget with hidden login windows.
+        for (const [id, login] of this.logins) if (login.kind === 'qr') this.qrCancel(id)
         const login = this.beginLogin(), { id, revision } = login
         try {
             const res = await this.passportCall(login, '/passport/web/get_qrcode/', { params: {
@@ -326,9 +346,12 @@ export class QishuiClient {
             if (!image?.startsWith('data:image/png;base64,')) throw new QishuiError('qr_unavailable', '汽水未返回有效二维码，请刷新')
             if (revision !== this.revision || this.logins.get(id) !== login) throw new QishuiError('cancelled', '登录已取消')
             mergeCookies(login.jar, res.headers?.['set-cookie']); login.token = p.token
+            login.frontier = p.is_frontier === true
+            login.frontierParams = p.frontier_params && typeof p.frontier_params === 'object' ? p.frontier_params : null
             const expiry = Number(p.expire_time)
             const lifetime = expiry > 1000000000 ? expiry * 1000 - this.now() : (expiry || 180) * 1000
             login.expiresAt = this.now() + Math.max(1000, Math.min(300000, lifetime))
+            login.image = image; login.createdAt = this.now()
             return { loginId: id, image, expiresAt: login.expiresAt }
         } catch (error) { this.qrCancel(id); throw error }
     }
@@ -336,14 +359,16 @@ export class QishuiClient {
         const login = this.logins.get(id)
         if (login && login.kind !== 'qr') throw new QishuiError('invalid_login', '请使用对应的登录方式')
         if (!login || login.expiresAt <= this.now()) { this.qrCancel(id); return { status: 'expired' } }
-        if (this.passportRetryAt > this.now()) return { status: 'rate_limited', retryAt: this.passportRetryAt, message: '汽水服务端限制了状态查询，已停止自动请求；冷却结束后可手动重新登录' }
+        if (this.passportRetryAt > this.now()) return { status: 'rate_limited', retryAt: this.passportRetryAt, message: '汽水服务端限制了状态查询，冷却结束后会自动继续' }
         if (login.busy || login.cooldownUntil > this.now()) return { status: login.lastStatus || 'waiting' }
         if (this.passportRequest && this.now() - login.lastCheckAt < 5000) return { status: login.lastStatus || 'waiting' }
         login.lastCheckAt = this.now()
         login.busy = true
         try {
+            // Official PC login calls checkQrconnect({ token, next }) and lets
+            // the SDK supply the remaining fields; do not force frontier mode.
             const data = new URLSearchParams({ need_logo: 'false', need_short_url: 'false',
-                is_frontier: 'true', token: login.token, is_new_login: '1', next: PC }).toString()
+                token: login.token, is_new_login: '1', next: PC }).toString()
             const res = await this.passportCall(login, '/passport/web/check_qrconnect/', { method: 'POST', data })
             if (this.logins.get(id) !== login || this.revision !== login.revision) return { status: 'cancelled' }
             if (login.expiresAt <= this.now()) { this.qrCancel(id); return { status: 'expired' } }

@@ -378,3 +378,24 @@
   .as-detail-actions { gap: 6px; margin-top: 15px; }
   .as-detail-actions .as-button { padding: 7px 10px; min-height: 33px; }
 }
+
+/* Real playback-line latency badges */
+.as-latency {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  background: #f1f3f2;
+  color: #98a39d;
+}
+.as-latency.good { background: #e3f6e9; color: #227a45; }
+.as-latency.ok { background: #e6f0eb; color: #487b69; }
+.as-latency.slow { background: #fff2df; color: #a16612; }
+.as-latency.bad { background: #fdeaea; color: #b4453f; }
+.as-latency.pending { background: #f1f3f2; color: #98a39d; }

@@ -4,7 +4,7 @@ import { RefreshCw, Radio, Search, ChevronRight, CalendarDays, Trophy, Gamepad2,
 import { useRoute, useRouter } from 'vue-router'
 import { esports } from '../api/esports'
 import { useEsportsRefresh } from '../composables/useEsportsRefresh'
-import { itemsOf, localDate, matchInfo, gameName, uniqueMatches } from '../utils/esports'
+import { itemsOf, localDate, matchInfo, matchState, gameName, uniqueMatches, teamName, score } from '../utils/esports'
 import EsportsMatches from '../components/esports/EsportsMatches.vue'
 import EsportsStats from '../components/esports/EsportsStats.vue'
 import EsportsImage from '../components/esports/EsportsImage.vue'
@@ -19,7 +19,7 @@ const game = computed(() => route.query.game === 'val' ? 'val' : 'csgo')
 const tab = computed(() => ['schedule','result','event','ranking','data','series'].includes(route.query.tab) ? route.query.tab : 'schedule')
 const loading = ref(false), error = ref(''), updateError = ref(''), loadingMore = ref(false), hasMore = ref(true)
 const rows = ref([]), matches = ref([]), events = ref([]), series = ref([])
-const date = ref(localDate()), scheduleDate = ref(''), search = ref(''), status = ref('all'), eventStatus = ref('upcoming')
+const date = ref(localDate()), scheduleDate = ref(localDate()), search = ref(''), status = ref('all'), eventStatus = ref('upcoming')
 const kind = ref('team'), region = ref(''), selectedEvent = ref(''), metric = ref('acs'), expanded = ref(false), updatedAt = ref('')
 const rankingSource = ref('vrs'), rankPublication = ref(''), rankSourceUrl = ref(''), rankSourceLabel = ref(''), eventFilter = ref('all')
 const favorites = ref([])
@@ -49,10 +49,11 @@ const vrsRegionOptions = [{value:'',label:'全球排名'},{value:'europe',label:
 const statusOptions = [{value:'all',label:'全部状态'},{value:'1',label:'进行中'},{value:'0',label:'未开始'},{value:'2',label:'已结束'}]
 const eventStatusOptions = [{value:'upcoming',label:'进行中 / 即将开始'},{value:'past',label:'已结束'}]
 const metricOptions = [{value:'acs',label:'ACS'},{value:'adr',label:'ADR'},{value:'kd',label:'K/D'}]
-const visibleMatches = computed(() => matches.value.filter(m => (status.value === 'all' || String(m.state?.status) === status.value) && (!search.value || `${matchInfo(m).t1_info?.disp_name} ${matchInfo(m).t2_info?.disp_name} ${m.tt_info?.disp_name}`.toLowerCase().includes(search.value.toLowerCase()))))
+const visibleMatches = computed(() => matches.value.filter(m => (status.value === 'all' || String(matchState(m).status) === status.value) && (!search.value || `${matchInfo(m).t1_info?.disp_name} ${matchInfo(m).t2_info?.disp_name} ${m.tt_info?.disp_name}`.toLowerCase().includes(search.value.toLowerCase()))))
 const visibleEvents = computed(() => events.value.filter(e => (!search.value || (e.basic_info?.disp_name || '').toLowerCase().includes(search.value.toLowerCase())) && (eventFilter.value!=='featured' || ['1','2','3'].includes(String(e.basic_info?.grade))) && (eventFilter.value!=='favorites' || favorites.value.includes(e.basic_info?.id))))
 const eventGroups = computed(()=>{const groups=new Map();for(const event of visibleEvents.value){const month=String(event.basic_info?.start_time || '').slice(0,7);const label=month ? `${month.slice(0,4)}年${Number(month.slice(5))}月` : '日期待定';if(!groups.has(label))groups.set(label,[]);groups.get(label).push(event)}return [...groups].map(([label,items])=>({label,items}))})
-const matchCounts = computed(()=>({live:matches.value.filter(m=>String(m.state?.status)==='1').length,upcoming:matches.value.filter(m=>String(m.state?.status)==='0').length,events:new Set(matches.value.map(m=>m.tt_info?.id).filter(Boolean)).size}))
+const matchCounts = computed(()=>({live:matches.value.filter(m=>String(matchState(m).status)==='1').length,upcoming:matches.value.filter(m=>String(matchState(m).status)==='0').length,events:new Set(matches.value.map(m=>m.tt_info?.id).filter(Boolean)).size}))
+const liveMatches = computed(() => matches.value.filter(m => String(matchState(m).status) === '1').slice(0, 4))
 const visibleRanks = computed(() => rows.value.filter(r => (!region.value || !r.region_id || r.region_id === region.value) && (!search.value || `${r.name} ${(r.players||[]).map(p=>p.name).join(' ')}`.toLowerCase().includes(search.value.toLowerCase()))))
 function navigate(next) { router.replace({path:'/entertainment',query:{game:next.game || game.value,tab:next.tab || tab.value}}) }
 async function loadSeriesEvents() {
@@ -98,7 +99,7 @@ async function load(append = false, quiet = false) {
             const received = response?.matches || []
             const prev = append ? matches.value : []
             matches.value = uniqueMatches([...prev,...received])
-            hasMore.value = received.length === 40 && matches.value.length > prev.length
+            hasMore.value = t === 'result' || (t === 'schedule' && scheduleDate.value) ? false : received.length === 40 && matches.value.length > prev.length
             const last = received[received.length - 1]
             if (last) {
                 const stamp = new Date(Number(last.mc_info?.plan_ts) * 1000)
@@ -132,11 +133,15 @@ onBeforeUnmount(() => { disposed = true; sequence++; seriesSequence++ })
 </script>
 <template>
     <div class="es-page es-overview">
-        <header class="es-overview-heading"><div><span class="es-kicker">ESPORTS CENTER</span><h1><Gamepad2 :size="27" />娱乐专区<span class="es-heading-label">赛事中心</span></h1></div><div class="es-overview-update"><span v-if="updatedAt">更新于 {{ updatedAt }}</span><button class="es-icon-btn" :disabled="loading" title="刷新赛事" @click="load()"><RefreshCw :class="{'es-spin':loading}" :size="18" /></button></div></header>
+        <header class="es-overview-heading"><div><span class="es-kicker">5E PLAY · ESPORTS DATA</span><h1><span class="es-five-mark">5E</span>娱乐专区<span class="es-heading-label">赛事数据中心</span><span v-if="matchCounts.live" class="es-live-pill"><i></i>LIVE</span></h1></div><div class="es-overview-update"><span v-if="updatedAt">更新于 {{ updatedAt }}</span><button class="es-icon-btn" :disabled="loading" title="刷新赛事" @click="load()"><RefreshCw :class="{'es-spin':loading}" :size="18" /></button></div></header>
         <div class="es-navigation"><div class="es-game-switch"><button :class="{active:game==='csgo'}" @click="navigate({game:'csgo',tab:'schedule'})"><span class="es-game-mark cs">CS</span><b>CS</b><small>Counter-Strike</small></button><button :class="{active:game==='val'}" @click="navigate({game:'val',tab:'schedule'})"><span class="es-game-mark val">V</span><b>VAL</b><small>VALORANT</small></button></div>
             <nav class="es-tabs es-main-tabs"><button v-for="item in tabs" :key="item.value" :class="{active:tab===item.value}" @click="navigate({tab:item.value})"><component :is="item.icon" :size="17" />{{ item.label }}</button></nav>
         </div>
         <div v-if="tab==='schedule' && !loading && !error" class="es-summary-strip"><div><CalendarDays :size="20" /><span>当前赛程<b>{{ matches.length }} 场</b></span></div><div><Radio :size="20" /><span>正在进行<b class="es-green">{{ matchCounts.live }} 场</b></span></div><div><CalendarDays :size="20" /><span>即将开始<b>{{ matchCounts.upcoming }} 场</b></span></div><div><Trophy :size="20" /><span>覆盖赛事<b>{{ matchCounts.events }} 项</b></span></div></div>
+        <section v-if="tab==='schedule' && liveMatches.length" class="es-live-board">
+            <header class="es-live-board-head"><span><i></i>LIVE NOW</span><small>实时进行中的比赛</small></header>
+            <div class="es-live-board-grid"><button v-for="m in liveMatches" :key="matchInfo(m).id" class="es-live-match" @click="router.push(`/entertainment/${game}/match/${matchInfo(m).id}`)"><div class="es-live-match-top"><span class="es-live-tag">LIVE</span><small>{{ m.tt_info?.disp_name || '赛事直播' }}</small><em>BO{{ matchInfo(m).format || '?' }}</em></div><div class="es-live-match-body"><span class="es-live-team"><EsportsImage :src="matchInfo(m).t1_info?.logo" /><b>{{ teamName(matchInfo(m).t1_info) }}</b></span><strong>{{ score(matchState(m).t1_score) }}<span>:</span>{{ score(matchState(m).t2_score) }}</strong><span class="es-live-team right"><b>{{ teamName(matchInfo(m).t2_info) }}</b><EsportsImage :src="matchInfo(m).t2_info?.logo" /></span></div></button></div>
+        </section>
         <div v-if="tab==='ranking' || tab==='data'" class="es-category-tabs"><button :class="{active:kind==='team'}" @click="kind='team'"><Users :size="16" />战队</button><button :class="{active:kind==='player'}" @click="kind='player'">选手</button></div>
         <div v-if="tab==='event'" class="es-category-tabs"><button :class="{active:eventFilter==='all'}" @click="eventFilter='all'">全部</button><button :class="{active:eventFilter==='featured'}" @click="eventFilter='featured'">重点赛事</button><button :class="{active:eventFilter==='favorites'}" @click="eventFilter='favorites'"><Star :size="15" />我的收藏</button></div>
         <div v-if="tab==='series'" class="es-league-tabs"><button v-for="league in series" :key="league.league_id" :class="{active:seriesLeague===league.league_id}" @click="switchLeague(league.league_id)"><EsportsImage :src="league.logo" />{{ league.abbr || league.league_name }}</button></div>

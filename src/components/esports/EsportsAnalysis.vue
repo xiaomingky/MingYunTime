@@ -11,14 +11,42 @@ const comparison = computed(() => props.result.comparison || {})
 const players = computed(() => [comparison.value.t1_player_stats || [],comparison.value.t2_player_stats || []])
 watch(players, () => { selected.value = [0,0] })
 const pair = computed(() => players.value.map((rows,i) => rows[selected.value[i]] || {}))
-const axes = computed(() => (props.game==='val' ? [['rating','Rating',1.6],['acs','ACS',350],['adr','ADR',220],['kd','K/D',1.8],['avg_first_kill','首杀',.3]] : [['Rating','Rating',1.6],['adr','ADR',120],['kd','K/D',1.8],['kast','KAST',100],['kpr','KPR',1.1]]).filter(([key])=>pair.value.some(p=>Number.isFinite(parseFloat(p[key])))))
-const point = (i, radius, count = axes.value.length) => { const angle=-Math.PI/2+i*Math.PI*2/count; return [150+Math.cos(angle)*radius,150+Math.sin(angle)*radius] }
-const polygon = radius => axes.value.map((_,i)=>point(i,radius).join(',')).join(' ')
-const playerPolygon = player => axes.value.map(([key,,max],i)=>point(i,Math.min(1,Math.max(0,parseFloat(player[key])||0)/max)*95).join(',')).join(' ')
+// Only actual per-player numbers are plotted. No fixed maxima or invented
+// radar shapes: each pair is compared against the other player's real value.
+const number = value => {
+    const parsed = parseFloat(String(value ?? '').replace('%', '').replace('+', ''))
+    return Number.isFinite(parsed) ? parsed : null
+}
+const duelMetrics = computed(() => {
+    const specs = props.game === 'val'
+        ? [['rating','Rating'],['acs','ACS'],['adr','ADR'],['kd','K/D'],['avg_first_kill','首杀']]
+        : [['Rating','Rating'],['adr','ADR'],['kd','K/D'],['kast','KAST'],['kpr','KPR'],['swing','Swing']]
+    return specs.map(([key,label]) => {
+        const a = number(pair.value[0]?.[key]), b = number(pair.value[1]?.[key])
+        if (a === null && b === null) return null
+        const left = a === null && b === null ? 50 : (Math.abs(a || 0) + Math.abs(b || 0)) ? Math.abs(a || 0) / (Math.abs(a || 0) + Math.abs(b || 0)) * 100 : 50
+        return { key, label, a: pair.value[0]?.[key] ?? '--', b: pair.value[1]?.[key] ?? '--', left }
+    }).filter(Boolean)
+})
 const maps = computed(()=>comparison.value.team_map_stats || [])
-const mapKey = computed(()=> mapMode.value==='rate' ? 'rate' : `${mapMode.value}_rate`)
 const numeric = value => Math.min(100,Math.max(0,parseFloat(value)||0))
 const display = value => value==null || value==='' || value==='--' ? '--' : `${value}%`
+// 5EPlay's map table marks this match's veto on the owning team's cell:
+// PICK is green, BAN is red. Counts/percentages remain the last three months.
+const mapBadge = (map, side) => {
+    const type = String(map?.bp_type || '')
+    if (!type.startsWith(`${side}_`)) return ''
+    if (type.endsWith('_pick')) return 'PICK'
+    if (type.endsWith('_ban')) return 'BAN'
+    return type.slice(type.indexOf('_') + 1).toUpperCase()
+}
+const mapModeValue = (map, side) => {
+    const prefix = `${side}_`
+    if (mapMode.value === 'rate') return { value: display(map[`${prefix}rate`]), meta: `${map[`${prefix}win_num`] || 0} 胜` }
+    if (mapMode.value === 'pick') return { value: `${map[`${prefix}pick_count`] ?? 0} 次`, meta: `${display(map[`${prefix}pick_rate`])} PICK` }
+    return { value: `${map[`${prefix}ban_count`] ?? 0} 次`, meta: `${display(map[`${prefix}ban_rate`])} BAN` }
+}
+const mapModeRate = (map, side) => numeric(map[`${side}_${mapMode.value === 'rate' ? 'rate' : `${mapMode.value}_rate`}`])
 function recentMatches(value) {
     const found = new Map()
     function walk(node, tournament) {
@@ -50,18 +78,18 @@ const metrics = computed(()=>{
     <div v-else-if="error" class="es-state">{{ error }}</div>
     <div v-else class="es-analysis-layout">
         <section class="es-analysis-card es-player-analysis"><header class="es-section-title"><h3><Crosshair :size="18" />选手分析</h3><span>最近三个月</span></header>
-            <div class="es-analysis-subtabs"><button :class="{active:mode==='radar'}" @click="mode='radar'">基础能力对比</button><button :class="{active:mode==='data'}" @click="mode='data'">数据对比</button></div>
+            <div class="es-analysis-subtabs"><button :class="{active:mode==='radar'}" @click="mode='radar'">真实数据对比</button><button :class="{active:mode==='data'}" @click="mode='data'">数据对比</button></div>
             <template v-if="players.some(rows=>rows.length)">
                 <div class="es-player-strip"><button v-for="(p,i) in players[0]" :key="p.id || p.name" :class="{active:selected[0]===i}" @click="selected[0]=i"><span class="es-player-portrait"><EsportsImage :src="p.half_logo || p.logo || p.portrait" :alt="p.name" /><img v-if="p.country_logo" :src="p.country_logo" alt="" loading="lazy" referrerpolicy="no-referrer" /></span><span>{{ p.name }}</span></button></div>
                 <div v-if="mode==='radar'" class="es-player-duel"><div v-for="(p,i) in pair" :key="i" class="es-duel-player" :class="{right:i===1}"><EsportsImage class="es-duel-team-watermark" :src="info[`t${i+1}_info`]?.logo" /><EsportsImage :src="p.half_logo || p.logo || p.portrait" :alt="p.name" /><b>{{ p.name || '待定' }}</b></div>
-                    <svg v-if="axes.length>=3" class="es-radar" viewBox="0 0 300 300" role="img" aria-label="双方选手基础数据雷达图"><polygon v-for="level in [1,.75,.5,.25]" :key="level" :points="polygon(level*95)" class="es-radar-grid" /><line v-for="(_,i) in axes" :key="i" x1="150" y1="150" :x2="point(i,95)[0]" :y2="point(i,95)[1]" class="es-radar-grid" /><polygon :points="playerPolygon(pair[0])" class="es-radar-left" /><polygon :points="playerPolygon(pair[1])" class="es-radar-right" /><g v-for="([key,label],i) in axes" :key="key"><text :x="point(i,122)[0]" :y="point(i,122)[1]" text-anchor="middle">{{ label }}</text><text class="es-radar-value" :x="point(i,122)[0]" :y="point(i,122)[1]+14" text-anchor="middle">{{ pair[0][key] ?? '--' }} / {{ pair[1][key] ?? '--' }}</text></g></svg><p v-else class="es-empty-small">暂无可对比的选手数据</p>
+                    <div v-if="duelMetrics.length" class="es-duel-metrics"><div v-for="m in duelMetrics" :key="m.key" class="es-duel-metric"><div class="es-duel-metric-head"><b>{{ m.a }}</b><span>{{ m.label }}</span><b>{{ m.b }}</b></div><div class="es-duel-metric-track"><i class="left" :style="{width:`${m.left}%`}"></i><i class="right" :style="{width:`${100-m.left}%`}"></i></div></div></div><p v-else class="es-empty-small">暂无可对比的选手数据</p>
                 </div>
                 <div v-else class="es-player-data"><EsportsStats :rows="pair" :game="game" :expanded="true" /></div>
                 <div class="es-player-strip is-right"><button v-for="(p,i) in players[1]" :key="p.id || p.name" :class="{active:selected[1]===i}" @click="selected[1]=i"><span class="es-player-portrait"><EsportsImage :src="p.half_logo || p.logo || p.portrait" :alt="p.name" /><img v-if="p.country_logo" :src="p.country_logo" alt="" loading="lazy" referrerpolicy="no-referrer" /></span><span>{{ p.name }}</span></button></div>
-                <p class="es-analysis-note">图形按各项参考范围缩放，数值为真实基础数据。</p>
+                <p class="es-analysis-note">对比条按两名选手的真实数值等比缩放，不使用虚构雷达范围。</p>
             </template><p v-else class="es-empty-small">暂无选手分析数据</p>
         </section>
-        <section class="es-analysis-card es-map-analysis"><header class="es-section-title"><h3><MapIcon :size="18" />地图分析</h3><span>最近三个月</span></header><div class="es-analysis-subtabs"><button :class="{active:mapMode==='rate'}" @click="mapMode='rate'">胜率</button><button :class="{active:mapMode==='pick'}" @click="mapMode='pick'">PICK</button><button :class="{active:mapMode==='ban'}" @click="mapMode='ban'">BAN</button></div><div class="es-analysis-teamline"><span><EsportsImage :src="info.t1_info?.logo" />{{ teamName(info.t1_info) }}</span><i>VS</i><span>{{ teamName(info.t2_info) }}<EsportsImage :src="info.t2_info?.logo" /></span></div><div class="es-map-comparison-list"><div v-for="map in maps" :key="map.name" class="es-map-comparison"><span><small>{{ mapMode==='rate' ? `${map.t1_win_num || '--'} 胜` : `${map[`t1_${mapMode}_count`] ?? '--'} 次` }}</small><b>{{ display(map[`t1_${mapKey}`]) }}</b></span><div class="es-map-art"><img v-if="map.bgm" :src="map.bgm" alt="" loading="lazy" referrerpolicy="no-referrer" /><span>{{ map.name_zh }}<small>{{ map.name }}</small></span><div class="es-map-rate-bars"><i :style="{width:`${numeric(map[`t1_${mapKey}`])}%`}"></i><i :style="{width:`${numeric(map[`t2_${mapKey}`])}%`}"></i></div></div><span><small>{{ mapMode==='rate' ? `${map.t2_win_num || '--'} 胜` : `${map[`t2_${mapMode}_count`] ?? '--'} 次` }}</small><b>{{ display(map[`t2_${mapKey}`]) }}</b></span></div></div><p v-if="!maps.length" class="es-empty-small">暂无地图分析数据</p></section>
+        <section class="es-analysis-card es-map-analysis"><header class="es-section-title"><h3><MapIcon :size="18" />地图分析</h3><span>最近三个月</span></header><div class="es-analysis-subtabs"><button :class="{active:mapMode==='rate'}" @click="mapMode='rate'">胜率</button><button :class="{active:mapMode==='pick'}" @click="mapMode='pick'">PICK</button><button :class="{active:mapMode==='ban'}" @click="mapMode='ban'">BAN</button></div><div class="es-map-table"><div class="es-map-table-head"><span>地图</span><span class="es-map-table-team"><EsportsImage :src="info.t1_info?.logo" />{{ teamName(info.t1_info) }}</span><span class="es-map-table-team"><EsportsImage :src="info.t2_info?.logo" />{{ teamName(info.t2_info) }}</span></div><div v-for="map in maps" :key="map.name" class="es-map-table-row"><div class="es-map-table-name" :style="{ backgroundImage: `url(${map.bgm || map.icon})` }"><b>{{ map.name_zh || map.name }}</b><small>{{ map.name }}</small></div><div v-for="side in ['t1','t2']" :key="side" class="es-map-table-cell"><span v-if="mapBadge(map, side)" class="es-map-badge" :class="mapBadge(map, side).toLowerCase()">{{ mapBadge(map, side) }}</span><div class="es-map-cell-value"><b>{{ mapModeValue(map, side).value }}</b><small>{{ mapModeValue(map, side).meta }}</small></div><div class="es-map-bar"><i :class="side" :style="{ width: `${mapModeRate(map, side)}%` }"></i></div></div></div><p v-if="!maps.length" class="es-empty-small">暂无地图分析数据</p></div></section>
         <section class="es-analysis-card"><header class="es-section-title"><h3><Activity :size="18" />近期战绩</h3><span>最近 10 场</span></header><div class="es-analysis-subtabs"><button v-for="side in ['t1','t2']" :key="side" :class="{active:recentSide===side}" @click="recentSide=side"><EsportsImage :src="info[`${side}_info`]?.logo" />{{ teamName(info[`${side}_info`]) }}</button></div><div v-if="form.length" class="es-recent-form"><span>近期走势</span><b v-for="(item,index) in form" :key="index" :class="{won:item.won,draw:item.draw}" :title="item.text">{{ item.draw?'D':item.won?'W':'L' }}</b></div><EsportsMatches :rows="recent" :game="game" /><p v-if="!recent.length" class="es-empty-small">暂无近期战绩</p></section>
         <section class="es-analysis-card"><header class="es-section-title"><h3><Swords :size="18" />交手战绩</h3><span>最近交手</span></header><EsportsMatches :rows="headToHead" :game="game" /><p v-if="!headToHead.length" class="es-empty-small">双方暂无交手记录</p><header class="es-section-title"><h3><Users :size="18" />战队分析</h3><span>最近三个月</span></header><div class="es-analysis-teamline"><span><EsportsImage :src="info.t1_info?.logo" />{{ teamName(info.t1_info) }}</span><i>VS</i><span>{{ teamName(info.t2_info) }}<EsportsImage :src="info.t2_info?.logo" /></span></div><div class="es-comparison-bars"><div v-for="m in metrics" :key="m.key"><div><b>{{ m.a }}{{ /rate$/.test(m.key) && m.a!=='--' ? '%' : '' }}</b><span>{{ m.label }}</span><b>{{ m.b }}{{ /rate$/.test(m.key) && m.b!=='--' ? '%' : '' }}</b></div><div class="es-comparison-track"><i :style="{width:`${m.left}%`}"></i><i :style="{width:`${100-m.left}%`}"></i></div></div></div><p v-if="!metrics.length" class="es-empty-small">暂无战队对比数据</p></section>
     </div>

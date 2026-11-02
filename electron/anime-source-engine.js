@@ -295,8 +295,35 @@ export async function importAnimeRules(input) {
   state().removed = (state().removed || []).filter(id => !normalized.some(rule => rule.id === id)); saveState()
   return normalized
 }
+const latencyCache = new Map()
+async function measureLatency(value) {
+  let url = ''
+  try { url = http(value) } catch { return { url: String(value || ''), ms: null, status: 0, error: 'invalid_url', at: Date.now() } }
+  const hit = latencyCache.get(url)
+  if (hit && Date.now() - hit.at < 60000) return hit
+  const started = process.hrtime.bigint()
+  try {
+    // Resolve on response headers, then destroy the unused body: this is the
+    // real network latency of a playback line without downloading the page.
+    const response = await axios({ url, method: 'GET', responseType: 'stream', timeout: 7000, maxRedirects: 5,
+      validateStatus: () => true, headers: { 'User-Agent': UA, Referer: new URL(url).origin + '/' } })
+    response.data?.destroy?.()
+    const result = { url, ms: Math.round(Number(process.hrtime.bigint() - started) / 1e6), status: response.status, at: Date.now() }
+    latencyCache.set(url, result)
+    if (latencyCache.size > 200) latencyCache.delete(latencyCache.keys().next().value)
+    return result
+  } catch (error) {
+    const result = { url, ms: null, status: 0, error: error.code || 'unreachable', at: Date.now() }
+    latencyCache.set(url, result)
+    return result
+  }
+}
 export function registerAnimeSourceRuleIPC() {
   const handle = (channel, handler) => ipcMain.handle(channel, async (event, payload = {}) => { try { return await handler(payload, event) } catch (error) { return { success: false, message: error.message || '操作失败' } } })
+  handle('anime:latency', async ({ urls }) => {
+    const values = Array.isArray(urls) ? urls.slice(0, 20) : []
+    return { success: true, data: await Promise.all(values.map(measureLatency)) }
+  })
   handle('anime:rule-sources', animeSourceRules)
   handle('anime:rule-save', async rule => ({ success: true, data: (await importAnimeRules(rule))[0] }))
   handle('anime:rule-import', async ({ input }) => ({ success: true, data: await importAnimeRules(input) }))
