@@ -1,6 +1,6 @@
 {
   "name": "MingYunTime",
-  "version": "4.0.5",
+  "version": "4.0.7",
   "main": "dist-electron/main.js",
   "repository": {
     "type": "git",

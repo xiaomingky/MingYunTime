@@ -60,7 +60,9 @@ export function useBiliFeed(api = { home: biliVideoHome, detail: biliVideoDetail
             const cid = info.pages?.[0]?.cid || info.cid
             if (!cid) throw new Error('该视频暂无可播放的分P')
             let result = null
-            if (!info.pay) {
+            // 与 B站详情页共用取流接口选择：本地持久化，默认 TV；充电专属视频仍强制走 Web
+            const mode = localStorage.getItem('bili_video_play_mode') === 'web' ? 'web' : 'tv'
+            if (mode === 'tv' && !info.pay) {
                 try { result = await api.tv({ aid: info.aid, bvid: info.bvid, cid }) } catch { /* Web fallback */ }
             }
             if (!active()) return

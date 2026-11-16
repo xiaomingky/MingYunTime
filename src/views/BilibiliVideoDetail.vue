@@ -40,6 +40,33 @@ const {
     loadWebStatus, handleWebLogin, closeWebQr, refreshWebQr, onWebAvatarError
 } = useBiliWebLogin(messageStore)
 
+// ===== 取流接口选择（TV / Web）：默认 TV，用户选择后持久化 =====
+// TV：无水印源，未登录最高 720P；Web：网页接口，充电专属视频强制走 Web（保留试看检测）
+const playApiMode = ref(localStorage.getItem('bili_video_play_mode') === 'web' ? 'web' : 'tv')
+function setPlayApiMode(mode) {
+    const m = mode === 'web' ? 'web' : 'tv'
+    if (playApiMode.value === m) return
+    playApiMode.value = m
+    localStorage.setItem('bili_video_play_mode', m)
+    messageStore.info(m === 'tv' ? '已切换为 TV 接口取流' : '已切换为 Web 接口取流')
+    // 立即按新接口重新取流当前内容
+    if (isPgcMode.value) {
+        if (currentPgcEp.value) playPgcEpisode(currentPgcEp.value)
+    } else if (currentEpisode.value) {
+        playPage(currentEpisode.value)
+    }
+}
+
+// Web 互动（点赞/投币/收藏）需要 Web 账号；TV 模式下胶囊隐藏，点击互动时自动打开 Web 登录。
+// allowTv：投币支持 TV access_key 走官方 APP 接口，TV 登录态下也可直接投币。
+function ensureWebLogin(allowTv = false) {
+    if (biliWebLoggedIn.value) return true
+    if (allowTv && biliTvLoggedIn.value) return true
+    messageStore.info('该操作需要 B站 Web 账号，正在打开登录…')
+    handleWebLogin()
+    return false
+}
+
 // ===== 详情数据 =====
 const loading = ref(true)
 const detail = ref(null)
@@ -214,11 +241,14 @@ async function playPgcEpisode(ep) {
     commentsPage.value = 1
     commentsHasMore.value = false
     let res = null
-    try {
-        res = await biliAnimePlayurl({ epId: ep.epId, aid: ep.aid, cid: ep.cid, bvid: ep.bvid })
-        if (!res?.success || !(res.videoUrl || res.url)) res = null
-    } catch (e) { res = null }
-    // TV 接口失败 → Web PGC 接口回退（试看/大会员画质）
+    // 用户选择 TV 接口时才请求 TV；选择 Web 时直接走网页 PGC 接口
+    if (playApiMode.value === 'tv') {
+        try {
+            res = await biliAnimePlayurl({ epId: ep.epId, aid: ep.aid, cid: ep.cid, bvid: ep.bvid })
+            if (!res?.success || !(res.videoUrl || res.url)) res = null
+        } catch (e) { res = null }
+    }
+    // TV 接口失败或用户选择 Web → Web PGC 接口（试看/大会员画质）
     if (!res) {
         try {
             const wres = await biliVideoPgcPlayurl({ epId: ep.epId, cid: ep.cid, bvid: ep.bvid })
@@ -248,7 +278,9 @@ async function playPgcEpisode(ep) {
         biliQualities.value = []
         biliCurrentQn.value = 0
         if (!playerError.value) {
-            playerError.value = '取流失败：TV 与 Web 接口均未取得视频流（大会员内容请尝试 TV 端登录）'
+            playerError.value = playApiMode.value === 'web'
+                ? '取流失败：Web 接口未取得视频流（大会员内容请先登录B站账号，或切换 TV 接口）'
+                : '取流失败：TV 接口未取得视频流（大会员内容请先进行 TV 登录，或切换 Web 接口）'
         }
         playerLoading.value = false
     }
@@ -304,13 +336,14 @@ async function playPage(ep) {
     refreshInteractState()
     let res = null
     // 充电专属视频跳过 TV 接口（TV 对 ugc_pay 内容必然失败），直接 Web
-    if (!video.value?.pay) {
+    // 用户选择 Web 接口时不请求 TV
+    if (playApiMode.value === 'tv' && !video.value?.pay) {
         try {
             res = await biliAnimePlayurl({ aid: video.value.aid, cid: ep.cid, bvid: video.value.bvid })
             if (!res?.success || !(res.videoUrl || res.url)) res = null
         } catch (e) { res = null }
     }
-    // TV 接口失败 → Web 接口回退（充电视频/受限内容）
+    // TV 接口失败或用户选择 Web → Web 接口（充电视频/受限内容）
     if (!res) {
         try {
             const wres = await biliVideoPlayurl({ bvid: video.value.bvid, cid: ep.cid, duration: ep.duration || video.value.duration, charge: !!video.value?.pay })
@@ -344,7 +377,9 @@ async function playPage(ep) {
         biliQualities.value = []
         biliCurrentQn.value = 0
         if (!playerError.value) {
-            playerError.value = '取流失败：TV 与 Web 接口均未取得视频流，请检查网络或登录状态'
+            playerError.value = playApiMode.value === 'web'
+                ? '取流失败：Web 接口未取得视频流，请检查网络或登录状态'
+                : '取流失败：TV 接口未取得视频流，请检查网络或 TV 登录状态'
         }
         playerLoading.value = false
     }
@@ -512,6 +547,7 @@ watch(biliWebLoggedIn, (v) => {
 
 async function handleLike() {
     if (interacting.value) return
+    if (!ensureWebLogin()) return
     if (!interactBvid.value) {
         messageStore.warning('该分集缺少视频标识，暂不支持点赞')
         return
@@ -540,6 +576,7 @@ async function handleLike() {
 
 async function handleCoin(multiply = 1) {
     if (interacting.value) return
+    if (!ensureWebLogin(true)) return
     if (!interactBvid.value && !interactAid.value) {
         messageStore.warning('该分集缺少视频标识，暂不支持投币')
         return
@@ -547,7 +584,7 @@ async function handleCoin(multiply = 1) {
     showCoinPanel.value = false
     interacting.value = true
     try {
-        const res = await biliVideoCoin(interactBvid.value, multiply, 0, interactAid.value)
+        const res = await biliVideoCoin(interactBvid.value, multiply, 0, interactAid.value, Number(ownerCard.value?.mid) || 0)
         if (res?.success) {
             coined.value = true
             coinCount.value += multiply
@@ -577,6 +614,7 @@ function toggleCoinPanel() {
 
 async function handleFav() {
     if (interacting.value) return
+    if (!ensureWebLogin()) return
     if (!interactAid.value) {
         messageStore.warning('该分集缺少视频标识，暂不支持收藏')
         return
@@ -957,8 +995,22 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                 <ChevronLeft :size="20" />
             </button>
             <div class="top-title">{{ pageTitle }}</div>
-            <!-- 登录入口：Web 登录（点赞/投币/收藏） + TV 登录（高清取流） -->
+            <!-- 取流接口切换：TV（无水印）/ Web（网页接口） -->
+            <div class="play-mode-switch" title="选择 B站取流接口（TV 未登录最高 720P）">
+                <button
+                    class="play-mode-btn"
+                    :class="{ active: playApiMode === 'tv' }"
+                    @click="setPlayApiMode('tv')"
+                >TV</button>
+                <button
+                    class="play-mode-btn"
+                    :class="{ active: playApiMode === 'web' }"
+                    @click="setPlayApiMode('web')"
+                >Web</button>
+            </div>
+            <!-- 登录入口：按当前取流接口互斥显示（Web「B站登录」/ TV「TV登录」） -->
             <div class="bili-login-wrap">
+                <template v-if="playApiMode === 'web'">
                 <button
                     v-if="!biliWebLoggedIn"
                     class="login-capsule bili-web"
@@ -984,6 +1036,8 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                     <Clapperboard v-else :size="13" />
                     <span class="capsule-name">{{ biliWebUserInfo?.uname || 'B站已登录' }}</span>
                 </button>
+                </template>
+                <template v-else>
                 <button
                     v-if="!biliTvLoggedIn"
                     class="login-capsule bili-tv"
@@ -1010,6 +1064,7 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
                     <span class="capsule-name">{{ biliTvUserInfo?.uname || (biliTvMid ? `TV·${biliTvMid}` : 'TV已登录') }}</span>
                     <LogOut :size="12" />
                 </button>
+                </template>
             </div>
         </div>
 
@@ -2775,6 +2830,30 @@ watch(() => [route.params.bvid, route.params.seasonId], ([nb, ns], [ob, os]) => 
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
+/* 取流接口切换（TV / Web） */
+.play-mode-switch {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    border-radius: 14px;
+    border: 1px solid rgba(251, 114, 153, 0.35);
+    background: rgba(251, 114, 153, 0.06);
+    margin-right: 8px;
+}
+.play-mode-btn {
+    border: 0;
+    background: transparent;
+    color: #fb7299;
+    font-size: 12px;
+    line-height: 1;
+    padding: 4px 10px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.play-mode-btn.active { background: #fb7299; color: #fff; }
+.play-mode-btn:not(.active):hover { background: rgba(251, 114, 153, 0.14); }
 
 /* 登录胶囊（web / TV） */
 .bili-login-wrap { display: flex; align-items: center; gap: 8px; }

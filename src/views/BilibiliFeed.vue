@@ -54,7 +54,7 @@ async function interact(action, amount = 1) {
     try {
         const result = action === 'like' ? await biliVideoLike(target.bvid, nextLiked ? 1 : 2)
             : action === 'fav' ? await biliVideoFav(target.aid, !nextFavored)
-                : await biliVideoCoin(target.bvid, amount, 0, target.aid)
+                : await biliVideoCoin(target.bvid, amount, 0, target.aid, Number(target.owner?.mid) || 0)
         if (!result?.success) throw new Error(result?.message || '操作失败，请先在 B站区登录')
         if (video.value === target && revision === interactionRevision) {
             if (action === 'like') liked.value = nextLiked

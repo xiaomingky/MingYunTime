@@ -225,7 +225,7 @@ export const biliVideoPlayurl = (params) => animeBridge().invoke('bilibili:video
 export const biliVideoSeasonDetail = (params) => animeBridge().invoke('bilibili:video-season-detail', params)
 export const biliVideoPgcPlayurl = (params) => animeBridge().invoke('bilibili:video-pgc-playurl', params)
 export const biliVideoLike = (bvid, like = 1) => animeBridge().invoke('bilibili:video-like', { bvid, like })
-export const biliVideoCoin = (bvid, multiply = 1, selectLike = 0, aid = 0) => animeBridge().invoke('bilibili:video-coin', { bvid, multiply, selectLike, aid })
+export const biliVideoCoin = (bvid, multiply = 1, selectLike = 0, aid = 0, upid = 0) => animeBridge().invoke('bilibili:video-coin', { bvid, multiply, selectLike, aid, upid })
 export const biliVideoFav = (aid, cancel = false) => animeBridge().invoke('bilibili:video-fav', { aid, cancel })
 export const biliVideoComments = (aid, page = 1, upMid = 0) => animeBridge().invoke('bilibili:video-comments', { aid, page, upMid })
 export const biliVideoCommentReplies = (aid, rpid, pn = 1, upMid = 0) => animeBridge().invoke('bilibili:video-comment-replies', { aid, rpid, pn, upMid })

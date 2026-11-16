@@ -6,8 +6,9 @@
 // 详情：view(视频+UP主+分P) + card(粉丝数) + related(相关推荐)
 //       PGC 分集 BV 自动识别（redirect_url）转季详情(pgc/view/web/season，含分集列表)
 // 评论：x/v2/reply/main 主楼翻页 + x/v2/reply/reply 子楼展开（含等级/大会员/粉丝牌/UP徽章）
-// 播放：复用 main.js 的 bilibili:anime-playurl（TV 接口 DASH，无水印，登录解锁 1080P+）
-//       PGC 回退 bilibili:video-pgc-playurl（pgc/player/web/playurl）
+// 播放：详情页可在 TV / Web 两种取流方式间切换（渲染层持久化）
+//       TV：bilibili:anime-playurl（DASH 无水印，未登录最高 720P）
+//       Web：bilibili:video-playurl / bilibili:video-pgc-playurl（充电专属视频强制走 Web）
 // 弹幕：复用 bilibili:anime-danmaku
 import { ipcMain, app } from 'electron'
 import axios from 'axios'
@@ -46,6 +47,18 @@ function biliWebCookies() {
 function biliWebCookie() {
   const cookies = biliWebCookies()
   return cookies ? Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ') : ''
+}
+
+// TV 登录 access_key（与 main.js 的 TV 取流共用 bilibili-tv-token.json）
+// APP 投币接口只认 access_key，Web Cookie 会被判定为未登录；有 TV 令牌时优先走官方 APP 参数
+const BILI_TV_TOKEN_FILE = () => path.join(app.getPath('userData'), 'bilibili-tv-token.json')
+function biliTvAccessKey() {
+  try {
+    const data = JSON.parse(fs.readFileSync(BILI_TV_TOKEN_FILE(), 'utf8'))
+    if (!data?.accessKey) return ''
+    if (data.savedAt && Date.now() - data.savedAt > 30 * 24 * 60 * 60 * 1000) return ''
+    return data.accessKey
+  } catch (e) { return '' }
 }
 
 // 请求 Cookie：游客 buvid 设备标识恒携带（B站搜索/首页等接口裸请求会被 -412 风控拦截，
@@ -679,7 +692,12 @@ async function biliApiPost(url, form, referer = 'https://www.bilibili.com/') {
   if (!cookies) throw new Error('请先登录B站账号（右上角「B站登录」）')
   const csrf = cookies.bili_jct
   if (!csrf) throw new Error('B站登录信息缺少校验值（bili_jct），请重新扫码登录后再试')
-  const cookie = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ')
+  // 登录 Cookie 之外再叠加游客 buvid 指纹：缺 buvid 的互动请求容易被 -352 风控拦截
+  const guest = await biliGuestCookie()
+  const cookie = [
+    Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; '),
+    guest
+  ].filter(Boolean).join('; ')
   const body = new URLSearchParams({ ...form, csrf, csrf_token: csrf })
   const res = await axios.post(url, body.toString(), {
     headers: {
@@ -687,6 +705,7 @@ async function biliApiPost(url, form, referer = 'https://www.bilibili.com/') {
       'Referer': referer,
       'Origin': 'https://www.bilibili.com',
       'Content-Type': 'application/x-www-form-urlencoded',
+      'x-csrf-token': csrf,
       Cookie: cookie
     },
     timeout: 15000,
@@ -709,18 +728,114 @@ async function biliLike({ bvid, like = 1 }) {
   return { liked: like === 1 }
 }
 
-// 投币（multiply: 1/2 枚；select_like: 1 同时点赞）
-// 2026-08-28 修正：coin/add 官方参数只有 aid（av 号），携带 bvid 参数会在个别 PGC 分集
-// 上触发服务端误判（如"硬币不足"）；aid 缺失时用 view 接口换算，避免参数无效误报
-async function biliCoin({ bvid, aid = 0, multiply = 1, selectLike = 0 }) {
+// ===== B站 APP 接口签名（严格对照反编译 DefaultRequestInterceptor / CommonParamsPluginKt）=====
+// 官方客户端请求 app.bilibili.com 时统一追加公共参数（appkey/mobi_app/platform/build/channel/ts），
+// 参数按字典序 urlencode 后拼 appsec 做 MD5 得到 sign；同时携带 Buvid 头与登录 Cookie。
+// 空间主页 / 投稿列表 / 投币均按官方 APP 参数与签名方式重写，绕开 Web 接口的 -352 风控。
+const BILI_APP_KEY = '1d8b6e7d45233436'
+const BILI_APP_SEC = '560c52ccd288fed045859ed18bffd973'
+const BILI_APP_MOBI_APP = 'android'
+const BILI_APP_BUILD = '9161100'
+const BILI_APP_CHANNEL = 'master'
+// 官方 Android 客户端默认 UA 格式（不含 Cookie / access_key / 签名原文）
+const BILI_APP_UA = 'Mozilla/5.0 BiliDroid/9.16.1 (bbcallen@gmail.com) os/android model/Pixel 6 mobi_app/android build/9161100 channel/master innerVer/9161100 osVer/13 network/2'
+
+// 参数按字典序 urlencode 拼接（与签名使用同一份编码，保证 query 与 sign 原文一致）
+function biliAppQuery(params) {
+  return Object.keys(params)
+    .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== '')
+    .sort()
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(String(params[k]))}`)
+    .join('&')
+}
+
+// APP 公共参数 + sign（对照反编译 LibBili.signQuery：字典序拼接 + appsec → MD5）
+function biliAppSign(params = {}) {
+  const merged = {
+    ...params,
+    appkey: BILI_APP_KEY,
+    mobi_app: BILI_APP_MOBI_APP,
+    platform: 'android',
+    build: BILI_APP_BUILD,
+    channel: BILI_APP_CHANNEL,
+    ts: Math.round(Date.now() / 1000)
+  }
+  const sign = crypto.createHash('md5').update(biliAppQuery(merged) + BILI_APP_SEC).digest('hex')
+  return { ...merged, sign }
+}
+
+// 统一 APP 请求：GET 全部进 query；POST 全部进表单（与官方 DefaultRequestInterceptor 行为一致）
+async function biliAppRequest(method, url, params = {}) {
+  const signed = biliAppSign(params)
+  const cookie = await biliRequestCookie()
+  // 官方 Buvid 头取自设备 buvid；本项目复用游客/登录 Cookie 里的 buvid3
+  const buvid = String(cookie || '').match(/(?:^|;\s*)buvid3=([^;]+)/)?.[1] || ''
+  const headers = {
+    'User-Agent': BILI_APP_UA,
+    ...(buvid ? { Buvid: buvid } : {}),
+    ...(cookie ? { Cookie: cookie } : {})
+  }
+  if (method === 'POST') {
+    const res = await axios.post(url, biliAppQuery(signed), {
+      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: 15000,
+      validateStatus: () => true
+    })
+    return res.data
+  }
+  const res = await axios.get(`${url}?${biliAppQuery(signed)}`, {
+    headers,
+    timeout: 15000,
+    validateStatus: () => true
+  })
+  return res.data
+}
+
+// 投币（x/v2/view/coin/add）
+// 2026-11-16 重写：按反编译 com.bilibili.paycoin.l 的官方 APP 字段与签名方式投币。
+// 注意：APP 投币接口只认 access_key（TV 登录令牌），Web Cookie 会被判定为未登录（-101），
+// 因此有 TV 令牌时优先走官方 APP 接口；只有 Web 登录时降级到 Web coin/add（Cookie + csrf）。
+async function biliCoin({ bvid, aid = 0, multiply = 1, selectLike = 0, upid = 0 }) {
   let realAid = Number(aid) || 0
-  if (!realAid && bvid) {
+  let realUpid = Number(upid) || 0
+  if (!realAid || !realUpid) {
     try {
-      const v = await biliApiGet('https://api.bilibili.com/x/web-interface/view', { bvid })
-      realAid = Number(v?.data?.aid) || 0
-    } catch (e) { /* 忽略，下面统一报缺参 */ }
+      const v = await biliApiGet('https://api.bilibili.com/x/web-interface/view',
+        bvid ? { bvid } : { aid: realAid })
+      realAid = realAid || Number(v?.data?.aid) || 0
+      realUpid = realUpid || Number(v?.data?.owner?.mid) || 0
+    } catch (e) { /* 参数补齐失败时由下方统一提示 */ }
   }
   if (!realAid) throw new Error('该内容缺少投币信息（av 号），暂不支持投币')
+  if (!realUpid) throw new Error('该内容缺少 UP 主信息，暂不支持投币')
+
+  const cookies = biliWebCookies()
+  const accessKey = biliTvAccessKey()
+  if (!cookies && !accessKey) throw new Error('请先登录B站账号（右上角「B站登录」）')
+
+  // 有 TV access_key 时按官方播放器投币参数走 APP 接口：
+  // avtype=1、from=av、source=view_vvoucher（对照 playerbizcommonv2.widget.coin）
+  if (accessKey) {
+    try {
+      const d = await biliAppRequest('POST', 'https://app.bilibili.com/x/v2/view/coin/add', {
+        access_key: accessKey,
+        aid: realAid,
+        upid: realUpid,
+        multiply,
+        avtype: 1,
+        from: 'av',
+        select_like: selectLike ? 1 : 0,
+        from_spmid: 'main.ugc-video-detail.0.0',
+        spmid: 'main.ugc-video-detail.0.0',
+        source: 'view_vvoucher'
+      })
+      if (d?.code === 0) return { ok: true }
+      // -101/-111/-3/-400 等会话类错误降级 Web 投币；其余业务错误交给 Web 接口统一提示
+    } catch (e) { /* 降级 Web 投币 */ }
+  }
+
+  // Web Cookie 投币（biliApiPost 会带 csrf/csrf_token、Referer、Origin）
+  if (!cookies) throw new Error('TV 登录态无法完成投币，请切换到 Web 模式登录B站账号后再试')
   await biliApiPost('https://api.bilibili.com/x/web-interface/coin/add',
     { aid: realAid, multiply, select_like: selectLike ? 1 : 0 },
     `https://www.bilibili.com/video/av${realAid}/`)
@@ -960,47 +1075,42 @@ async function biliPgcPlayurl({ epId, cid = 0, bvid = '' }) {
 
 // ============================================================
 // UP 主空间（用户主页：卡片信息 + 投稿列表）
-// 信息：x/web-interface/card（游客可用）；投稿：x/space/wbi/arc/search（wbi 签名）
+// 官方 APP：x/v2/space（卡片）+ x/v2/space/archive（投稿，pn/ps/order），统一 APP 签名；
+// Web 回退：x/web-interface/card + x/space/wbi/arc/search（wbi 签名）
+// 2026-11-16 重写：原 Web 接口访问他人主页会被 -352 风控，改为官方 APP 参数优先、Web 兜底。
 // ============================================================
-async function biliUserSpace({ mid = 0, page = 1 }) {
-  if (!mid) throw new Error('缺少 UP 主 ID')
-  let user = null
-  try {
-    const cr = await biliApiGet('https://api.bilibili.com/x/web-interface/card', { mid, photo: false })
-    const card = cr?.data?.card || {}
-    user = {
-      mid: Number(card.mid) || Number(mid),
-      name: card.name || '',
-      face: biliCoverUrl(card.face),
-      sign: String(card.sign || '').replace(/<[^>]+>/g, '').trim(),
-      fans: cr?.data?.follower ?? 0,
-      // 获赞数在 data 顶层 like_num（card.likes 不存在，旧写法恒为 0）
-      likes: cr?.data?.like_num ?? 0,
-      level: cr?.data?.level_info?.current_level || card.level_info?.current_level || 0,
-      // 硬核会员标识（card.is_senior_member）：LV6 硬核用户用 level_h.svg 加强版徽章
-      senior: Number(cr?.data?.is_senior_member ?? card.is_senior_member) === 1,
-      // VIP 信息在 card.vip（data.vip 不存在）：status=1 有效，vipType 2 年度 / 1 月度
-      vip: Number(card.vip?.vipStatus ?? card.vipStatus) === 1,
-      vipType: Number(card.vip?.vipType ?? card.vipType) || 0,
-      // 官方大会员标签图（如"十年大会员"动图/静态图），有则优先于通用图标
-      vipLabel: (card.vip?.label?.use_img_label && card.vip.label.img_label_uri_hans_static)
-        ? biliCoverUrl(card.vip.label.img_label_uri_hans_static)
-        : '',
-      official: card.official?.title || card.Official?.title || ''
-    }
-  } catch (e) { /* card 失败不阻塞投稿列表 */ }
+// 空间卡片 Web 回退
+async function biliSpaceCardWeb(mid) {
+  const cr = await biliApiGet('https://api.bilibili.com/x/web-interface/card', { mid, photo: false })
+  const card = cr?.data?.card || {}
+  return {
+    mid: Number(card.mid) || Number(mid),
+    name: card.name || '',
+    face: biliCoverUrl(card.face),
+    sign: String(card.sign || '').replace(/<[^>]+>/g, '').trim(),
+    fans: cr?.data?.follower ?? 0,
+    // 获赞数在 data 顶层 like_num（card.likes 不存在，旧写法恒为 0）
+    likes: cr?.data?.like_num ?? 0,
+    level: cr?.data?.level_info?.current_level || card.level_info?.current_level || 0,
+    // 硬核会员标识（card.is_senior_member）：LV6 硬核用户用 level_h.svg 加强版徽章
+    senior: Number(cr?.data?.is_senior_member ?? card.is_senior_member) === 1,
+    // VIP 信息在 card.vip（data.vip 不存在）：status=1 有效，vipType 2 年度 / 1 月度
+    vip: Number(card.vip?.vipStatus ?? card.vipStatus) === 1,
+    vipType: Number(card.vip?.vipType ?? card.vipType) || 0,
+    // 官方大会员标签图（如"十年大会员"动图/静态图），有则优先于通用图标
+    vipLabel: (card.vip?.label?.use_img_label && card.vip.label.img_label_uri_hans_static)
+      ? biliCoverUrl(card.vip.label.img_label_uri_hans_static)
+      : '',
+    official: card.official?.title || card.Official?.title || ''
+  }
+}
 
-  // 投稿列表（wbi 签名）
+// 空间投稿 Web 回退（wbi 签名）
+async function biliSpaceArchiveWeb(mid, page) {
   const mixin = await biliWbiKey()
   const ar = await biliApiGet('https://api.bilibili.com/x/space/wbi/arc/search',
     biliWbiSign({ mid, ps: 30, pn: page, order: 'pubdate', platform: 'web' }, mixin))
   const d = ar?.data
-  const toSec = (len) => {
-    const parts = String(len || '').split(':'); 
-    if (parts.length === 3) return (+parts[0]) * 3600 + (+parts[1]) * 60 + (+parts[2])
-    if (parts.length === 2) return (+parts[0]) * 60 + (+parts[1])
-    return +len || 0
-  }
   const list = (d?.list?.vlist || []).map(v => ({
     bvid: v.bvid || '',
     aid: v.aid || 0,
@@ -1008,10 +1118,89 @@ async function biliUserSpace({ mid = 0, page = 1 }) {
     cover: biliCoverUrl(v.pic),
     play: v.play || 0,
     danmaku: v.video_review || 0,
-    duration: toSec(v.length),
+    duration: biliDurationToSec(v.length),
     pubdate: v.created || 0
   }))
-  const total = d?.page?.count || d?.page?.vcount || list.length
+  return { list, total: d?.page?.count || d?.page?.vcount || list.length }
+}
+
+// 空间投稿量文本（APP 接口 view_content 形如 "1.2万播放"）→ 数字
+function biliParseViewText(s) {
+  const m = String(s || '').match(/([\d.]+)\s*(亿|万)?/)
+  if (!m) return 0
+  const n = parseFloat(m[1]) || 0
+  const unit = m[2] === '亿' ? 1e8 : m[2] === '万' ? 1e4 : 1
+  return Math.round(n * unit)
+}
+
+async function biliUserSpace({ mid = 0, page = 1 }) {
+  if (!mid) throw new Error('缺少 UP 主 ID')
+  let user = null
+
+  // 1) 空间卡片：官方 APP x/v2/space（失败回退 Web card）
+  try {
+    const tz = -new Date().getTimezoneOffset() / 60
+    const body = await biliAppRequest('GET', 'https://app.bilibili.com/x/v2/space', {
+      vmid: mid,
+      from: '0',
+      local_time: Number.isFinite(tz) ? tz : 8
+    })
+    const card = body?.code === 0 ? body?.data?.card : null
+    if (card) {
+      const vip = card.vip || {}
+      user = {
+        mid: Number(card.mid) || Number(mid),
+        name: card.name || '',
+        face: biliCoverUrl(card.face),
+        sign: String(card.sign || '').replace(/<[^>]+>/g, '').trim(),
+        fans: Number(card.fans) || 0,
+        likes: Number(card.likes?.like_num) || 0,
+        level: Number(card.level_info?.current_level) || 0,
+        senior: false,
+        vip: Number(vip.vipStatus) === 1,
+        vipType: Number(vip.vipType) || 0,
+        vipLabel: (vip.label?.use_img_label && vip.label.img_label_uri_hans_static)
+          ? biliCoverUrl(vip.label.img_label_uri_hans_static)
+          : '',
+        official: card.official_verify?.desc || card.official_verify?.title || ''
+      }
+    }
+  } catch (e) { /* 回退 Web card */ }
+  if (!user) {
+    try { user = await biliSpaceCardWeb(mid) } catch (e) { /* 卡片失败不阻塞投稿列表 */ }
+  }
+
+  // 2) 投稿列表：官方 APP x/v2/space/archive（pn/ps/order），失败回退 Web wbi 接口
+  let list = []
+  let total = 0
+  try {
+    const body = await biliAppRequest('GET', 'https://app.bilibili.com/x/v2/space/archive', {
+      vmid: mid, pn: page, ps: 30, order: 'pubdate'
+    })
+    if (body?.code === 0) {
+      list = (body?.data?.item || []).map(v => ({
+        bvid: v.bvid || '',
+        aid: Number(v.param) || 0,
+        title: biliCleanTitle(String(v.title || '').replace(/<[^>]+>/g, '')),
+        cover: biliCoverUrl(v.cover),
+        play: biliParseViewText(v.view_content),
+        danmaku: Number(v.danmaku) || 0,
+        duration: Number(v.duration) || 0,
+        pubdate: Number(v.ctime) || 0
+      }))
+      total = Number(body?.data?.count) || list.length
+    } else {
+      throw new Error(body?.message || `空间投稿接口风控(${body?.code})`)
+    }
+  } catch (e) {
+    try {
+      const w = await biliSpaceArchiveWeb(mid, page)
+      list = w.list
+      total = w.total
+    } catch (e2) {
+      throw new Error(e.message || e2.message || '获取 UP 主投稿失败')
+    }
+  }
   if (user && !user.videoCount) user.videoCount = total
   return { user, list, total, hasMore: list.length >= 30 }
 }
