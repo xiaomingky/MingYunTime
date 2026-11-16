@@ -55,8 +55,7 @@ const showEpPanel = ref(false)
 // 真直播标识（duration=Infinity 时显示）
 const liveBadge = ref(false)
 
-// ===== 画质切换（B站TV 多档位 DASH）=====
-const showQualityPanel = ref(false)
+// ===== 画质切换（B站TV 多档位 DASH，使用 ArtPlayer 自带设置面板 UI）=====
 // 当前生效画质 qn（父层 currentQn 优先，否则取最高档）
 const activeQn = ref(0)
 const activeQualityLabel = computed(() => {
@@ -64,10 +63,32 @@ const activeQualityLabel = computed(() => {
     return q ? q.label : '画质'
 })
 
+// 构造 ArtPlayer 设置里的「画质」项：与倍速/画面增强等入口共用播放器原生设置面板
+function makeQualitySetting() {
+    if (props.qualities.length < 2) return null
+    return {
+        name: 'biliQuality',
+        html: '画质',
+        width: 200,
+        tooltip: activeQualityLabel.value,
+        selector: props.qualities.map(q => ({
+            value: q.qn,
+            name: `bili-quality-${q.qn}`,
+            qn: q.qn,
+            html: q.label,
+            default: q.qn === activeQn.value
+        })),
+        onSelect(item) {
+            const q = props.qualities.find(x => x.qn === item.qn)
+            if (q) void switchQuality(q)
+            return item.html
+        }
+    }
+}
+
 // 切换画质：art.switchQuality 保持播放进度（ArtPlayer 5.x 的 switchUrl 会回到 0，勿用），
 // DASH 音频各档共用同一地址，无需重挂音频
 async function switchQuality(q) {
-    showQualityPanel.value = false
     if (!art || !q || q.qn === activeQn.value) return
     const prevQn = activeQn.value
     activeQn.value = q.qn
@@ -83,20 +104,15 @@ async function switchQuality(q) {
             if (wasPlaying) art.play().catch(() => {})
             else art.pause()
             art.notice.show = `画质已切换至 ${q.label}`
-            updateQualityControl()
+            // 刷新原生设置面板中的选中态与 tooltip
+            const qualitySetting = makeQualitySetting()
+            if (qualitySetting) art.setting.update(qualitySetting)
         }
         emit('qualityChange', q.qn)
     } catch (e) {
         activeQn.value = prevQn
         if (art) art.notice.show = '画质切换失败，请重试'
     }
-}
-
-// 同步控制条画质按钮文字
-function updateQualityControl() {
-    if (!art) return
-    const dom = art.controls.biliQuality
-    if (dom) dom.innerHTML = `<span class="avp-text-btn quality-active">${activeQualityLabel.value}</span>`
 }
 
 // ===== 弹幕（B站，滚动/顶部/底部）=====
@@ -331,19 +347,8 @@ function buildControls() {
         index: 7,
         html: '<span class="avp-text-btn">选集</span>',
         tooltip: '选集',
-        click: () => { showEpPanel.value = !showEpPanel.value; showGainPanel.value = false; showQualityPanel.value = false; showEnhancementPanel.value = false }
+        click: () => { showEpPanel.value = !showEpPanel.value; showGainPanel.value = false; showEnhancementPanel.value = false }
     })
-    // 画质切换（B站TV 多档位 DASH，多于 1 档时显示）
-    if (props.qualities.length > 1) {
-        list.push({
-            name: 'biliQuality',
-            position: 'right',
-            index: 8,
-            html: `<span class="avp-text-btn quality-active">${activeQualityLabel.value}</span>`,
-            tooltip: '画质切换',
-            click: () => { showQualityPanel.value = !showQualityPanel.value; showGainPanel.value = false; showEpPanel.value = false; showEnhancementPanel.value = false }
-        })
-    }
     return list
 }
 
@@ -367,7 +372,7 @@ function buildSettings() {
             html: '高级设置…'
         }
     ]
-    return [
+    const settings = [
         {
             name: 'gainBoostSettings',
             html: '音量增强',
@@ -391,7 +396,6 @@ function buildSettings() {
                     showEnhancementPanel.value = true
                     showGainPanel.value = false
                     showEpPanel.value = false
-                    showQualityPanel.value = false
                     return '高级设置'
                 }
                 void setEnhancement(item.value, preferredInterpolation.value)
@@ -413,6 +417,10 @@ function buildSettings() {
             }
         }
     ]
+    // B站多档位画质也放进播放器原生设置面板，不再单独占用控制条按钮
+    const qualitySetting = makeQualitySetting()
+    if (qualitySetting) settings.push(qualitySetting)
+    return settings
 }
 
 function onEpisodeSelect(ep) {
@@ -843,7 +851,6 @@ async function createPlayer(src) {
     if (disposed || version !== playerVersion || !src || !artContainerEl.value) return
     playerError.value = ''
     showEpPanel.value = false
-    showQualityPanel.value = false
     showEnhancementPanel.value = false
     // 画质档位随新流重置：父层指定档优先，否则取最高档
     activeQn.value = props.currentQn || (props.qualities[0]?.qn || 0)
@@ -1120,26 +1127,7 @@ defineExpose({ get art() { return art } })
                 @select="onEpisodeSelect"
             />
 
-            <!-- 画质面板（B站TV 多档位，与选集面板互斥） -->
-            <transition name="avp-slide">
-                <div v-if="showQualityPanel && !playerError" class="avp-ep-panel avp-quality-panel" @click.stop>
-                    <div class="avp-ep-header">
-                        <span>画质 ({{ qualities.length }})</span>
-                        <button class="avp-ep-close" aria-label="关闭画质选择" @click="showQualityPanel = false"><X :size="14" /></button>
-                    </div>
-                    <transition-group name="avp-qual" tag="div" class="avp-ep-list avp-quality-list">
-                        <button
-                            v-for="q in qualities"
-                            :key="q.qn"
-                            class="avp-ep-item"
-                            :class="{ active: q.qn === activeQn }"
-                            @click="switchQuality(q)"
-                        >{{ q.label }}</button>
-                    </transition-group>
-                </div>
-            </transition>
-
-            <!-- 音量增强面板（与选集/画质同款弹出样式，档位 100%~1000%） -->
+            <!-- 音量增强面板（与选集同款弹出样式，档位 100%~1000%） -->
             <transition name="avp-slide">
                 <div v-if="showGainPanel && !playerError" class="avp-ep-panel avp-quality-panel avp-gain-panel" @click.stop>
                     <div class="avp-ep-header">
@@ -1264,7 +1252,6 @@ defineExpose({ get art() { return art } })
 .art-container :deep(.avp-compact .art-controls-right .art-control) { margin: 0; min-width: 32px; min-height: 34px; }
 .art-container :deep(.avp-compact .art-controls-right .avp-text-btn) { padding: 0 7px; }
 .art-container :deep(.avp-compact .avp-ep-panel) { bottom: 100px; max-height: calc(100% - 116px); }
-.art-container :deep(.art-control .avp-text-btn.quality-active) { color: #fff; }
 .art-container :deep(.avp-seek-preview) { position: absolute; width: 200px; padding: 3px; box-sizing: border-box; background: rgba(22,24,29,.94); border: 1px solid rgba(255,255,255,.22); border-radius: 9px; box-shadow: 0 8px 28px rgba(0,0,0,.4); pointer-events: none; z-index: 1100; overflow: hidden; }
 .art-container :deep(.avp-seek-preview[hidden]),
 .art-container :deep(.avp-seek-preview [hidden]) { display: none !important; }
@@ -1477,11 +1464,7 @@ defineExpose({ get art() { return art } })
     transform: translateY(8px);
 }
 
-/* ===== 画质切换 ===== */
-.art-container :deep(.art-control .avp-text-btn.quality-active) {
-    color: #ff9f9f;
-}
-/* 画质面板：单列较窄，贴右侧控制条上方 */
+/* ===== 音量增强 ===== */
 /* 音量增强滑条（控制栏内联，100%~1000%） */
 .avp-gain-wrap {
     display: inline-flex;
@@ -1550,15 +1533,4 @@ defineExpose({ get art() { return art } })
 .avp-compare-slider::-moz-range-track { height: 44px; background: transparent; }
 .avp-compare-slider::-moz-range-thumb { width: 40px; height: 40px; border: 0; background: transparent; }
 .avp-compare-slider:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
-/* 画质列表项折叠/展开动画 */
-.avp-qual-enter-active, .avp-qual-leave-active {
-    transition: opacity .18s, transform .18s;
-}
-.avp-qual-enter-from, .avp-qual-leave-to {
-    opacity: 0;
-    transform: translateX(10px);
-}
-.avp-qual-move {
-    transition: transform .18s;
-}
 </style>
