@@ -713,16 +713,35 @@ export const useKugouUserStore = defineStore('kugouUser', {
                 return false
             }
             try {
+                // 收藏他人歌单：有 global_collection_id 时必须走 list_create_gid，
+                // 并把 list_create_listid 置 0（对齐官方 add_list 协议）；
+                // 把 gcid 当 listid 发送会被服务端判为无效歌单（30203）
+                const gid = String(playlist.global_collection_id || playlist.list_create_gid || '')
+                const rawListId = String(playlist.listid || '')
+                const listId = /^[1-9]\d{0,17}$/.test(rawListId) ? rawListId : ''
+                if (!gid && !listId) {
+                    useMessageStore().warning('该歌单缺少收藏所需标识，暂不支持收藏')
+                    return false
+                }
                 const res = await kugouPlaylistAdd(
                     playlist.name || '',
                     playlist.creatorId || '',
-                    playlist.listid || playlist.id || '',
+                    gid ? '0' : listId,
+                    1,
+                    0,
+                    gid,
                     1
                 )
                 if (revision !== this.revision || !this.isLoggedIn) return false
                 if (this._isKugouSuccess(res)) {
+                    // 服务端 /user/playlist 有延迟，先用 add_list 返回的条目做乐观更新，
+                    // 否则收藏成功后按钮仍是「收藏歌单」
+                    const added = normalizeKugouPlaylist(res?.data?.info || {}, this.userid)
                     useMessageStore().success('歌单收藏成功')
                     await this.fetchUserPlaylists()
+                    if (added?.id && !this.playlists.some(p => String(p.id) === String(added.id))) {
+                        this.playlists = [added, ...this.playlists]
+                    }
                     return true
                 } else {
                     useMessageStore().error(this._getKugouError(res) || '收藏失败')

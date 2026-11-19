@@ -522,7 +522,7 @@ const libraryNavItems = [
     { id: '/recent', label: '最近播放', icon: Clock },
     { id: '/netease-cloud', label: '官方云盘', icon: Database },
     { id: '/downloads', label: '下载', icon: Download },
-    { id: '/smart-edu', label: '智慧教材', icon: GraduationCap },
+    { id: '/smart-edu', label: '智慧教育', icon: GraduationCap },
     { id: '/settings', label: '设置', icon: Settings },
 ]
 

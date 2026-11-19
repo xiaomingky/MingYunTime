@@ -47,9 +47,10 @@ export class KugouPrivateClient {
         if (!result || Number(result.status) !== 1 || Number(result.error_code || result.errcode || 0)) {
             const code = Number(result?.error_code || result?.errcode || 0)
             const rawMessage = result?.error_msg || result?.errmsg || result?.message || result?.msg || result?.tip
-            const platformMessage = Number(code) === 131001 ? '您已经领取 VIP' : Number(code) === 130011 ? '没有听歌记录' : rawMessage
+            const knownMessages = { 131001: '您已经领取 VIP', 130011: '没有听歌记录', 30203: '歌单不存在或已被删除' }
+            const platformMessage = knownMessages[code] || rawMessage
             const message = typeof platformMessage === 'string' ? platformMessage.split(String(token || '\0')).join('[已隐藏]').slice(0, 240) : ''
-            const error = new Error([20028,30020].includes(code) ? '酷狗要求安全验证，请在官方客户端完成验证后重试' : `酷狗账号服务未接受请求（${code || result?.status || '响应异常'}）${message ? '：' + message : ''}`)
+            const error = new Error([20028,30020].includes(code) ? '酷狗要求安全验证，请在官方客户端完成验证后重试' : knownMessages[code] || `酷狗账号服务未接受请求（${code || result?.status || '响应异常'}）${message ? '：' + message : ''}`)
             error.code = code; error.requiresVerification = [20028,30020].includes(code)
             throw error
         }

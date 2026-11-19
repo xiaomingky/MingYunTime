@@ -39,7 +39,7 @@ const SIDEBAR_SECTIONS = [
     { id: '/recent', label: '最近播放' },
     { id: '/netease-cloud', label: '官方云盘' },
     { id: '/downloads', label: '下载' },
-    { id: '/smart-edu', label: '智慧教材' },
+    { id: '/smart-edu', label: '智慧教育' },
 ]
 const hiddenSections = ref(JSON.parse(localStorage.getItem('hidden_sections') || '[]'))
 const isSectionHidden = (id) => hiddenSections.value.includes(id)

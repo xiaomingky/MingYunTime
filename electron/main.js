@@ -38,6 +38,8 @@ import './movie.js'
 import './esports.js'
 // 智慧教育教材专区（国家中小学智慧教育平台 basic.smartedu.cn）
 import { getSmartEduHeaders, getMediaInjectionHeaders } from './smart-edu.js'
+// 桂师云（guishiyun.com）教辅资源：IPC 在模块内自注册
+import './guishiyun.js'
 // 统一下载管理器（aria2c 多线程 + ffmpeg + 历史记录）
 import { setDownloadManagerWindow, delegateStartDownload, delegateCancelDownload, getYtDlpPath } from './download-manager.js'
 // Current Douyin request signature.

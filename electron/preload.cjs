@@ -170,6 +170,25 @@ const bridgeAPI = {
         ipcRenderer.on('smartedu-login-done', sub)
         return () => ipcRenderer.removeListener('smartedu-login-done', sub)
     },
+    // 桂师云教辅资源（www.guishiyun.com）
+    guishiyunCatalog: (force) => ipcRenderer.invoke('guishiyun:catalog', { force: !!force }),
+    guishiyunStats: (ids) => ipcRenderer.invoke('guishiyun:stats', { ids }),
+    guishiyunFiles: (bookId, bookName) => ipcRenderer.invoke('guishiyun:files', { bookId, bookName }),
+    guishiyunExam: () => ipcRenderer.invoke('guishiyun:exam'),
+    guishiyunEbook: (bookId, bookName) => ipcRenderer.invoke('guishiyun:ebook', { bookId, bookName }),
+    guishiyunEbookIds: (ids) => ipcRenderer.invoke('guishiyun:ebook-ids', { ids }),
+    guishiyunDownload: (payload) => ipcRenderer.invoke('guishiyun:download', payload),
+    guishiyunDownloadBatch: (items) => ipcRenderer.invoke('guishiyun:download-batch', { items }),
+    guishiyunOpenUrl: (url) => ipcRenderer.invoke('guishiyun:open-url', { url }),
+    guishiyunLoginOpen: () => ipcRenderer.invoke('guishiyun:login-open'),
+    guishiyunLoginStatus: () => ipcRenderer.invoke('guishiyun:login-status'),
+    guishiyunLoginManual: (raw) => ipcRenderer.invoke('guishiyun:login-manual', { raw }),
+    guishiyunLogout: () => ipcRenderer.invoke('guishiyun:logout'),
+    onGuishiyunLoginDone: (cb) => {
+        const sub = (_, data) => cb(data)
+        ipcRenderer.on('guishiyun-login-done', sub)
+        return () => ipcRenderer.removeListener('guishiyun-login-done', sub)
+    },
     // 打开本地文件/文件夹路径
     openPath: (p) => ipcRenderer.invoke('open-path', { path: p }),
     // 音乐加密格式解锁（网易云/QQ/酷狗 -> 原生格式还原）

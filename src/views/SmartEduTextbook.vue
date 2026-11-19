@@ -4,11 +4,20 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { smartEduCatalog, smartEduDetail, smartEduPreview, smartEduAudios, smartEduLoginOpen, smartEduLoginStatus, smartEduLoginManual, smartEduTestToken, smartEduLogout, smartEduDownloadPdf, smartEduDownloadAudio, smartEduProbeAudio, smartEduFetchImage, onSmartEduLoginDone } from '../api'
 import { useMessageStore } from '../store/message'
 import CustomSelect from '../components/CustomSelect.vue'
+import SmartEduGuishiyun from './SmartEduGuishiyun.vue'
 import { ChevronLeft, BookOpen, Download, LogOut, Search, Loader2, FileText, Headphones, RefreshCw, KeyRound, X, ZoomIn, Highlighter, Eraser, Play, Pause, Trash2, Maximize, Minimize, GripVertical, Move } from 'lucide-vue-next'
 
 defineOptions({ name: 'SmartEduTextbook' })
 
 const messageStore = useMessageStore()
+
+// ===== 智慧教育分区：教材 / 桂师云 =====
+const activeTab = ref('textbook')
+const guishiyunMounted = ref(false)
+function switchTab(tab) {
+    activeTab.value = tab
+    if (tab === 'guishiyun') guishiyunMounted.value = true
+}
 
 // ===== 登录态 =====
 const loggedIn = ref(false)
@@ -868,24 +877,32 @@ function fmtCount(n) {
         <!-- 页头 -->
         <div class="page-header">
             <h2 class="page-title">
-                <BookOpen :size="20" /> 智慧教材
-                <span class="sub">国家中小学智慧教育平台</span>
+                <BookOpen :size="20" /> 智慧教育
+                <span class="sub">{{ activeTab === 'textbook' ? '国家中小学智慧教育平台' : '桂师云教辅资源' }}</span>
             </h2>
-            <div class="header-actions">
-                <!-- 登录态胶囊 -->
-                <div v-if="loggedIn" class="login-capsule logged" @click="showLoginTips = !showLoginTips">
-                    <span class="capsule-avatar"><KeyRound :size="12" /></span>
-                    <span class="capsule-name">{{ userName }}</span>
-                    <LogOut :size="12" @click.stop="handleLogout" style="cursor:pointer" />
+            <div class="header-right">
+                <div v-if="activeTab === 'textbook'" class="header-actions">
+                    <!-- 登录态胶囊 -->
+                    <div v-if="loggedIn" class="login-capsule logged" @click="showLoginTips = !showLoginTips">
+                        <span class="capsule-avatar"><KeyRound :size="12" /></span>
+                        <span class="capsule-name">{{ userName }}</span>
+                        <LogOut :size="12" @click.stop="handleLogout" style="cursor:pointer" />
+                    </div>
+                    <button v-else class="login-capsule" @click="handleLogin">
+                        <KeyRound :size="13" /><span>智慧教育登录</span>
+                    </button>
+                    <button class="refresh-btn" @click="loadCatalog" :disabled="loading">
+                        <RefreshCw :size="15" :class="{ spin: loading }" /><span>刷新</span>
+                    </button>
                 </div>
-                <button v-else class="login-capsule" @click="handleLogin">
-                    <KeyRound :size="13" /><span>智慧教育登录</span>
-                </button>
-                <button class="refresh-btn" @click="loadCatalog" :disabled="loading">
-                    <RefreshCw :size="15" :class="{ spin: loading }" /><span>刷新</span>
-                </button>
+                <div class="edu-tab-switch">
+                    <button class="edu-tab-btn" :class="{ active: activeTab === 'textbook' }" @click="switchTab('textbook')">教材</button>
+                    <button class="edu-tab-btn" :class="{ active: activeTab === 'guishiyun' }" @click="switchTab('guishiyun')">桂师云</button>
+                </div>
             </div>
         </div>
+
+        <div class="tab-pane" v-show="activeTab === 'textbook'">
 
         <!-- 登录提示 / 手动粘贴 -->
         <transition name="modal">
@@ -1120,6 +1137,14 @@ function fmtCount(n) {
                 </div>
             </div>
         </template>
+        </div><!-- /tab-pane 教材 -->
+
+        <!-- 桂师云资源区（首次切换到该标签页时挂载，之后保留筛选与滚动状态） -->
+        <SmartEduGuishiyun
+            v-if="guishiyunMounted"
+            v-show="activeTab === 'guishiyun'"
+            :active="activeTab === 'guishiyun'"
+        />
     </div>
 </template>
 
@@ -1160,6 +1185,39 @@ function fmtCount(n) {
     align-items: center;
     gap: 8px;
 }
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+/* 教材 / 桂师云 标签页 */
+.tab-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.edu-tab-switch {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    border-radius: 14px;
+    border: 1px solid rgba(106, 161, 255, 0.35);
+    background: rgba(106, 161, 255, 0.06);
+}
+.edu-tab-btn {
+    border: 0;
+    background: transparent;
+    color: #5a8fe8;
+    font-size: 12px;
+    line-height: 1;
+    padding: 5px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.edu-tab-btn:hover { color: #3a72d8; }
+.edu-tab-btn.active { background: #6aa1ff; color: #fff; }
 .login-capsule {
     display: inline-flex;
     align-items: center;

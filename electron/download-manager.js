@@ -267,7 +267,7 @@ function saveDownloadDir(dir) {
 }
 
 // 统一下载目录：优先用户设置，未设置时回退系统下载区
-function resolveDownloadDir() {
+export function resolveDownloadDir() {
   return readSavedDownloadDir() || app.getPath('downloads')
 }
 

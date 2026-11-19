@@ -316,9 +316,22 @@ export const normalizeKugouSong = (song) => {
             authors: au.length ? au : song.authors
         }
     }
-    let songName = song.songname || song.SongName || song.name || song.audio_name || song.OriSongName || song.FileName || song.filename || ''
-    songName = String(songName || '').trim()
-    if (!song.SongName && song.OriSongName && song.Auxiliary && !songName.includes(song.Auxiliary)) songName += ` ${song.Auxiliary}`
+    // 搜索结果的高亮标签（<em>）与歌词片段（Auxiliary）不能混进歌名
+    const cleanText = (value) => String(value ?? '')
+        .replace(/<[^>]*>/g, '')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, ' ')
+        .trim()
+    let songName = cleanText(song.songname || song.SongName || song.name || song.audio_name || song.OriSongName || song.FileName || song.filename || '')
+    const auxiliary = cleanText(song.Auxiliary)
+    // 酷狗搜索把歌词片段放在 Auxiliary（形如「歌词 : <em>...」），只接受短的版本后缀
+    const auxiliaryIsLyric = /^歌词\s*[:：]/.test(auxiliary) || auxiliary.length > 40
+    if (!song.SongName && song.OriSongName && auxiliary && !auxiliaryIsLyric && !songName.includes(auxiliary)) songName += ` ${auxiliary}`
     // 去除文件扩展名（audio_name/FileName 常带 .mp3/.flac/.m4a 后缀）
     songName = songName.replace(/\.(mp3|flac|m4a|ape|ogg|wma|aac)$/i, '')
     // 歌手优先级（兼容搜索 PascalCase 和其他接口）：
@@ -342,7 +355,7 @@ export const normalizeKugouSong = (song) => {
         }
     }
     // 歌手里的中文顿号 、 转为 / 分隔（如 "King CAAN、ELYSA" → "King CAAN/ELYSA"）
-    if (artistStr) artistStr = artistStr.replace(/、/g, '/')
+    if (artistStr) artistStr = cleanText(artistStr).replace(/、/g, '/')
     // 封面优先级（兼容搜索 Image 和其他接口 cover/img/pic）
     let picUrl = song.Image || song.cover || song.img || song.albumpic || song.pic || ''
     if (!picUrl) {
@@ -385,8 +398,8 @@ export const normalizeKugouSong = (song) => {
         singer: Array.isArray(singers) ? singers : [],
         artist: artistStr || '未知歌手',
         album_id: song.album_id || song.AlbumID || (song.albuminfo?.id) || '',
-        albumName: song.albuminfo?.name || song.album_name || song.AlbumName || '',
-        album: song.albuminfo?.name || song.album_name || song.AlbumName || '',
+        albumName: cleanText(song.albuminfo?.name || song.album_name || song.AlbumName || ''),
+        album: cleanText(song.albuminfo?.name || song.album_name || song.AlbumName || ''),
         duration,
         // fee: 模板用 s.fee === 1 判断 VIP，此处统一设置(isVip 时 fee=1)
         fee: isVip ? 1 : 0,
@@ -442,7 +455,8 @@ export const normalizeKugouPlaylist = (p, currentUserId = '') => {
     // id 优先级：listid 优先（用户歌单场景，PlaylistDetail 会用 listid 调用新版接口）
     // 推荐歌单没有 listid，自动回退到 global_collection_id
     // 注意:搜索结果返回 gid 字段(即 global_collection_id),/playlist/track/all 需用它而非 specialid
-    const gcid = p.global_collection_id || p.gid || ''
+    // 官方特殊歌单（special）的 gcid 在 global_specialid 字段，普通歌单在 global_collection_id/gid
+    const gcid = p.global_collection_id || p.gid || p.global_specialid || ''
     const id = p._officialPublic && p.specialid ? `special:${p.specialid}` : p.listid || gcid || p.specialid || p.id || ''
     // 区分创建/收藏：list_create_userid === 当前用户id 则为创建，否则为收藏
     // type 字段不可靠（实测自己创建的 type 也是 0）
@@ -586,8 +600,8 @@ export const parseKugouPlaylistFull = (res) => {
     if (cover && cover.indexOf('{size}') >= 0) cover = cover.replace('{size}', '480')
     if (cover && cover.startsWith('//')) cover = 'https:' + cover
     const detail = {
-        id: info._officialPublic ? `special:${info.specialid}` : info.global_collection_id || info.parent_global_collection_id || info.specialid || data.global_collection_id || '',
-        global_collection_id: info.global_collection_id || info.gid || info.parent_global_collection_id || data.global_collection_id || '',
+        id: info._officialPublic ? `special:${info.specialid}` : info.global_collection_id || info.parent_global_collection_id || info.global_specialid || info.specialid || data.global_collection_id || '',
+        global_collection_id: info.global_collection_id || info.gid || info.parent_global_collection_id || info.global_specialid || data.global_collection_id || '',
         specialid: info.specialid || '',
         listid: info.listid || data.listid || '',
         name: info.name || info.specialname || info.special_name || data.name || '未知歌单',

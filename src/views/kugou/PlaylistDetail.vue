@@ -379,10 +379,19 @@ const isMinePlaylist = computed(() => {
 })
 
 // 当前歌单是否已被用户收藏
+// 推荐/搜索歌单的 route id 不一定是 listid（可能是 gcid，special 歌单则是 special:<id>），
+// 所以优先用详情里的 global_collection_id 去比对收藏条目的 list_create_gid
 const isCollected = computed(() => {
     if (!detail.value || !kugouUserStore.isLoggedIn) return false
+    const routeId = String(route.params.id)
+    const gid = String(detail.value.global_collection_id || '')
     return kugouUserStore.playlists.some(p =>
-        String(p.id) === String(route.params.id) && !p.isMine
+        !p.isMine && (
+            String(p.id) === routeId ||
+            String(p.global_collection_id || '') === routeId ||
+            String(p.list_create_gid || '') === routeId ||
+            (!!gid && (String(p.global_collection_id || '') === gid || String(p.list_create_gid || '') === gid))
+        )
     )
 })
 
